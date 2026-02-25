@@ -268,9 +268,11 @@ set(METAL_SOURCES
   src/metal/primitives_transpose.mm
   src/metal/primitives_beam_search.mm
   src/metal/primitives_norm_gather.mm
+  src/metal/primitives_sdpa.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm
+  src/ops/flash_attention_metal.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}
@@ -536,6 +538,7 @@ if(WITH_METAL)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/reduction.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/normalization.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/gather.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/sdpa.metal
     )
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp

@@ -618,19 +618,31 @@ Code review (`agents/report/milestone-5-review.md`) fully resolved:
 **Time:** 1–2 weeks
 **Depends on:** M5
 
-**6.1 Scaled dot-product attention**
-- `src/ops/flash_attention_metal.mm`: implement SDPA using MPS matmul + softmax
-  - `Q * K^T` → `MPSMatrixMultiplication`
-  - `/ sqrt(d_k)` → scalar multiply primitive
-  - masking → element-wise add (large negative for masked positions)
-  - `softmax` → already implemented in M5
-  - `* V` → `MPSMatrixMultiplication`
-- **PASS:**
-  ```cpp
-  // tests/attention_test.cc — add Metal case
-  // Input: Q/K/V 4×8×64 (batch×heads×dim)
-  // Metal output vs CPU output: max abs diff < 1e-3
-  ```
+**6.1 Scaled dot-product attention** ✅ DONE (2026-02-25)
+
+Implementation: `metal::sdpa_metal<T>` in `src/metal/primitives_sdpa.mm` +
+`FlashAttention::compute<Device::METAL>` in `src/ops/flash_attention_metal.mm`.
+
+Algorithm per (b, h):
+- `scores = scale * Q[b,h] @ K[b,hk]^T`  — MPSMatrixMultiplication (FP32/FP16 encode-only); MPSGraph (BF16 synchronous)
+- `if is_causal: causal_mask_kernel`       — custom MSL in `src/metal/kernels/sdpa.metal`
+- `attn = softmax(scores)`                 — reuses M5.2 softmax_metal
+- `output[b,h] = attn @ V[b,hk]`          — MPSMatrixMultiplication (FP32/FP16); MPSGraph (BF16)
+
+Key design details:
+- Q/K/V layout: `[batch, seqlen, num_heads, head_dim]` (interleaved heads, non-contiguous slices)
+- FP32/FP16: MPS rowBytes parameter handles non-contiguous strides directly
+- BF16: slices are packed to contiguous allocator-registered buffers (MPSGraph requirement)
+- Scores buffer: always allocator-registered (`MetalTempBuf` RAII) so `metal_buffer_for_ptr` can find it
+- GQA: `hk = h % num_heads_k`
+- M6.1 scope: `offset == 0` only; throws for KV cache, rotary, ALiBi, sliding window, attention weight output
+
+**PASS:** 8/8 tests in `tests/metal/sdpa_test.mm`
+- float32 non-causal/causal, multi-head (batch=2), GQA: max err < 1.2e-7
+- float16 non-causal/causal: max err < 2.5e-4
+- bfloat16 non-causal/causal: max err < 2.0e-3
+
+Report: `agents/report/milestone-6.1-sdpa.md`
 
 **6.2 KV-cache update (`update_state`)**
 - The decoder caches keys/values across steps — ensure Metal StorageViews support this correctly

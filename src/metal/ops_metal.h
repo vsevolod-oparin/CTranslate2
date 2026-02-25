@@ -1,11 +1,12 @@
 // src/metal/ops_metal.h
 //
 // Declarations for Metal dispatch functions used by high-level ops
-// (LayerNorm, RMSNorm, SoftMax, Gather).  Implemented in
-// src/metal/primitives_norm_gather.mm.
+// (LayerNorm, RMSNorm, SoftMax, Gather, SDPA).  Implemented in
+// src/metal/primitives_norm_gather.mm and src/metal/primitives_sdpa.mm.
 //
 // Include only from .mm files compiled with Metal support (CT2_WITH_METAL).
 // Part of M5.2 — Metal op specializations.
+// Part of M6.1 — Scaled dot-product attention.
 
 #pragma once
 
@@ -43,6 +44,18 @@ namespace ctranslate2 {
     void gather_metal(const T* src, T* dst, const int32_t* indices,
                       dim_t copy_size, dim_t batch_stride,
                       dim_t num_indices_per_batch, dim_t total_elements);
+
+    // sdpa_metal: scaled dot-product attention.
+    //   q/k/v layout: [batch, seqlen, num_heads, head_dim] (interleaved heads).
+    //   output layout: same shape as q.
+    //   scale: multiplied into Q * K^T before softmax.
+    //   is_causal: apply causal mask (scores[col > row] = large_neg).
+    //   M6.1 scope: offset == 0 only (no KV cache).
+    template <typename T>
+    void sdpa_metal(const T* q, const T* k, const T* v, T* output,
+                    dim_t batch_size, dim_t seqlen_q, dim_t seqlen_k,
+                    dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
+                    float scale, bool is_causal);
 
   }  // namespace metal
 }  // namespace ctranslate2

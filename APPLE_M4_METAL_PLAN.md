@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.5 complete (activation/transcendental primitives)
+**Status:** In progress — Milestone 4.7 complete (beam-search and attention-mask primitives)
 
 ---
 

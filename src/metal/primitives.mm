@@ -502,6 +502,132 @@ static void dispatch_broadcast2(const char* kernel_name,
 }
 
 // ---------------------------------------------------------------------------
+// M4.7 — Beam-search kernel infrastructure
+// ---------------------------------------------------------------------------
+
+// MSL source for beam-search kernels.
+// Canonical copy lives in src/metal/kernels/beam_search.metal.
+static constexpr const char* kBeamSearchMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_PENALIZE(T)                                                      \
+kernel void penalize_previous_tokens_##T(                                       \
+    device       T*       scores          [[buffer(0)]],                        \
+    device const T*       previous_scores [[buffer(1)]],                        \
+    device const int*     previous_ids    [[buffer(2)]],                        \
+    constant     float&   penalty         [[buffer(3)]],                        \
+    constant     uint&    length          [[buffer(4)]],                        \
+    constant     uint&    vocab_size      [[buffer(5)]],                        \
+    uint batch_idx [[thread_position_in_grid]])                                 \
+{                                                                               \
+  for (uint j = 0; j < length; ++j) {                                          \
+    uint read_idx  = batch_idx * length + j;                                    \
+    uint write_idx = batch_idx * vocab_size + (uint)previous_ids[read_idx];    \
+    float score = (float)previous_scores[read_idx];                             \
+    float penalized = (score < 0.f) ? score * penalty : score / penalty;       \
+    scores[write_idx] = (T)penalized;                                           \
+  }                                                                             \
+}
+
+DEFINE_PENALIZE(float)
+DEFINE_PENALIZE(half)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_PENALIZE(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the beam-search MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_beam_search_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kBeamSearchMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:nil
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile beam_search library";
+      if (err)
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO cache for beam-search kernels.
+static id<MTLComputePipelineState> get_beam_search_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLLibrary> lib = get_beam_search_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil) {
+    throw std::runtime_error(std::string("Metal: beam_search kernel not found: ") + name);
+  }
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: beam_search PSO creation failed for ") + name;
+    if (err)
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Dispatch penalize_previous_tokens: one thread per batch item.
+// Each thread iterates over `length` previous IDs sequentially.
+// Sequential within a thread ensures correct semantics when the same
+// token ID appears multiple times (last write wins, matching CPU).
+static void dispatch_penalize(const char* kernel_name,
+                               void* scores,
+                               const void* previous_scores,
+                               const void* previous_ids,
+                               float penalty,
+                               uint32_t batch_size,
+                               uint32_t length,
+                               uint32_t vocab_size) {
+  if (batch_size == 0 || length == 0) return;
+  id<MTLComputePipelineState> pso = get_beam_search_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_s = 0, off_ps = 0, off_pi = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(scores, &off_s)
+          offset:off_s atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(previous_scores, &off_ps)
+          offset:off_ps atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(previous_ids, &off_pi)
+          offset:off_pi atIndex:2];
+  [enc setBytes:&penalty    length:sizeof(float)    atIndex:3];
+  [enc setBytes:&length     length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&vocab_size length:sizeof(uint32_t) atIndex:5];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(batch_size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(batch_size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// ---------------------------------------------------------------------------
 // M4.3 — Parallel reduction infrastructure
 // ---------------------------------------------------------------------------
 
@@ -1064,10 +1190,14 @@ namespace ctranslate2 {
   // primitives<Device::METAL>
   // -------------------------------------------------------------------------
 
-  // at — unified memory: direct CPU read is always valid.
+  // at — unified memory: GPU writes are visible to CPU only after the pending
+  // command buffer is committed and completes.  Flush before reading so the
+  // caller always sees up-to-date data, even when called immediately after a
+  // GPU kernel that wrote x (e.g. max_element → scalar readback in beam search).
   template<>
   template <typename T>
   T primitives<Device::METAL>::at(const T* x, dim_t index) {
+    metal::commit_and_wait();  // flush any pending GPU writes to x
     return x[index];
   }
 
@@ -1376,17 +1506,51 @@ namespace ctranslate2 {
     dispatch_broadcast1(kname, a, b, c, b_size, static_cast<uint32_t>(a_size));
   }
 
+  // M4.7 — penalize_previous_tokens — GPU kernel (one thread per batch item).
   template<>
   template <typename T>
   void primitives<Device::METAL>::penalize_previous_tokens(
-      T*, const T*, const int32_t*, T, dim_t, dim_t, dim_t) {
-    METAL_STUB(penalize_previous_tokens);
+      T* scores, const T* previous_scores, const int32_t* previous_ids,
+      T penalty, dim_t batch_size, dim_t length, dim_t vocabulary_size) {
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "penalize_previous_tokens_%s",
+                  MetalTypeName<T>::value);
+    dispatch_penalize(kname,
+                      scores, previous_scores, previous_ids,
+                      static_cast<float>(penalty),
+                      static_cast<uint32_t>(batch_size),
+                      static_cast<uint32_t>(length),
+                      static_cast<uint32_t>(vocabulary_size));
   }
 
+  // M4.7 — prepare_length_mask — CPU-side with GPU flush.
+  //
+  // Mask creation is O(batch × heads × queries) — typically small (e.g.
+  // 8 × 8 × 512 = 32 K ints).  The GPU overhead of scheduling a kernel
+  // dominates for these sizes, so CPU is the correct implementation.
+  //
+  // `lengths` may have been written by a prior GPU operation (e.g. a gather
+  // over a padded-batch lengths tensor).  commit_and_wait() ensures those
+  // writes are committed and visible to the CPU before the loop reads them.
+  //
+  // CPU writes to a Shared-mode MTLBuffer are immediately coherent with the
+  // GPU on Apple Silicon — no extra flush is needed before the next kernel.
   template<>
   void primitives<Device::METAL>::prepare_length_mask(
-      const int32_t*, dim_t, dim_t, dim_t, bool, bool, int32_t*) {
-    METAL_STUB(prepare_length_mask);
+      const int32_t* lengths, dim_t batch_size, dim_t num_heads,
+      dim_t num_queries, bool mask_future, bool multi_query, int32_t* mask) {
+    metal::commit_and_wait();  // flush any pending GPU writes to lengths
+    for (dim_t b = 0; b < batch_size; ++b) {
+      const auto length = lengths[b];
+      auto* batch_mask = mask + b * num_heads * num_queries;
+      for (dim_t i = 0; i < num_heads * num_queries; ++i) {
+        batch_mask[i] = (mask_future
+                         ? std::min(length,
+                                    int32_t((multi_query ? i / num_heads
+                                                         : i % num_queries) + 1))
+                         : length);
+      }
+    }
   }
 
   template<>

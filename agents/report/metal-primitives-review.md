@@ -6,20 +6,27 @@ This review covers the Apple Metal backend primitive layer as implemented across
 
 ## 1. Bugs and Correctness Risks
 
-### 1.1 `convert<U,V>` reads stale GPU data
+### 1.1 `convert<U,V>` reads stale GPU data ✅ FIXED (2026-02-25)
 
-**Severity: Medium**
+**Was: Medium — now resolved.**
 
-`primitives<Device::METAL>::convert` is implemented as `std::copy(x, x + size, y)` — a CPU operation executed directly against the unified-memory pointer:
+`primitives<Device::METAL>::convert` was implemented as `std::copy(x, x + size, y)` — a CPU operation executed directly against the unified-memory pointer, with no guard to flush pending GPU writes first.
 
-```
-// src/metal/primitives.mm:1402-1404
+**Applied fix** (`src/metal/primitives.mm`): Added `metal::commit_and_wait()` at the start of `convert`, consistent with the guard already used by `at()`, `logsumexp()`, and `prepare_length_mask()`:
+
+```cpp
 template<>
 template <typename U, typename V>
 void primitives<Device::METAL>::convert(const U* x, V* y, dim_t size) {
+  metal::commit_and_wait();  // flush pending GPU writes before CPU read
   std::copy(x, x + size, y);
 }
 ```
+
+**Test added:** `tests/metal/convert_test.mm` (8/8 pass).
+The primary test (`convert flushes GPU writes`) encodes an `add_scalar` GPU kernel on the source buffer, then immediately calls `convert()` without an explicit sync and verifies the result reflects the GPU-written values (not stale pre-GPU values).
+
+Original description:
 
 If `x` was written by a pending (uncommitted) GPU kernel, `std::copy` reads stale data. On Apple Silicon, the GPU and CPU share physical DRAM, but the Metal API gives no guarantee that GPU writes are visible to the CPU until the command buffer containing those writes has been committed and `waitUntilCompleted` has returned.
 
@@ -29,9 +36,7 @@ All other CPU-reads-after-GPU-write patterns in this file guard with `metal::com
 - `logsumexp<T>()` (line 1774): `metal::commit_and_wait()` with comment "flush any pending GPU writes to x".
 - `prepare_length_mask()` (line 1696): `metal::commit_and_wait()` with comment "flush any pending GPU writes to lengths".
 
-`convert` is the only CPU-read primitive that does not flush. The condition for a silent corruption is: any code path that (1) issues a GPU kernel that writes a buffer, (2) does not call `synchronize_stream()`, and (3) immediately calls `convert` on that buffer. This is not hypothetical — type conversions are routinely applied to output tensors that were just computed on GPU.
-
-**Suggested fix:** Add `metal::commit_and_wait()` at the start of `convert`, consistent with the guard pattern used by `at()`, `logsumexp()`, and `prepare_length_mask()`.
+`convert` was the only CPU-read primitive that did not flush.
 
 ---
 

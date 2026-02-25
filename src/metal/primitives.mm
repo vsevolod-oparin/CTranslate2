@@ -1431,9 +1431,13 @@ namespace ctranslate2 {
 
   // convert — std::copy relies on implicit narrowing/widening conversions
   // defined by half_float::half and bfloat16_t assignment operators.
+  // commit_and_wait() flushes any pending GPU writes to x before the CPU
+  // reads it, matching the same guard used by at(), logsumexp(), and
+  // prepare_length_mask().
   template<>
   template <typename U, typename V>
   void primitives<Device::METAL>::convert(const U* x, V* y, dim_t size) {
+    metal::commit_and_wait();  // flush pending GPU writes before CPU read
     std::copy(x, x + size, y);
   }
 

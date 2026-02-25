@@ -32,87 +32,13 @@
 #include "ctranslate2/primitives.h"
 #include "metal/utils.h"
 #include "type_dispatch.h"
+#include "metal/msl_strings.h"
 
 // ---------------------------------------------------------------------------
 // M4.2 — element-wise compute kernel infrastructure
 // ---------------------------------------------------------------------------
 
 namespace {
-
-// MSL source for element-wise kernels (add, sub, mul in vector and scalar
-// broadcast forms).  This is the exact content of
-// src/metal/kernels/elementwise.metal embedded as a C++ string.
-static constexpr const char* kElementwiseMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-#define DEFINE_BINARY(name, op, T)                                      \
-  kernel void name##_##T(                                               \
-      device const T* a [[buffer(0)]],                                  \
-      device const T* b [[buffer(1)]],                                  \
-      device       T* c [[buffer(2)]],                                  \
-      uint gid [[thread_position_in_grid]])                              \
-  { c[gid] = a[gid] op b[gid]; }
-
-#define DEFINE_SCALAR(name, op, T)                                      \
-  kernel void name##_scalar_##T(                                        \
-      device const T* x [[buffer(0)]],                                  \
-      constant     T& a [[buffer(1)]],                                  \
-      device       T* y [[buffer(2)]],                                  \
-      uint gid [[thread_position_in_grid]])                              \
-  { y[gid] = a op x[gid]; }
-
-#define DEFINE_ALL(T)          \
-  DEFINE_BINARY(add, +, T)    \
-  DEFINE_BINARY(sub, -, T)    \
-  DEFINE_BINARY(mul, *, T)    \
-  DEFINE_SCALAR(add, +, T)    \
-  DEFINE_SCALAR(mul, *, T)
-
-DEFINE_ALL(float)
-DEFINE_ALL(half)
-DEFINE_ALL(int)
-DEFINE_ALL(short)
-DEFINE_ALL(char)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_ALL(bfloat)
-#endif
-
-// Min / Max using ternary comparison (avoids MSL min()/max() overload
-// ambiguity for bfloat; also correct for integer types without float cast).
-#define DEFINE_MINMAX_BINARY(name, sel, T)                              \
-  kernel void name##_##T(                                               \
-      device const T* a [[buffer(0)]],                                  \
-      device const T* b [[buffer(1)]],                                  \
-      device       T* c [[buffer(2)]],                                  \
-      uint gid [[thread_position_in_grid]])                              \
-  { T va = a[gid], vb = b[gid]; c[gid] = (va sel vb) ? va : vb; }
-
-#define DEFINE_MINMAX_SCALAR(name, sel, T)                              \
-  kernel void name##_scalar_##T(                                        \
-      device const T* x [[buffer(0)]],                                  \
-      constant     T& a [[buffer(1)]],                                  \
-      device       T* y [[buffer(2)]],                                  \
-      uint gid [[thread_position_in_grid]])                              \
-  { T vx = x[gid]; y[gid] = (vx sel a) ? vx : a; }
-
-#define DEFINE_MINMAX(T)              \
-  DEFINE_MINMAX_BINARY(min, <, T)    \
-  DEFINE_MINMAX_BINARY(max, >, T)    \
-  DEFINE_MINMAX_SCALAR(min, <, T)    \
-  DEFINE_MINMAX_SCALAR(max, >, T)
-
-DEFINE_MINMAX(float)
-DEFINE_MINMAX(half)
-DEFINE_MINMAX(int)
-DEFINE_MINMAX(short)
-DEFINE_MINMAX(char)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_MINMAX(bfloat)
-#endif
-)msl";
 
 // ---------------------------------------------------------------------------
 // Shared infrastructure: library compilation and PSO caching (2.1 / 2.2)
@@ -277,66 +203,6 @@ static constexpr size_t kKernelNameBufSize = 64;
 // M4.5 — Activation / transcendental kernel infrastructure
 // ---------------------------------------------------------------------------
 
-// MSL source for all unary activation and transcendental kernels.
-// This is the exact content of src/metal/kernels/activation.metal embedded
-// as a C++ string and compiled at runtime via newLibraryWithSource:.
-static constexpr const char* kActivationMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-// Metal Shading Language does not provide erf() in metal_stdlib, even when
-// MTLLanguageVersion3_1 is requested.  We therefore implement it via the
-// Abramowitz & Stegun polynomial approximation (formula 7.1.28,
-// max absolute error 1.5e-7); this also makes the activation library
-// compile-option-free (nil opts, matching the other five groups):
-//
-//   t = 1 / (1 + 0.3275911 * |x|)
-//   erf(x) ≈ sign(x) * (1 - poly(t) * exp(-x*x))
-//   poly(t) = t*(a1 + t*(a2 + t*(a3 + t*(a4 + t*a5))))
-//
-// Always operates in float32 regardless of kernel input type.
-static float ct2_erf(float x) {
-  const float p  = 0.3275911f;
-  const float a1 =  0.254829592f;
-  const float a2 = -0.284496736f;
-  const float a3 =  1.421413741f;
-  const float a4 = -1.453152027f;
-  const float a5 =  1.061405429f;
-  float sign = (x >= 0.f) ? 1.f : -1.f;
-  float ax = fabs(x);
-  float t  = 1.f / (1.f + p * ax);
-  float poly = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-  return sign * (1.f - poly * exp(-ax * ax));
-}
-
-#define DEFINE_UNARY(name, T, expr)                     \
-kernel void name##_##T(                                 \
-    device const T* x [[buffer(0)]],                    \
-    device       T* y [[buffer(1)]],                    \
-    uint gid [[thread_position_in_grid]])                \
-{ float v = (float)x[gid]; y[gid] = (T)(expr); }
-
-#define DEFINE_ACTIVATION_OPS(T)                                                         \
-  DEFINE_UNARY(exp,          T, exp(v))                                                  \
-  DEFINE_UNARY(log,          T, log(v))                                                  \
-  DEFINE_UNARY(cos,          T, cos(v))                                                  \
-  DEFINE_UNARY(sin,          T, sin(v))                                                  \
-  DEFINE_UNARY(tanh,         T, tanh(v))                                                 \
-  DEFINE_UNARY(relu,         T, fmax(v, 0.f))                                            \
-  DEFINE_UNARY(sigmoid,      T, 1.f / (1.f + exp(-v)))                                  \
-  DEFINE_UNARY(swish,        T, v / (1.f + exp(-v)))                                    \
-  DEFINE_UNARY(gelu,         T, 0.5f * v * (1.f + ct2_erf(v * 0.7071067811865475f)))   \
-  DEFINE_UNARY(gelu_tanh,    T, 0.5f * v * (1.f + tanh(0.7978845608028654f *            \
-                                (v + 0.044715f * v * v * v))))                           \
-  DEFINE_UNARY(gelu_sigmoid, T, v / (1.f + exp(-1.702f * v)))
-
-DEFINE_ACTIVATION_OPS(float)
-DEFINE_ACTIVATION_OPS(half)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_ACTIVATION_OPS(bfloat)
-#endif
-)msl";
 
 // Lazy-compile the activation MSL library.  Thread-safe; compiled once.
 // We request Metal 3.1 (macOS 14+) to ensure erf() is available — it was
@@ -385,56 +251,6 @@ static void dispatch_unary(const char* kernel_name,
 // M4.6 — Broadcast kernel infrastructure
 // ---------------------------------------------------------------------------
 
-// MSL source for broadcast kernels.
-// Canonical copy lives in src/metal/kernels/broadcast.metal.
-static constexpr const char* kBroadcastMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-#define DEFINE_BATCH_BROADCAST(name, op, T)                              \
-kernel void name##_batch_broadcast_##T(                                  \
-    device const T* a    [[buffer(0)]],                                  \
-    device const T* b    [[buffer(1)]],                                  \
-    device       T* c    [[buffer(2)]],                                  \
-    constant  uint& a_size [[buffer(3)]],                                \
-    uint gid [[thread_position_in_grid]])                                 \
-{ c[gid] = a[gid % a_size] op b[gid]; }
-
-#define DEFINE_DEPTH_BROADCAST(name, op, T)                              \
-kernel void name##_depth_broadcast_##T(                                  \
-    device const T* a    [[buffer(0)]],                                  \
-    device const T* b    [[buffer(1)]],                                  \
-    device       T* c    [[buffer(2)]],                                  \
-    constant  uint& depth [[buffer(3)]],                                 \
-    uint gid [[thread_position_in_grid]])                                 \
-{ c[gid] = a[gid / depth] op b[gid]; }
-
-#define DEFINE_BLOCK_BROADCAST(name, op, T)                              \
-kernel void name##_block_broadcast_##T(                                  \
-    device const T* a    [[buffer(0)]],                                  \
-    device const T* b    [[buffer(1)]],                                  \
-    device       T* c    [[buffer(2)]],                                  \
-    constant  uint& block  [[buffer(3)]],                                \
-    constant  uint& a_size [[buffer(4)]],                                \
-    uint gid [[thread_position_in_grid]])                                 \
-{ c[gid] = a[(gid / block) % a_size] op b[gid]; }
-
-#define DEFINE_BROADCAST_OPS(T)       \
-  DEFINE_BATCH_BROADCAST(add, +, T)   \
-  DEFINE_DEPTH_BROADCAST(add, +, T)   \
-  DEFINE_BLOCK_BROADCAST(add, +, T)   \
-  DEFINE_BATCH_BROADCAST(mul, *, T)
-
-DEFINE_BROADCAST_OPS(float)
-DEFINE_BROADCAST_OPS(half)
-DEFINE_BROADCAST_OPS(int)
-DEFINE_BROADCAST_OPS(short)
-DEFINE_BROADCAST_OPS(char)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_BROADCAST_OPS(bfloat)
-#endif
-)msl";
 
 static id<MTLLibrary> get_broadcast_library() {
   static id<MTLLibrary> lib = nil;
@@ -503,38 +319,6 @@ static void dispatch_broadcast2(const char* kernel_name,
 // M4.7 — Beam-search kernel infrastructure
 // ---------------------------------------------------------------------------
 
-// MSL source for beam-search kernels.
-// Canonical copy lives in src/metal/kernels/beam_search.metal.
-static constexpr const char* kBeamSearchMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-#define DEFINE_PENALIZE(T)                                                      \
-kernel void penalize_previous_tokens_##T(                                       \
-    device       T*       scores          [[buffer(0)]],                        \
-    device const T*       previous_scores [[buffer(1)]],                        \
-    device const int*     previous_ids    [[buffer(2)]],                        \
-    constant     float&   penalty         [[buffer(3)]],                        \
-    constant     uint&    length          [[buffer(4)]],                        \
-    constant     uint&    vocab_size      [[buffer(5)]],                        \
-    uint batch_idx [[thread_position_in_grid]])                                 \
-{                                                                               \
-  for (uint j = 0; j < length; ++j) {                                          \
-    uint read_idx  = batch_idx * length + j;                                    \
-    uint write_idx = batch_idx * vocab_size + (uint)previous_ids[read_idx];    \
-    float score = (float)previous_scores[read_idx];                             \
-    float penalized = (score < 0.f) ? score * penalty : score / penalty;       \
-    scores[write_idx] = (T)penalized;                                           \
-  }                                                                             \
-}
-
-DEFINE_PENALIZE(float)
-DEFINE_PENALIZE(half)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_PENALIZE(bfloat)
-#endif
-)msl";
 
 static id<MTLLibrary> get_beam_search_library() {
   static id<MTLLibrary> lib = nil;
@@ -605,60 +389,6 @@ struct TransposeArgs4D {
   uint32_t bd1, bd2;
 };
 
-// MSL source for transpose kernels.
-// Canonical copy lives in src/metal/kernels/transpose.metal.
-static constexpr const char* kTransposeMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-struct TransposeArgs2D { uint rows, cols; };
-struct TransposeArgs3D { uint a_ps0, a_ps1, a_ps2; uint b_s0, b_s1; uint bd1; };
-struct TransposeArgs4D { uint a_ps0, a_ps1, a_ps2, a_ps3; uint b_s0, b_s1, b_s2; uint bd1, bd2; };
-
-#define DEFINE_TRANSPOSE(T)                                                     \
-kernel void transpose_2d_##T(                                                   \
-    device const T*           a    [[buffer(0)]],                               \
-    device       T*           b    [[buffer(1)]],                               \
-    constant TransposeArgs2D& args [[buffer(2)]],                               \
-    uint gid [[thread_position_in_grid]])                                        \
-{ b[gid] = a[(gid % args.rows) * args.cols + (gid / args.rows)]; }             \
-                                                                                \
-kernel void transpose_3d_##T(                                                   \
-    device const T*           a    [[buffer(0)]],                               \
-    device       T*           b    [[buffer(1)]],                               \
-    constant TransposeArgs3D& args [[buffer(2)]],                               \
-    uint gid [[thread_position_in_grid]])                                        \
-{                                                                               \
-  uint i0 =  gid / args.b_s0;                                                  \
-  uint i1 = (gid / args.b_s1) % args.bd1;                                      \
-  uint i2 =  gid % args.b_s1;                                                  \
-  b[gid] = a[i0 * args.a_ps0 + i1 * args.a_ps1 + i2 * args.a_ps2];            \
-}                                                                               \
-                                                                                \
-kernel void transpose_4d_##T(                                                   \
-    device const T*           a    [[buffer(0)]],                               \
-    device       T*           b    [[buffer(1)]],                               \
-    constant TransposeArgs4D& args [[buffer(2)]],                               \
-    uint gid [[thread_position_in_grid]])                                        \
-{                                                                               \
-  uint i0 =  gid / args.b_s0;                                                  \
-  uint i1 = (gid / args.b_s1) % args.bd1;                                      \
-  uint i2 = (gid / args.b_s2) % args.bd2;                                      \
-  uint i3 =  gid % args.b_s2;                                                  \
-  b[gid] = a[i0 * args.a_ps0 + i1 * args.a_ps1 +                               \
-             i2 * args.a_ps2 + i3 * args.a_ps3];                               \
-}
-
-DEFINE_TRANSPOSE(float)
-DEFINE_TRANSPOSE(half)
-DEFINE_TRANSPOSE(int)
-DEFINE_TRANSPOSE(short)
-DEFINE_TRANSPOSE(char)
-
-#if defined(__HAVE_BFLOAT__)
-DEFINE_TRANSPOSE(bfloat)
-#endif
-)msl";
 
 // Lazy-compile the transpose MSL library.  Thread-safe; compiled once.
 static id<MTLLibrary> get_transpose_library() {
@@ -699,142 +429,6 @@ static void dispatch_transpose(const char* kname,
 // M4.3 — Parallel reduction infrastructure
 // ---------------------------------------------------------------------------
 
-// MSL source for two-pass reduction kernels (sum, max, amax, max_element).
-// Canonical copy lives in src/metal/kernels/reduction.metal.
-static constexpr const char* kReductionMSL = R"msl(
-#include <metal_stdlib>
-using namespace metal;
-
-// ---- SUM ----
-#define DEFINE_REDUCE_SUM(T, ZERO)                                       \
-kernel void reduce_sum_##T(                                              \
-    device const T*      inp   [[buffer(0)]],                            \
-    device       T*      out   [[buffer(1)]],                            \
-    constant  uint32_t&  n     [[buffer(2)]],                            \
-    threadgroup T*       shmem [[threadgroup(0)]],                       \
-    uint gid  [[thread_position_in_grid]],                               \
-    uint tid  [[thread_index_in_threadgroup]],                           \
-    uint tgid [[threadgroup_position_in_grid]],                          \
-    uint tgs  [[threads_per_threadgroup]])                               \
-{                                                                        \
-    shmem[tid] = (gid < n) ? inp[gid] : ZERO;                           \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
-    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
-        if (tid < s) { shmem[tid] += shmem[tid + s]; }                  \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
-    }                                                                    \
-    if (tid == 0) { out[tgid] = shmem[0]; }                             \
-}
-DEFINE_REDUCE_SUM(float, 0.f)
-DEFINE_REDUCE_SUM(half,  (half)0)
-DEFINE_REDUCE_SUM(int,   0)
-DEFINE_REDUCE_SUM(short, (short)0)
-DEFINE_REDUCE_SUM(char,  (char)0)
-#if defined(__HAVE_BFLOAT__)
-DEFINE_REDUCE_SUM(bfloat, (bfloat)0)
-#endif
-
-// ---- MAX ----
-// Use explicit comparison instead of max() to avoid MSL overload ambiguity
-// for bfloat (no dedicated bfloat max() overload on all SDK versions).
-#define DEFINE_REDUCE_MAX(T, NEG_INF)                                    \
-kernel void reduce_max_##T(                                              \
-    device const T*      inp   [[buffer(0)]],                            \
-    device       T*      out   [[buffer(1)]],                            \
-    constant  uint32_t&  n     [[buffer(2)]],                            \
-    threadgroup T*       shmem [[threadgroup(0)]],                       \
-    uint gid  [[thread_position_in_grid]],                               \
-    uint tid  [[thread_index_in_threadgroup]],                           \
-    uint tgid [[threadgroup_position_in_grid]],                          \
-    uint tgs  [[threads_per_threadgroup]])                               \
-{                                                                        \
-    shmem[tid] = (gid < n) ? inp[gid] : NEG_INF;                        \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
-    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
-        if (tid < s && shmem[tid + s] > shmem[tid]) {                   \
-            shmem[tid] = shmem[tid + s];                                 \
-        }                                                                 \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
-    }                                                                    \
-    if (tid == 0) { out[tgid] = shmem[0]; }                             \
-}
-DEFINE_REDUCE_MAX(float, -FLT_MAX)
-DEFINE_REDUCE_MAX(half,  (half)(-FLT_MAX))
-DEFINE_REDUCE_MAX(int,   (int)0x80000000)
-DEFINE_REDUCE_MAX(short, (short)0x8000)
-DEFINE_REDUCE_MAX(char,  (char)0x80)
-#if defined(__HAVE_BFLOAT__)
-DEFINE_REDUCE_MAX(bfloat, (bfloat)(-FLT_MAX))
-#endif
-
-// ---- AMAX (output always float*) ----
-#define DEFINE_REDUCE_AMAX(T)                                            \
-kernel void reduce_amax_##T(                                             \
-    device const T*      inp   [[buffer(0)]],                            \
-    device       float*  out   [[buffer(1)]],                            \
-    constant  uint32_t&  n     [[buffer(2)]],                            \
-    threadgroup float*   shmem [[threadgroup(0)]],                       \
-    uint gid  [[thread_position_in_grid]],                               \
-    uint tid  [[thread_index_in_threadgroup]],                           \
-    uint tgid [[threadgroup_position_in_grid]],                          \
-    uint tgs  [[threads_per_threadgroup]])                               \
-{                                                                        \
-    shmem[tid] = (gid < n) ? fabs((float)inp[gid]) : 0.f;               \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
-    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
-        if (tid < s) { shmem[tid] = max(shmem[tid], shmem[tid + s]); }  \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
-    }                                                                    \
-    if (tid == 0) { out[tgid] = shmem[0]; }                             \
-}
-DEFINE_REDUCE_AMAX(float)
-DEFINE_REDUCE_AMAX(half)
-DEFINE_REDUCE_AMAX(int)
-DEFINE_REDUCE_AMAX(short)
-DEFINE_REDUCE_AMAX(char)
-#if defined(__HAVE_BFLOAT__)
-DEFINE_REDUCE_AMAX(bfloat)
-#endif
-
-// ---- MAX_ELEMENT (values in float, indices in uint32_t) ----
-#define DEFINE_REDUCE_MAX_ELEMENT(T)                                           \
-kernel void reduce_max_element_##T(                                            \
-    device const T*        inp      [[buffer(0)]],                             \
-    device       float*    out_vals [[buffer(1)]],                             \
-    device    uint32_t*    out_idxs [[buffer(2)]],                             \
-    constant  uint32_t&    n        [[buffer(3)]],                             \
-    threadgroup float*     sh_vals  [[threadgroup(0)]],                        \
-    threadgroup uint32_t*  sh_idxs  [[threadgroup(1)]],                        \
-    uint gid  [[thread_position_in_grid]],                                     \
-    uint tid  [[thread_index_in_threadgroup]],                                 \
-    uint tgid [[threadgroup_position_in_grid]],                                \
-    uint tgs  [[threads_per_threadgroup]])                                     \
-{                                                                              \
-    bool in_range = (gid < n);                                                 \
-    sh_vals[tid]  = in_range ? (float)inp[gid] : -FLT_MAX;                    \
-    sh_idxs[tid]  = in_range ? gid             : 0xFFFFFFFFu;                 \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                           \
-    for (uint s = tgs >> 1; s > 0; s >>= 1) {                                 \
-        if (tid < s && sh_vals[tid + s] > sh_vals[tid]) {                      \
-            sh_vals[tid] = sh_vals[tid + s];                                   \
-            sh_idxs[tid] = sh_idxs[tid + s];                                  \
-        }                                                                      \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
-    }                                                                          \
-    if (tid == 0) {                                                            \
-        out_vals[tgid] = sh_vals[0];                                           \
-        out_idxs[tgid] = sh_idxs[0];                                          \
-    }                                                                          \
-}
-DEFINE_REDUCE_MAX_ELEMENT(float)
-DEFINE_REDUCE_MAX_ELEMENT(half)
-DEFINE_REDUCE_MAX_ELEMENT(int)
-DEFINE_REDUCE_MAX_ELEMENT(short)
-DEFINE_REDUCE_MAX_ELEMENT(char)
-#if defined(__HAVE_BFLOAT__)
-DEFINE_REDUCE_MAX_ELEMENT(bfloat)
-#endif
-)msl";
 
 // Lazy-compile the reduction MSL library.  Thread-safe; compiled once.
 static id<MTLLibrary> get_reduction_library() {

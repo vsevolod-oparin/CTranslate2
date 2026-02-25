@@ -511,6 +511,38 @@ if(WITH_METAL)
   enable_language(OBJCXX)
   add_definitions(-DCT2_WITH_METAL)
   list(APPEND SOURCES ${METAL_SOURCES})
+
+  # check_msl_sync — verify src/metal/msl_strings.h matches the canonical
+  # .metal source files.  Runs automatically on every Metal build; only
+  # re-executes the Python script when a .metal file or the header changes.
+  # If they diverge, the build fails with instructions to regenerate.
+  find_program(PYTHON3_EXECUTABLE NAMES python3)
+  if(PYTHON3_EXECUTABLE)
+    set(_MSL_METAL_SOURCES
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/elementwise.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/activation.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/broadcast.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/beam_search.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/transpose.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/reduction.metal
+    )
+    add_custom_command(
+      OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp
+      COMMAND ${PYTHON3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/tools/gen_msl_strings.py --check
+      COMMAND ${CMAKE_COMMAND} -E touch ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp
+      DEPENDS ${_MSL_METAL_SOURCES}
+              ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/msl_strings.h
+      WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+      COMMENT "Checking src/metal/msl_strings.h is in sync with .metal sources"
+      VERBATIM
+    )
+    add_custom_target(check_msl_sync ALL
+      DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp
+    )
+  else()
+    message(WARNING "python3 not found; check_msl_sync will not run automatically")
+  endif()
 endif()
 
 if (WITH_CUDA)

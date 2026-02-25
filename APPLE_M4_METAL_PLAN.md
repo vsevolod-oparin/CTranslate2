@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 2.1 complete
+**Status:** In progress — Milestone 2.4 complete
 
 ---
 
@@ -255,20 +255,25 @@ Metal execution model chosen for CTranslate2:
   (standalone build, no cmake dependency). Both `.mm` files compile in cmake build.
   See `agents/report/milestone-2.1-metal-context.md` for full details.
 
-**2.2 Implement `synchronize_device` / `synchronize_stream` for Metal**
-- `src/devices.cc`: Metal case calls `commit_command_buffer()` then `[commandBuffer waitUntilCompleted]`
-- **PASS:**
-  ```cpp
-  // Encode a no-op blit, synchronize, verify no crash/hang
-  synchronize_device(Device::METAL, 0);  // completes within 100ms
-  ```
+**2.2 Implement `synchronize_device` / `synchronize_stream` for Metal** ✅ DONE (2026-02-25)
+- `src/devices.cc`: both functions call `metal::commit_and_wait()` under `CT2_WITH_METAL` guard
+  (implemented in M2.1; verified by `tests/metal/sync_scoped_test.mm`)
+- **Actual result:**
+  - `commit_and_wait()` with no encoded commands: no-op (returns immediately)
+  - Encode 64-byte blit → `commit_and_wait()`: no error; GPU data verified correct
+  - Fresh command buffer ready after sync; differs from committed buffer
+  - 5/5 assertions pass
+  See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full details.
 
-**2.3 Extend `ScopedDeviceSetter` for Metal**
-- Metal has one GPU, so `set_device_index(Device::METAL, 0)` is a no-op
-- `get_device_index(Device::METAL)` always returns 0
-- **PASS:** `ScopedDeviceSetter setter(Device::METAL, 0);` — compiles and runs without error
+**2.3 Extend `ScopedDeviceSetter` for Metal** ✅ DONE (2026-02-25)
+- `get_device_index<Device::METAL>()` always returns 0 (one GPU per Apple Silicon system)
+- `set_device_index<Device::METAL>(0)` is a no-op; index ≠ 0 throws `std::invalid_argument`
+- `ScopedDeviceSetter` RAII template works without modification
+  (implemented in M1.1 `src/metal/device.h`; verified by `tests/metal/sync_scoped_test.mm`)
+- **Actual result:** 5/5 assertions pass
+  See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full details.
 
-**2.4 Error handling strategy**
+**2.4 Error handling strategy** ✅ DONE (2026-02-25)
 
 Metal operations can fail asynchronously. Define consistent error handling:
 
@@ -315,6 +320,10 @@ Error recovery:
 - Command buffer errors: Mark current batch as failed, throw with GPU diagnostics
 - Out of memory: Try allocator cache flush (`alloc.clear_cache()`), then fail gracefully
 - GPU fault: Log `buf.error.localizedDescription`, throw `std::runtime_error`
+
+**Actual result:** Both macros implemented in `src/metal/utils.h` (M2.1); used by
+`commit_and_wait()` and every subsequent `.mm` primitive file. No test failures observed.
+See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full details.
 
 ---
 

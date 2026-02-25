@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 1 complete
+**Status:** In progress — Milestone 2.1 complete
 
 ---
 
@@ -243,28 +243,17 @@ Metal execution model chosen for CTranslate2:
   - This matches the CUDA stream model closely
 ```
 
-**2.1 Create `src/metal/` context module**
-- `src/metal/utils.h` / `src/metal/utils.mm`:
-  ```objc
-  id<MTLDevice>       get_metal_device();        // singleton
-  id<MTLCommandQueue> get_metal_command_queue();  // thread_local
-  id<MTLCommandBuffer> get_current_command_buffer(); // encode into this
-  void commit_command_buffer();                  // = synchronize_stream for Metal
-  ```
-- Add `CT2_METAL_CHECK_BUFFER(buf)` and `CT2_METAL_CHECK_OBJ(obj, name)` macros (see M2.4 for definitions and correct usage pattern)
-- **PASS:**
-  ```cpp
-  // tests/metal/context_test.mm (new)
-  auto* dev = get_metal_device();
-  ASSERT_NE(dev, nil);
-  auto* queue = get_metal_command_queue();
-  ASSERT_NE(queue, nil);
-  auto* buf = get_current_command_buffer();
-  ASSERT_NE(buf, nil);
-  commit_command_buffer();
-  // New command buffer created after commit
-  ASSERT_NE(get_current_command_buffer(), buf);
-  ```
+**2.1 Create `src/metal/` context module** ✅ DONE (2026-02-25)
+- `src/metal/utils.h`: single header with `#ifdef __OBJC__` split — C++ section
+  exposes `commit_and_wait()` for `devices.cc`; ObjC++ section exposes the full API
+  and `CT2_METAL_CHECK_BUFFER` / `CT2_METAL_CHECK_OBJ` macros
+- `src/metal/utils.mm`: process-wide device singleton (C++11 static), per-thread
+  `MTLCommandQueue` and `MTLCommandBuffer` (thread_local ARC strong), `commit_and_wait()`
+- `src/devices.cc`: `synchronize_stream` and `synchronize_device` now call `metal::commit_and_wait()`
+- `CMakeLists.txt`: `src/metal/utils.mm` added to `METAL_SOURCES`
+- **Actual result:** 10/10 assertions pass in `tests/metal/context_test.mm`
+  (standalone build, no cmake dependency). Both `.mm` files compile in cmake build.
+  See `agents/report/milestone-2.1-metal-context.md` for full details.
 
 **2.2 Implement `synchronize_device` / `synchronize_stream` for Metal**
 - `src/devices.cc`: Metal case calls `commit_command_buffer()` then `[commandBuffer waitUntilCompleted]`

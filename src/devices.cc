@@ -5,6 +5,7 @@
 #endif
 #ifdef CT2_WITH_METAL
 #  include "metal/device.h"
+#  include "metal/utils.h"
 #endif
 #ifdef CT2_WITH_TENSOR_PARALLEL
 #  include <unistd.h>
@@ -138,9 +139,10 @@ namespace ctranslate2 {
 #endif
 #ifdef CT2_WITH_METAL
     if (device == Device::METAL) {
-      // Metal unified memory: no explicit device-level sync needed.
-      // Command buffer commit + wait is handled by synchronize_stream().
+      // Unified memory: no device-level copy needed.
+      // Flush pending GPU work via the stream sync.
       (void)index;
+      metal::commit_and_wait();
     }
 #endif
 #if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
@@ -157,8 +159,7 @@ namespace ctranslate2 {
 #endif
 #ifdef CT2_WITH_METAL
     if (device == Device::METAL) {
-      // Metal command buffer commit + wait will be implemented in Milestone 2
-      // when the Metal context (MTLCommandQueue, deferred command buffer) is in place.
+      metal::commit_and_wait();
     }
 #endif
 #if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)

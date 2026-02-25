@@ -259,6 +259,7 @@ set(CUDA_SOURCES
 )
 set(METAL_SOURCES
   src/metal/device.mm
+  src/metal/utils.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}

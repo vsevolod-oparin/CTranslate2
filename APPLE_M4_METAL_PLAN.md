@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.2 complete
+**Status:** In progress — Milestone 4.3 complete (GPU two-pass reduction)
 
 ---
 
@@ -400,9 +400,29 @@ See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full det
   mul_scalar (float32/float16/int32), mul_vec (float32/float16), zero-size no-ops.
 - See `agents/report/milestone-4.2-arithmetic-primitives.md` for full design details.
 
-**4.3 Reduction primitives (`sum`, `max`, `amax`, `max_element`)**
-- Use `MPSMatrixSum` or a custom reduction kernel
-- **PASS:** Compare to CPU `std::accumulate` / `std::max_element` within tolerance
+**4.3 Reduction primitives (`sum`, `max`, `amax`, `max_element`)** ✅ DONE (2026-02-25)
+- GPU two-pass parallel reduction via custom MSL compute shaders (256-thread threadgroups).
+- Canonical MSL source: `src/metal/kernels/reduction.metal`; embedded in `primitives.mm`.
+- All 4 ops pass 25/25 correctness assertions (`tests/metal/reduction_bench.mm`).
+- See `agents/report/milestone-4.3-reduction-primitives.md` for full design details.
+
+**Performance (Apple M4, median latency):**
+
+| Op | Standalone GPU wins at | Pipelined GPU wins at |
+|----|:----------------------:|:---------------------:|
+| `sum` | N > ~4M elements | N > ~65K elements |
+| `amax` | N > ~1M elements | N > ~65K elements |
+
+Pipelined = reduction follows an encoded GPU arithmetic op (typical in inference).
+Vocabulary-scale calls (32K–128K) are always in the GPU-wins zone.
+
+**Decision — no CPU fallback threshold in M4.3:**
+A hybrid `if N < threshold: CPU else: GPU` policy was considered and deferred.
+The correct threshold depends on whether pending GPU work is already encoded
+(cold: N > ~4M; pipelined: N > ~65K), which is not visible at the call site.
+Attention-sized reductions (N < 1K, where CPU would win) are not on the critical
+path and will be subsumed by fused softmax kernels in M5+.
+Revisit after end-to-end profiling with a real model (post-M4.4).
 
 **4.4 GEMM (CRITICAL)**
 

@@ -1,4 +1,4 @@
-// primitives<Device::METAL> — M3.2 + M4.1 + M4.2 implementation.
+// primitives<Device::METAL> — M3.2 + M4.1 + M4.2 + M4.3 implementation.
 //
 // All Metal buffers use MTLResourceStorageModeShared (unified memory).
 // Their contents pointer is simultaneously valid for CPU and GPU access.
@@ -18,7 +18,9 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <mutex>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
@@ -194,6 +196,221 @@ template<> struct MetalTypeName<int32_t>                 { static constexpr cons
 // prefixes or type suffixes don't silently truncate via snprintf.
 static constexpr size_t kKernelNameBufSize = 64;
 
+
+// ---------------------------------------------------------------------------
+// M4.3 — Parallel reduction infrastructure
+// ---------------------------------------------------------------------------
+
+// MSL source for two-pass reduction kernels (sum, max, amax, max_element).
+// Canonical copy lives in src/metal/kernels/reduction.metal.
+static constexpr const char* kReductionMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+// ---- SUM ----
+#define DEFINE_REDUCE_SUM(T, ZERO)                                       \
+kernel void reduce_sum_##T(                                              \
+    device const T*      inp   [[buffer(0)]],                            \
+    device       T*      out   [[buffer(1)]],                            \
+    constant  uint32_t&  n     [[buffer(2)]],                            \
+    threadgroup T*       shmem [[threadgroup(0)]],                       \
+    uint gid  [[thread_position_in_grid]],                               \
+    uint tid  [[thread_index_in_threadgroup]],                           \
+    uint tgid [[threadgroup_position_in_grid]],                          \
+    uint tgs  [[threads_per_threadgroup]])                               \
+{                                                                        \
+    shmem[tid] = (gid < n) ? inp[gid] : ZERO;                           \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
+        if (tid < s) { shmem[tid] += shmem[tid + s]; }                  \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
+    }                                                                    \
+    if (tid == 0) { out[tgid] = shmem[0]; }                             \
+}
+DEFINE_REDUCE_SUM(float, 0.f)
+DEFINE_REDUCE_SUM(half,  (half)0)
+DEFINE_REDUCE_SUM(int,   0)
+DEFINE_REDUCE_SUM(short, (short)0)
+DEFINE_REDUCE_SUM(char,  (char)0)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_REDUCE_SUM(bfloat, (bfloat)0)
+#endif
+
+// ---- MAX ----
+// Use explicit comparison instead of max() to avoid MSL overload ambiguity
+// for bfloat (no dedicated bfloat max() overload on all SDK versions).
+#define DEFINE_REDUCE_MAX(T, NEG_INF)                                    \
+kernel void reduce_max_##T(                                              \
+    device const T*      inp   [[buffer(0)]],                            \
+    device       T*      out   [[buffer(1)]],                            \
+    constant  uint32_t&  n     [[buffer(2)]],                            \
+    threadgroup T*       shmem [[threadgroup(0)]],                       \
+    uint gid  [[thread_position_in_grid]],                               \
+    uint tid  [[thread_index_in_threadgroup]],                           \
+    uint tgid [[threadgroup_position_in_grid]],                          \
+    uint tgs  [[threads_per_threadgroup]])                               \
+{                                                                        \
+    shmem[tid] = (gid < n) ? inp[gid] : NEG_INF;                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
+        if (tid < s && shmem[tid + s] > shmem[tid]) {                   \
+            shmem[tid] = shmem[tid + s];                                 \
+        }                                                                 \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
+    }                                                                    \
+    if (tid == 0) { out[tgid] = shmem[0]; }                             \
+}
+DEFINE_REDUCE_MAX(float, -FLT_MAX)
+DEFINE_REDUCE_MAX(half,  (half)(-FLT_MAX))
+DEFINE_REDUCE_MAX(int,   (int)0x80000000)
+DEFINE_REDUCE_MAX(short, (short)0x8000)
+DEFINE_REDUCE_MAX(char,  (char)0x80)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_REDUCE_MAX(bfloat, (bfloat)(-FLT_MAX))
+#endif
+
+// ---- AMAX (output always float*) ----
+#define DEFINE_REDUCE_AMAX(T)                                            \
+kernel void reduce_amax_##T(                                             \
+    device const T*      inp   [[buffer(0)]],                            \
+    device       float*  out   [[buffer(1)]],                            \
+    constant  uint32_t&  n     [[buffer(2)]],                            \
+    threadgroup float*   shmem [[threadgroup(0)]],                       \
+    uint gid  [[thread_position_in_grid]],                               \
+    uint tid  [[thread_index_in_threadgroup]],                           \
+    uint tgid [[threadgroup_position_in_grid]],                          \
+    uint tgs  [[threads_per_threadgroup]])                               \
+{                                                                        \
+    shmem[tid] = (gid < n) ? fabs((float)inp[gid]) : 0.f;               \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                     \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
+        if (tid < s) { shmem[tid] = max(shmem[tid], shmem[tid + s]); }  \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                 \
+    }                                                                    \
+    if (tid == 0) { out[tgid] = shmem[0]; }                             \
+}
+DEFINE_REDUCE_AMAX(float)
+DEFINE_REDUCE_AMAX(half)
+DEFINE_REDUCE_AMAX(int)
+DEFINE_REDUCE_AMAX(short)
+DEFINE_REDUCE_AMAX(char)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_REDUCE_AMAX(bfloat)
+#endif
+
+// ---- MAX_ELEMENT (values in float, indices in uint32_t) ----
+#define DEFINE_REDUCE_MAX_ELEMENT(T)                                           \
+kernel void reduce_max_element_##T(                                            \
+    device const T*        inp      [[buffer(0)]],                             \
+    device       float*    out_vals [[buffer(1)]],                             \
+    device    uint32_t*    out_idxs [[buffer(2)]],                             \
+    constant  uint32_t&    n        [[buffer(3)]],                             \
+    threadgroup float*     sh_vals  [[threadgroup(0)]],                        \
+    threadgroup uint32_t*  sh_idxs  [[threadgroup(1)]],                        \
+    uint gid  [[thread_position_in_grid]],                                     \
+    uint tid  [[thread_index_in_threadgroup]],                                 \
+    uint tgid [[threadgroup_position_in_grid]],                                \
+    uint tgs  [[threads_per_threadgroup]])                                     \
+{                                                                              \
+    bool in_range = (gid < n);                                                 \
+    sh_vals[tid]  = in_range ? (float)inp[gid] : -FLT_MAX;                    \
+    sh_idxs[tid]  = in_range ? gid             : 0xFFFFFFFFu;                 \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                           \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                                 \
+        if (tid < s && sh_vals[tid + s] > sh_vals[tid]) {                      \
+            sh_vals[tid] = sh_vals[tid + s];                                   \
+            sh_idxs[tid] = sh_idxs[tid + s];                                  \
+        }                                                                      \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
+    }                                                                          \
+    if (tid == 0) {                                                            \
+        out_vals[tgid] = sh_vals[0];                                           \
+        out_idxs[tgid] = sh_idxs[0];                                          \
+    }                                                                          \
+}
+DEFINE_REDUCE_MAX_ELEMENT(float)
+DEFINE_REDUCE_MAX_ELEMENT(half)
+DEFINE_REDUCE_MAX_ELEMENT(int)
+DEFINE_REDUCE_MAX_ELEMENT(short)
+DEFINE_REDUCE_MAX_ELEMENT(char)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_REDUCE_MAX_ELEMENT(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the reduction MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_reduction_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kReductionMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:nil
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile reduction library";
+      if (err) {
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      }
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO cache for reduction kernels.
+static id<MTLComputePipelineState> get_reduction_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLLibrary> lib = get_reduction_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil) {
+    throw std::runtime_error(std::string("Metal: reduction kernel not found: ") + name);
+  }
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: reduction PSO creation failed for ") + name;
+    if (err) {
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    }
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Fixed threadgroup size for all reduction kernels.
+// 256 threads/group gives 8 SIMD waves on Apple Silicon (SIMD width = 32),
+// keeping the GPU fully occupied while keeping threadgroup memory small.
+static constexpr uint32_t kReductionTGS = 256;
+
+// Allocate a temporary shared-mode MTLBuffer (not through MetalAllocator).
+// Managed by ARC — released when the local id<MTLBuffer> goes out of scope.
+static id<MTLBuffer> alloc_temp_buffer(NSUInteger bytes) {
+  id<MTLBuffer> buf = [ctranslate2::metal::get_metal_device()
+      newBufferWithLength:bytes
+                 options:MTLResourceStorageModeShared];
+  if (buf == nil) {
+    throw std::runtime_error("Metal: failed to allocate temporary reduction buffer");
+  }
+  return buf;
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -281,28 +498,141 @@ namespace ctranslate2 {
     std::copy(x, x + size, y);
   }
 
+  // M4.3 — Reduction primitives (GPU two-pass parallel reduction).
+  //
+  // Pass 1 (GPU): each threadgroup of kReductionTGS threads reduces its tile
+  //               of input to one partial result in a shared-mode MTLBuffer.
+  // Pass 2 (CPU): the host reduces the ceil(N/kReductionTGS) partial results.
+  //
+  // commit_and_wait() is called before reading partial results; this also
+  // flushes any pending GPU writes to the input array.
+
   template<>
   template <typename T>
   T primitives<Device::METAL>::sum(const T* array, dim_t size) {
-    METAL_STUB(sum);
+    if (size == 0) { return T(0); }
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "reduce_sum_%s", MetalTypeName<T>::value);
+    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
+    NSUInteger inp_off = 0;
+    id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
+    id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(T));
+    id<MTLComputePipelineState> pso = get_reduction_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:inp_buf offset:inp_off        atIndex:0];
+    [enc setBuffer:out_buf offset:0              atIndex:1];
+    [enc setBytes:&n length:sizeof(uint32_t)     atIndex:2];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(T) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+    metal::commit_and_wait();
+    const T* partials = static_cast<const T*>([out_buf contents]);
+    return std::accumulate(partials, partials + num_groups, T(0));
   }
 
   template<>
   template <typename T>
   dim_t primitives<Device::METAL>::max_element(const T* array, dim_t size) {
-    METAL_STUB(max_element);
+    if (size == 0) { return 0; }
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "reduce_max_element_%s", MetalTypeName<T>::value);
+    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
+    NSUInteger inp_off = 0;
+    id<MTLBuffer> inp_buf  = metal_buffer_for_ptr(array, &inp_off);
+    id<MTLBuffer> vals_buf = alloc_temp_buffer(num_groups * sizeof(float));
+    id<MTLBuffer> idxs_buf = alloc_temp_buffer(num_groups * sizeof(uint32_t));
+    id<MTLComputePipelineState> pso = get_reduction_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:inp_buf  offset:inp_off        atIndex:0];
+    [enc setBuffer:vals_buf offset:0              atIndex:1];
+    [enc setBuffer:idxs_buf offset:0              atIndex:2];
+    [enc setBytes:&n length:sizeof(uint32_t)      atIndex:3];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(float)    atIndex:0];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(uint32_t) atIndex:1];
+    [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+    metal::commit_and_wait();
+    const float*    pv = static_cast<const float*>([vals_buf contents]);
+    const uint32_t* pi = static_cast<const uint32_t*>([idxs_buf contents]);
+    float    best_val = pv[0];
+    uint32_t best_idx = pi[0];
+    for (uint32_t g = 1; g < num_groups; ++g) {
+      if (pv[g] > best_val) {
+        best_val = pv[g];
+        best_idx = pi[g];
+      }
+    }
+    return static_cast<dim_t>(best_idx);
   }
 
   template<>
   template <typename T>
   T primitives<Device::METAL>::max(const T* array, dim_t size) {
-    METAL_STUB(max);
+    if (size == 0) { return T(0); }
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "reduce_max_%s", MetalTypeName<T>::value);
+    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
+    NSUInteger inp_off = 0;
+    id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
+    id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(T));
+    id<MTLComputePipelineState> pso = get_reduction_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:inp_buf offset:inp_off        atIndex:0];
+    [enc setBuffer:out_buf offset:0              atIndex:1];
+    [enc setBytes:&n length:sizeof(uint32_t)     atIndex:2];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(T) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+    metal::commit_and_wait();
+    const T* partials = static_cast<const T*>([out_buf contents]);
+    return *std::max_element(partials, partials + num_groups);
   }
 
+  // amax: max of absolute values, returned as type T.
+  // The GPU kernel accumulates in float (handles all numeric types uniformly);
+  // the output partial buffer is always float*.  CPU converts back to T.
   template<>
   template <typename T>
   T primitives<Device::METAL>::amax(const T* array, dim_t size) {
-    METAL_STUB(amax);
+    if (size == 0) { return T(0); }
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "reduce_amax_%s", MetalTypeName<T>::value);
+    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
+    NSUInteger inp_off = 0;
+    id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
+    id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(float));
+    id<MTLComputePipelineState> pso = get_reduction_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:inp_buf offset:inp_off          atIndex:0];
+    [enc setBuffer:out_buf offset:0                atIndex:1];
+    [enc setBytes:&n length:sizeof(uint32_t)       atIndex:2];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(float) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+    metal::commit_and_wait();
+    const float* partials = static_cast<const float*>([out_buf contents]);
+    float result = *std::max_element(partials, partials + num_groups);
+    return T(result);
   }
 
   // M4.2 — add(scalar, vector, out) — GPU kernel

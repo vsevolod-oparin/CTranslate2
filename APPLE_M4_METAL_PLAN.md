@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 2.4 complete
+**Status:** In progress — Milestone 3.1 complete
 
 ---
 
@@ -332,28 +332,19 @@ See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full det
 **Time:** 3–5 days
 **Depends on:** M2
 
-**3.1 Implement `MetalAllocator`**
+**3.1 Implement `MetalAllocator`** ✅ DONE (2026-02-25)
 - `src/metal/allocator.mm`:
-  - Allocate: `[device newBufferWithLength:size options:MTLResourceStorageModeShared]`
-  - Return `[buffer contents]` — the CPU-accessible `void*` to the shared memory
-  - Retain `MTLBuffer` objects in a `std::unordered_map<void*, id<MTLBuffer>>` (protected by mutex)
-  - Free: remove from map (ARC releases the MTLBuffer, memory reclaimed)
-  - Implement buffer pool: reuse freed buffers of matching size (caching allocator)
-- `src/allocator.cc`: `get_allocator<Device::METAL>()` returns `MetalAllocator` singleton
-- **PASS:**
-  ```cpp
-  // tests/metal/allocator_test.mm
-  auto& alloc = get_allocator(Device::METAL);
-  float* ptr = static_cast<float*>(alloc.allocate(1024 * sizeof(float)));
-  ASSERT_NE(ptr, nullptr);
-  ptr[0] = 42.f;                         // CPU write to shared memory
-  ASSERT_EQ(ptr[0], 42.f);              // CPU read back
-  alloc.free(ptr);
-  // Pool test: second alloc of same size returns cached buffer
-  float* ptr2 = static_cast<float*>(alloc.allocate(1024 * sizeof(float)));
-  // (ptr2 should equal ptr if pool works)
-  alloc.free(ptr2);
-  ```
+  - Pool keyed on requested size: `std::unordered_map<size_t, std::vector<id<MTLBuffer>>>`
+  - Live allocations: `std::unordered_map<void*, {requested_size, id<MTLBuffer>}>`
+  - Allocate: check pool first; if miss, `[device newBufferWithLength:size options:MTLResourceStorageModeShared]`; return `[buf contents]`
+  - Free: move from `_live` to `_pool[size]` (ARC retains the `MTLBuffer` in the vector)
+  - `clear_cache()`: `_pool.clear()` — ARC releases all pooled `MTLBuffer` objects
+  - Single `std::mutex` guards both maps
+- `get_allocator<Device::METAL>()` defined in `allocator.mm` (not `src/allocator.cc`);
+  routes via existing `DEVICE_DISPATCH` in `src/allocator.cc`
+- **Actual result:** 14/14 assertions pass in `tests/metal/allocator_test.mm`:
+  allocate/free/pool-hit/cross-size isolation/clear_cache/free(nullptr) no-op/free(unknown) throws
+  See `agents/report/milestone-3.1-metal-allocator.md` for full details.
 
 **3.2 Integrate with `StorageView`**
 - `src/storage_view.cc`: add `Device::METAL` case to `cross_device_primitives<Device::METAL, Device::CPU>::copy()` and vice versa

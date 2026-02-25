@@ -1,0 +1,103 @@
+#import <Foundation/Foundation.h>
+#import <Metal/Metal.h>
+
+#include <mutex>
+#include <stdexcept>
+#include <string>
+#include <unordered_map>
+#include <vector>
+
+#include "ctranslate2/allocator.h"
+#include "metal/utils.h"
+
+namespace ctranslate2 {
+  namespace metal {
+
+    // Caching Metal allocator backed by MTLResourceStorageModeShared.
+    //
+    // On Apple Silicon all memory is physically unified — CPU and GPU share the
+    // same DRAM.  A Shared-mode MTLBuffer gives a stable void* via [buf contents]
+    // that is simultaneously valid for CPU reads/writes and GPU access.
+    // StorageView stores that pointer directly; no cudaMemcpy equivalent is needed.
+    //
+    // Buffer lifetime:
+    //   _live  : ptr → {requested_size, MTLBuffer}   (currently in use)
+    //   _pool  : requested_size → [MTLBuffer, ...]    (available for reuse)
+    //
+    // We key the pool on the *requested* size (not buf.length which Metal may
+    // round up) so that allocate() finds the exact-size bucket it inserted into.
+    //
+    // Thread safety: a single mutex guards both maps.  Allocation is not on the
+    // hot path (buffers are long-lived in CTranslate2's StorageView).
+
+    class MetalAllocator : public Allocator {
+    public:
+      void* allocate(size_t size, int /*device_index*/) override {
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        // Check pool for a cached buffer of the same size.
+        auto pool_it = _pool.find(size);
+        if (pool_it != _pool.end() && !pool_it->second.empty()) {
+          id<MTLBuffer> buf = pool_it->second.back();
+          pool_it->second.pop_back();
+          void* ptr = [buf contents];
+          _live[ptr] = {size, buf};
+          return ptr;
+        }
+
+        // No cached buffer — allocate a new one.
+        id<MTLBuffer> buf = [get_metal_device()
+            newBufferWithLength:size
+                        options:MTLResourceStorageModeShared];
+        if (buf == nil)
+          throw std::runtime_error(
+              "Metal: failed to allocate MTLBuffer of size " + std::to_string(size));
+
+        void* ptr = [buf contents];
+        _live[ptr] = {size, buf};
+        return ptr;
+      }
+
+      void free(void* ptr, int /*device_index*/) override {
+        if (!ptr)
+          return;
+        std::lock_guard<std::mutex> lock(_mutex);
+
+        auto live_it = _live.find(ptr);
+        if (live_it == _live.end())
+          throw std::runtime_error("Metal: attempt to free unknown pointer");
+
+        const size_t     sz  = live_it->second.requested_size;
+        id<MTLBuffer>    buf = live_it->second.buffer;
+        _live.erase(live_it);
+
+        // Return to pool (ARC retains the MTLBuffer through the vector).
+        _pool[sz].push_back(buf);
+      }
+
+      void clear_cache() override {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _pool.clear();  // ARC releases all pooled MTLBuffers.
+      }
+
+    private:
+      struct LiveEntry {
+        size_t        requested_size;
+        id<MTLBuffer> buffer;
+      };
+
+      std::mutex                                               _mutex;
+      std::unordered_map<void*, LiveEntry>                     _live;
+      std::unordered_map<size_t, std::vector<id<MTLBuffer>>>   _pool;
+    };
+
+  }  // namespace metal
+
+
+  template<>
+  Allocator& get_allocator<Device::METAL>() {
+    static metal::MetalAllocator allocator;
+    return allocator;
+  }
+
+}  // namespace ctranslate2

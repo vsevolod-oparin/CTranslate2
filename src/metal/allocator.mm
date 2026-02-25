@@ -44,8 +44,9 @@ namespace ctranslate2 {
         for (auto& [base, entry] : _live) {
           const uint8_t* base_ptr = static_cast<const uint8_t*>(base);
           if (byte_ptr >= base_ptr && byte_ptr < base_ptr + entry.requested_size) {
-            if (offset_out)
+            if (offset_out) {
               *offset_out = static_cast<NSUInteger>(byte_ptr - base_ptr);
+            }
             return entry.buffer;
           }
         }
@@ -70,9 +71,10 @@ namespace ctranslate2 {
         id<MTLBuffer> buf = [get_metal_device()
             newBufferWithLength:size
                         options:MTLResourceStorageModeShared];
-        if (buf == nil)
+        if (buf == nil) {
           throw std::runtime_error(
               "Metal: failed to allocate MTLBuffer of size " + std::to_string(size));
+        }
 
         void* ptr = [buf contents];
         _live[ptr] = {size, buf};
@@ -80,13 +82,15 @@ namespace ctranslate2 {
       }
 
       void free(void* ptr, int /*device_index*/) override {
-        if (!ptr)
+        if (!ptr) {
           return;
+        }
         std::lock_guard<std::mutex> lock(_mutex);
 
         auto live_it = _live.find(ptr);
-        if (live_it == _live.end())
+        if (live_it == _live.end()) {
           throw std::runtime_error("Metal: attempt to free unknown pointer");
+        }
 
         const size_t     sz  = live_it->second.requested_size;
         id<MTLBuffer>    buf = live_it->second.buffer;

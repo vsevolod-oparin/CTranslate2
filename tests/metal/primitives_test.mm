@@ -83,8 +83,9 @@ static void test_fill() {
       primitives<Device::METAL>::fill(p, 3.14f, N)
     );
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(p[i] - 3.14f) > 1e-6f) { ok = false; break; }
+    }
     CHECK("fill<float>: all elements == 3.14f", ok);
     metal_free(p);
   }
@@ -94,8 +95,9 @@ static void test_fill() {
     int32_t* p = metal_alloc<int32_t>(N);
     primitives<Device::METAL>::fill(p, int32_t(0), N);
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (p[i] != 0) { ok = false; break; }
+    }
     CHECK("fill<int32>(0): all elements == 0", ok);
     metal_free(p);
   }
@@ -105,8 +107,9 @@ static void test_fill() {
     int32_t* p = metal_alloc<int32_t>(N);
     primitives<Device::METAL>::fill(p, int32_t(42), N);
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (p[i] != 42) { ok = false; break; }
+    }
     CHECK("fill<int32>(42): all elements == 42", ok);
     metal_free(p);
   }
@@ -116,8 +119,9 @@ static void test_fill() {
     float16_t* p = metal_alloc<float16_t>(N);
     primitives<Device::METAL>::fill(p, float16_t(1.5f), N);
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(static_cast<float>(p[i]) - 1.5f) > 1e-3f) { ok = false; break; }
+    }
     CHECK("fill<float16>(1.5f): all elements ≈ 1.5f", ok);
     metal_free(p);
   }
@@ -133,15 +137,15 @@ static void test_strided_fill() {
   const dim_t N = 8;
   float* p = metal_alloc<float>(N * 2);
   // Zero initialise
-  for (dim_t i = 0; i < N * 2; ++i) p[i] = 0.f;
+  for (dim_t i = 0; i < N * 2; ++i) { p[i] = 0.f; }
 
   // Fill every other element (stride 2) with 7.f
   primitives<Device::METAL>::strided_fill(p, 7.f, /*inc_x=*/2, N);
 
   bool even_ok = true, odd_zero = true;
   for (dim_t i = 0; i < N; ++i) {
-    if (std::fabs(p[i * 2]     - 7.f) > 1e-6f) even_ok  = false;
-    if (std::fabs(p[i * 2 + 1] - 0.f) > 1e-6f) odd_zero = false;
+    if (std::fabs(p[i * 2]     - 7.f) > 1e-6f) { even_ok  = false; }
+    if (std::fabs(p[i * 2 + 1] - 0.f) > 1e-6f) { odd_zero = false; }
   }
   CHECK("strided_fill(stride=2): even positions == 7.f", even_ok);
   CHECK("strided_fill(stride=2): odd positions untouched (0.f)", odd_zero);
@@ -160,7 +164,7 @@ static void test_indexed_fill() {
   float* p = metal_alloc<float>(N);
   int32_t* idx = metal_alloc<int32_t>(3);
 
-  for (dim_t i = 0; i < N; ++i) p[i] = 0.f;
+  for (dim_t i = 0; i < N; ++i) { p[i] = 0.f; }
   idx[0] = 1; idx[1] = 3; idx[2] = 5;
 
   primitives<Device::METAL>::indexed_fill(p, 9.f, idx, 3);
@@ -194,8 +198,9 @@ static void test_convert() {
     primitives<Device::METAL>::convert(static_cast<const float16_t*>(f16), out, N);
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(out[i] - src_f32[i]) > 0.1f) { ok = false; break; }
+    }
     CHECK("convert float32→float16→float32 round-trip (tol 0.1)", ok);
 
     metal_free(f16);
@@ -211,8 +216,9 @@ static void test_convert() {
     primitives<Device::METAL>::convert(static_cast<const bfloat16_t*>(bf16), out, N);
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
+    for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(out[i] - src_f32[i]) > 0.1f) { ok = false; break; }
+    }
     CHECK("convert float32→bfloat16→float32 round-trip (tol 0.1)", ok);
 
     metal_free(bf16);
@@ -222,7 +228,7 @@ static void test_convert() {
   // float16 → bfloat16 → float16 round-trip
   {
     float16_t  f16_src[8];
-    for (int i = 0; i < 8; ++i) f16_src[i] = float16_t(src_f32[i]);
+    for (int i = 0; i < 8; ++i) { f16_src[i] = float16_t(src_f32[i]); }
 
     bfloat16_t* bf16   = metal_alloc<bfloat16_t>(N);
     float16_t*  f16out = metal_alloc<float16_t>(N);
@@ -233,9 +239,9 @@ static void test_convert() {
         static_cast<const bfloat16_t*>(bf16), f16out, N);
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(static_cast<float>(f16out[i]) - src_f32[i]) > 0.1f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(static_cast<float>(f16out[i]) - src_f32[i]) > 0.1f) { ok = false; break; }
+    }
     CHECK("convert float16→bfloat16→float16 round-trip (tol 0.1)", ok);
 
     metal_free(bf16);

@@ -25,8 +25,9 @@ namespace ctranslate2 {
       // MTLCreateSystemDefaultDevice() never throws, so the static is
       // initialised exactly once even if the result is nil.
       static id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-      if (device == nil)
+      if (device == nil) {
         throw std::runtime_error("Metal: no Metal-capable device found");
+      }
       return device;
     }
 
@@ -50,16 +51,18 @@ namespace ctranslate2 {
 
 
     void commit_command_buffer() {
-      if (_thread_buffer == nil)
+      if (_thread_buffer == nil) {
         return;
+      }
       [_thread_buffer commit];
       _thread_buffer = nil;
     }
 
 
     void commit_and_wait() {
-      if (_thread_buffer == nil)
+      if (_thread_buffer == nil) {
         return;
+      }
       // Capture a strong reference before resetting the thread-local slot.
       id<MTLCommandBuffer> buf = _thread_buffer;
       commit_command_buffer();

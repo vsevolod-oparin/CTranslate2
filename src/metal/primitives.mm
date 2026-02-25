@@ -89,8 +89,9 @@ static id<MTLLibrary> get_elementwise_library() {
                        error:&err];
     if (lib == nil) {
       std::string msg = "Metal: failed to compile elementwise library";
-      if (err)
+      if (err) {
         msg += std::string(": ") + [err.localizedDescription UTF8String];
+      }
       throw std::runtime_error(msg);
     }
   });
@@ -104,14 +105,16 @@ static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
 
   std::lock_guard<std::mutex> lock(cache_mutex);
   auto it = cache.find(name);
-  if (it != cache.end())
+  if (it != cache.end()) {
     return it->second;
+  }
 
   id<MTLLibrary> lib = get_elementwise_library();
   NSString* nsname = [NSString stringWithUTF8String:name];
   id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil)
+  if (fn == nil) {
     throw std::runtime_error(std::string("Metal: kernel not found: ") + name);
+  }
 
   NSError* err = nil;
   id<MTLComputePipelineState> pso =
@@ -132,8 +135,9 @@ static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
 static void dispatch_binary(const char* kernel_name,
                              const void* a, const void* b, void* c,
                              ctranslate2::dim_t size) {
-  if (size == 0)
+  if (size == 0) {
     return;
+  }
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -157,8 +161,9 @@ static void dispatch_scalar(const char* kernel_name,
                              const void* scalar_val, size_t scalar_bytes,
                              const void* x, void* y,
                              ctranslate2::dim_t size) {
-  if (size == 0)
+  if (size == 0) {
     return;
+  }
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -255,15 +260,17 @@ namespace ctranslate2 {
   template<>
   template <typename T>
   void primitives<Device::METAL>::strided_fill(T* x, T a, dim_t inc_x, dim_t size) {
-    for (dim_t i = 0; i < size; ++i, x += inc_x)
+    for (dim_t i = 0; i < size; ++i, x += inc_x) {
       *x = a;
+    }
   }
 
   template<>
   template <typename T>
   void primitives<Device::METAL>::indexed_fill(T* x, T a, const int32_t* indices, dim_t num_indices) {
-    for (dim_t i = 0; i < num_indices; ++i)
+    for (dim_t i = 0; i < num_indices; ++i) {
       x[indices[i]] = a;
+    }
   }
 
   // convert — std::copy relies on implicit narrowing/widening conversions

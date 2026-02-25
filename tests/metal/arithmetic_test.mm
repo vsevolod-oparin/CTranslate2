@@ -92,7 +92,7 @@ static void test_add_scalar() {
   {
     float* x   = metal_alloc<float>(N);
     float* out = metal_alloc<float>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = static_cast<float>(i);
+    for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<float>(i); }
 
     CHECK_NOTHROW("add_scalar float — no error",
       primitives<Device::METAL>::add(10.f, x, out, N)
@@ -100,9 +100,9 @@ static void test_add_scalar() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i] - (10.f + static_cast<float>(i))) > 1e-5f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i] - (10.f + static_cast<float>(i))) > 1e-5f) { ok = false; break; }
+    }
     CHECK("add_scalar float: out[i] == 10 + i", ok);
 
     metal_free(x);
@@ -113,15 +113,15 @@ static void test_add_scalar() {
   {
     ct2_f16* x   = metal_alloc<ct2_f16>(N);
     ct2_f16* out = metal_alloc<ct2_f16>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = ct2_f16(static_cast<float>(i));
+    for (dim_t i = 0; i < N; ++i) { x[i] = ct2_f16(static_cast<float>(i)); }
 
     primitives<Device::METAL>::add(ct2_f16(5.f), x, out, N);
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(static_cast<float>(out[i]) - (5.f + static_cast<float>(i))) > 0.1f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(static_cast<float>(out[i]) - (5.f + static_cast<float>(i))) > 0.1f) { ok = false; break; }
+    }
     CHECK("add_scalar float16: out[i] ≈ 5 + i", ok);
 
     metal_free(x);
@@ -132,15 +132,15 @@ static void test_add_scalar() {
   {
     int32_t* x   = metal_alloc<int32_t>(N);
     int32_t* out = metal_alloc<int32_t>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = static_cast<int32_t>(i);
+    for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<int32_t>(i); }
 
     primitives<Device::METAL>::add(int32_t(100), x, out, N);
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (out[i] != 100 + static_cast<int32_t>(i))
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (out[i] != 100 + static_cast<int32_t>(i)) { ok = false; break; }
+    }
     CHECK("add_scalar int32: out[i] == 100 + i", ok);
 
     metal_free(x);
@@ -172,9 +172,9 @@ static void test_add_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i] - (static_cast<float>(i) + 1.f)) > 1e-5f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i] - (static_cast<float>(i) + 1.f)) > 1e-5f) { ok = false; break; }
+    }
     CHECK("add_vec float: out[i] == i + 1", ok);
 
     metal_free(a);
@@ -199,9 +199,9 @@ static void test_add_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(static_cast<float>(out[i]) - (static_cast<float>(i) + 2.f)) > 0.1f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(static_cast<float>(out[i]) - (static_cast<float>(i) + 2.f)) > 0.1f) { ok = false; break; }
+    }
     CHECK("add_vec float16: out[i] ≈ i + 2", ok);
 
     metal_free(a);
@@ -237,9 +237,9 @@ static void test_sub_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i] - static_cast<float>(i)) > 1e-5f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i] - static_cast<float>(i)) > 1e-5f) { ok = false; break; }
+    }
     CHECK("sub_vec float: out[i] == i", ok);
 
     metal_free(a);
@@ -251,7 +251,7 @@ static void test_sub_vec() {
   {
     float* a   = metal_alloc<float>(N);
     float* out = metal_alloc<float>(N);
-    for (dim_t i = 0; i < N; ++i) a[i] = static_cast<float>(i) + 1.f;
+    for (dim_t i = 0; i < N; ++i) { a[i] = static_cast<float>(i) + 1.f; }
 
     primitives<Device::METAL>::sub(
         static_cast<const float*>(a),
@@ -260,9 +260,9 @@ static void test_sub_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i]) > 1e-5f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i]) > 1e-5f) { ok = false; break; }
+    }
     CHECK("sub_vec float: a - a == 0", ok);
 
     metal_free(a);
@@ -282,7 +282,7 @@ static void test_mul_scalar() {
   {
     float* x   = metal_alloc<float>(N);
     float* out = metal_alloc<float>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = static_cast<float>(i) + 1.f;
+    for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<float>(i) + 1.f; }
 
     CHECK_NOTHROW("mul_scalar float — no error",
       primitives<Device::METAL>::mul(3.f, x, out, N)
@@ -290,9 +290,9 @@ static void test_mul_scalar() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i] - 3.f * (static_cast<float>(i) + 1.f)) > 1e-4f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i] - 3.f * (static_cast<float>(i) + 1.f)) > 1e-4f) { ok = false; break; }
+    }
     CHECK("mul_scalar float: out[i] == 3*(i+1)", ok);
 
     metal_free(x);
@@ -303,15 +303,15 @@ static void test_mul_scalar() {
   {
     ct2_f16* x   = metal_alloc<ct2_f16>(N);
     ct2_f16* out = metal_alloc<ct2_f16>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = ct2_f16(static_cast<float>(i) + 1.f);
+    for (dim_t i = 0; i < N; ++i) { x[i] = ct2_f16(static_cast<float>(i) + 1.f); }
 
     primitives<Device::METAL>::mul(ct2_f16(2.f), x, out, N);
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(static_cast<float>(out[i]) - 2.f * (static_cast<float>(i) + 1.f)) > 0.2f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(static_cast<float>(out[i]) - 2.f * (static_cast<float>(i) + 1.f)) > 0.2f) { ok = false; break; }
+    }
     CHECK("mul_scalar float16: out[i] ≈ 2*(i+1)", ok);
 
     metal_free(x);
@@ -322,15 +322,15 @@ static void test_mul_scalar() {
   {
     int32_t* x   = metal_alloc<int32_t>(N);
     int32_t* out = metal_alloc<int32_t>(N);
-    for (dim_t i = 0; i < N; ++i) x[i] = static_cast<int32_t>(i) + 1;
+    for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<int32_t>(i) + 1; }
 
     primitives<Device::METAL>::mul(int32_t(4), x, out, N);
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (out[i] != 4 * (static_cast<int32_t>(i) + 1))
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (out[i] != 4 * (static_cast<int32_t>(i) + 1)) { ok = false; break; }
+    }
     CHECK("mul_scalar int32: out[i] == 4*(i+1)", ok);
 
     metal_free(x);
@@ -365,9 +365,9 @@ static void test_mul_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(out[i] - 2.f * (static_cast<float>(i) + 1.f)) > 1e-4f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(out[i] - 2.f * (static_cast<float>(i) + 1.f)) > 1e-4f) { ok = false; break; }
+    }
     CHECK("mul_vec float: out[i] == 2*(i+1)", ok);
 
     metal_free(a);
@@ -392,9 +392,9 @@ static void test_mul_vec() {
     gpu_sync();
 
     bool ok = true;
-    for (dim_t i = 0; i < N; ++i)
-      if (std::fabs(static_cast<float>(out[i]) - 3.f * (static_cast<float>(i) + 1.f)) > 0.3f)
-        { ok = false; break; }
+    for (dim_t i = 0; i < N; ++i) {
+      if (std::fabs(static_cast<float>(out[i]) - 3.f * (static_cast<float>(i) + 1.f)) > 0.3f) { ok = false; break; }
+    }
     CHECK("mul_vec float16: out[i] ≈ 3*(i+1)", ok);
 
     metal_free(a);

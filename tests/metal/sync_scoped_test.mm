@@ -82,7 +82,7 @@ static void test_sync() {
   // Fill source via CPU (shared memory — directly writable).
   uint8_t* src_ptr = static_cast<uint8_t*>([src contents]);
   uint8_t* dst_ptr = static_cast<uint8_t*>([dst contents]);
-  for (NSUInteger i = 0; i < buf_size; ++i) src_ptr[i] = (uint8_t)i;
+  for (NSUInteger i = 0; i < buf_size; ++i) { src_ptr[i] = (uint8_t)i; }
   std::memset(dst_ptr, 0, buf_size);
 
   // Encode blit copy into the deferred command buffer.
@@ -130,9 +130,10 @@ int get_device_index<ctranslate2::Device::METAL>() {
 
 template<>
 void set_device_index<ctranslate2::Device::METAL>(int index) {
-  if (index != 0)
+  if (index != 0) {
     throw std::invalid_argument(
         "Invalid Metal device index: " + std::to_string(index));
+  }
 }
 
 static void test_scoped_device_setter() {
@@ -159,7 +160,7 @@ static void test_scoped_device_setter() {
   // Constructor: prev == new (0 == 0), so no set_device_index call.
   // Destructor:  same — no restoration needed.
   CHECK_NOTHROW("ScopedDeviceSetter(METAL, 0) — no error",
-    if (prev != 0) set_device_index<ctranslate2::Device::METAL>(0)
+    if (prev != 0) { set_device_index<ctranslate2::Device::METAL>(0); }
   );
 }
 

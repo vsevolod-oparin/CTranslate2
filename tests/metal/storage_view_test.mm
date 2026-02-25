@@ -81,8 +81,9 @@ static void test_cross_device_primitives() {
     (cross_device_primitives<Device::CPU, Device::METAL>::copy(src, metal_ptr, N))
   );
   bool ok = true;
-  for (dim_t i = 0; i < N; ++i)
+  for (dim_t i = 0; i < N; ++i) {
     if (metal_ptr[i] != src[i]) { ok = false; break; }
+  }
   CHECK("CPU→Metal: values visible via Metal ptr (unified memory)", ok);
 
   // 2. Metal → CPU
@@ -92,8 +93,9 @@ static void test_cross_device_primitives() {
         static_cast<const float*>(metal_ptr), dst, N))
   );
   ok = true;
-  for (dim_t i = 0; i < N; ++i)
+  for (dim_t i = 0; i < N; ++i) {
     if (dst[i] != src[i]) { ok = false; break; }
+  }
   CHECK("Metal→CPU: values correct", ok);
 
   // 3. int32 — verify the template works for non-float types too
@@ -138,8 +140,9 @@ static void test_metal_primitives_at_copy() {
         static_cast<const float*>(src_m), dst_m, N)
   );
   bool copy_ok = true;
-  for (dim_t i = 0; i < N; ++i)
+  for (dim_t i = 0; i < N; ++i) {
     if (dst_m[i] != src_m[i]) { copy_ok = false; break; }
+  }
   CHECK("primitives<METAL>::copy: values match", copy_ok);
 
   alloc.free(src_m);

@@ -343,6 +343,165 @@ static void dispatch_unary(const char* kernel_name,
 
 
 // ---------------------------------------------------------------------------
+// M4.6 — Broadcast kernel infrastructure
+// ---------------------------------------------------------------------------
+
+// MSL source for broadcast kernels.
+// Canonical copy lives in src/metal/kernels/broadcast.metal.
+static constexpr const char* kBroadcastMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_BATCH_BROADCAST(name, op, T)                              \
+kernel void name##_batch_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& a_size [[buffer(3)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = a[gid % a_size] op b[gid]; }
+
+#define DEFINE_DEPTH_BROADCAST(name, op, T)                              \
+kernel void name##_depth_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& depth [[buffer(3)]],                                 \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = a[gid / depth] op b[gid]; }
+
+#define DEFINE_BLOCK_BROADCAST(name, op, T)                              \
+kernel void name##_block_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& block  [[buffer(3)]],                                \
+    constant  uint& a_size [[buffer(4)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = a[(gid / block) % a_size] op b[gid]; }
+
+#define DEFINE_BROADCAST_OPS(T)       \
+  DEFINE_BATCH_BROADCAST(add, +, T)   \
+  DEFINE_DEPTH_BROADCAST(add, +, T)   \
+  DEFINE_BLOCK_BROADCAST(add, +, T)   \
+  DEFINE_BATCH_BROADCAST(mul, *, T)
+
+DEFINE_BROADCAST_OPS(float)
+DEFINE_BROADCAST_OPS(half)
+DEFINE_BROADCAST_OPS(int)
+DEFINE_BROADCAST_OPS(short)
+DEFINE_BROADCAST_OPS(char)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_BROADCAST_OPS(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the broadcast MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_broadcast_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kBroadcastMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:nil
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile broadcast library";
+      if (err)
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO cache for broadcast kernels.
+static id<MTLComputePipelineState> get_broadcast_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLLibrary> lib = get_broadcast_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil) {
+    throw std::runtime_error(std::string("Metal: broadcast kernel not found: ") + name);
+  }
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: PSO creation failed for ") + name;
+    if (err)
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Dispatch a broadcast kernel: 3 data buffers + 1 uint32 constant at buffer(3).
+// Used by add_batch_broadcast (param0 = a_size) and
+//         add_depth_broadcast (param0 = depth = b_size/a_size).
+static void dispatch_broadcast1(const char* kernel_name,
+                                 const void* a, const void* b, void* c,
+                                 ctranslate2::dim_t size,
+                                 uint32_t param0) {
+  if (size == 0) return;
+  id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+  [enc setBytes:&param0 length:sizeof(uint32_t) atIndex:3];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// Dispatch a broadcast kernel: 3 data buffers + 2 uint32 constants.
+// Used by add_block_broadcast (param0 = block, param1 = a_size).
+static void dispatch_broadcast2(const char* kernel_name,
+                                 const void* a, const void* b, void* c,
+                                 ctranslate2::dim_t size,
+                                 uint32_t param0, uint32_t param1) {
+  if (size == 0) return;
+  id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+  [enc setBytes:&param0 length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&param1 length:sizeof(uint32_t) atIndex:4];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// ---------------------------------------------------------------------------
 // M4.3 — Parallel reduction infrastructure
 // ---------------------------------------------------------------------------
 
@@ -1115,25 +1274,43 @@ namespace ctranslate2 {
     dispatch_binary(kname, a, b, c, size);
   }
 
+  // M4.6 — add_batch_broadcast — GPU kernel.
+  // CPU ref: for i in [0, b_size/a_size): c[i*a_size+j] = a[j] + b[i*a_size+j]
+  // Kernel:  c[gid] = a[gid % a_size] + b[gid]
   template<>
   template <typename T>
   void primitives<Device::METAL>::add_batch_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
-    METAL_STUB(add_batch_broadcast);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "add_batch_broadcast_%s", MetalTypeName<T>::value);
+    dispatch_broadcast1(kname, a, b, c, b_size, static_cast<uint32_t>(a_size));
   }
 
+  // M4.6 — add_depth_broadcast — GPU kernel.
+  // CPU ref: depth = b_size/a_size; for i in [0,a_size): c[i*depth+k] = a[i] + b[i*depth+k]
+  // Kernel:  c[gid] = a[gid / depth] + b[gid]
   template<>
   template <typename T>
   void primitives<Device::METAL>::add_depth_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
-    METAL_STUB(add_depth_broadcast);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "add_depth_broadcast_%s", MetalTypeName<T>::value);
+    uint32_t depth = static_cast<uint32_t>(b_size / a_size);
+    dispatch_broadcast1(kname, a, b, c, b_size, depth);
   }
 
+  // M4.6 — add_block_broadcast — GPU kernel.
+  // CPU ref: for i in [0,b_size/block): c[i*block+k] = a[i%a_size] + b[i*block+k]
+  // Kernel:  c[gid] = a[(gid/block) % a_size] + b[gid]
   template<>
   template <typename T>
   void primitives<Device::METAL>::add_block_broadcast(
       const T* a, const T* b, T* c, dim_t block, dim_t a_size, dim_t b_size) {
-    METAL_STUB(add_block_broadcast);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "add_block_broadcast_%s", MetalTypeName<T>::value);
+    dispatch_broadcast2(kname, a, b, c, b_size,
+                        static_cast<uint32_t>(block),
+                        static_cast<uint32_t>(a_size));
   }
 
   // M4.2 — sub(vector, vector, out) — GPU kernel
@@ -1187,11 +1364,16 @@ namespace ctranslate2 {
     dispatch_binary(kname, a, b, c, size);
   }
 
+  // M4.6 — mul_batch_broadcast — GPU kernel.
+  // CPU ref: for i in [0, b_size/a_size): c[i*a_size+j] = a[j] * b[i*a_size+j]
+  // Kernel:  c[gid] = a[gid % a_size] * b[gid]
   template<>
   template <typename T>
   void primitives<Device::METAL>::mul_batch_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
-    METAL_STUB(mul_batch_broadcast);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "mul_batch_broadcast_%s", MetalTypeName<T>::value);
+    dispatch_broadcast1(kname, a, b, c, b_size, static_cast<uint32_t>(a_size));
   }
 
   template<>

@@ -507,25 +507,19 @@ NSDictionary* result = [graph runWithMTLCommandQueue:get_command_queue()
   (float32/float16/bfloat16 × 11 ops + logsumexp + zero-size no-crash).
   See `agents/report/milestone-4.5-activation-primitives.md` for full details.
 
-**4.6 Broadcast and scatter primitives**
+**4.6 Broadcast and scatter primitives** ✅ DONE (2026-02-25)
 
-These are heavily used in transformer layers (bias addition, positional encoding) and are non-trivial — they have different striding/index math than simple element-wise ops.
-
-- `add_batch_broadcast(a, b, c, a_size, b_size)` — broadcasts `a` over batch dim of `b`
-- `add_depth_broadcast(a, b, c, a_size, b_size)` — broadcasts `a` over depth dim
-- `add_block_broadcast(a, b, c, block, a_size, b_size)` — broadcasts over block-strided layout
-- `mul_batch_broadcast(a, b, c, a_size, b_size)` — multiplicative batch broadcast
-- `strided_fill(x, a, inc_x, size)` — fill with stride (e.g., diagonal init)
-- `indexed_fill(x, a, indices, num_indices)` — fill selected indices (used by Gather-family ops)
-
-All implement as custom Metal compute shaders in `src/metal/kernels/elementwise.metal` (the indexing math is simple but must be correct).
-
-- **PASS:**
-  ```cpp
-  // tests/metal/primitives_test.mm — broadcast tests
-  // add_batch_broadcast: a=[1,2,3], b=[a,b,c,d,e,f] (size 6, a_size=3) → correct broadcast
-  // indexed_fill: fill positions [0,2,4] of output with value 7 → verify only those positions changed
-  ```
+- Custom MSL broadcast kernels in `src/metal/kernels/broadcast.metal` (separate library from elementwise).
+- 4 ops implemented:
+  - `add_batch_broadcast`: `c[gid] = a[gid % a_size] + b[gid]`
+  - `add_depth_broadcast`: `c[gid] = a[gid / depth] + b[gid]`  (depth = b_size / a_size)
+  - `add_block_broadcast`: `c[gid] = a[(gid/block) % a_size] + b[gid]`
+  - `mul_batch_broadcast`: `c[gid] = a[gid % a_size] * b[gid]`
+- All 6 types (float, half, bfloat, int, short, char) instantiated via `DECLARE_ALL_TYPES`.
+- `strided_fill` and `indexed_fill` were already implemented CPU-side in M4.1 (correct permanent design).
+- **Actual result:** 33/33 tests pass in `tests/metal/broadcast_test.mm`
+  (float32/float16/bfloat16 × 4 ops × basic + in-place/depth=1/block=1 + zero-size).
+  See `agents/report/milestone-4.6-broadcast-primitives.md` for full details.
 
 **4.7 Beam-search and attention-mask primitives**
 

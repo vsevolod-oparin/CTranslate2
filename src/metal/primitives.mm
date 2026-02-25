@@ -784,6 +784,168 @@ static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
   run_bf16_gemm_inner(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc);
 }
 
+// ---------------------------------------------------------------------------
+// M5.2 — Normalization kernel infrastructure (layer_norm, rms_norm, softmax)
+// ---------------------------------------------------------------------------
+
+static constexpr uint32_t kNormBlock = 256;
+
+static id<MTLLibrary> get_normalization_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kNormalizationMSL, "normalization");
+}
+
+static id<MTLComputePipelineState> get_normalization_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_normalization_library, name);
+}
+
+// Dispatch layer_norm_<T> kernel.
+// Buffer layout (normalization.metal):
+//   0: x, 1: gamma, 2: beta, 3: y
+//   4: has_gamma, 5: has_beta, 6: N, 7: eps
+//   threadgroup(0): float[NORM_BLOCK]
+// Null gamma/beta: x is bound as dummy; kernel ignores via flag = 0.
+static void dispatch_layer_norm(const char* kname,
+                                 const void* x, const void* gamma, const void* beta,
+                                 void* y,
+                                 ctranslate2::dim_t outer_size,
+                                 ctranslate2::dim_t axis_size,
+                                 float eps) {
+  if (outer_size == 0 || axis_size == 0) return;
+  uint32_t has_gamma = (gamma != nullptr) ? 1u : 0u;
+  uint32_t has_beta  = (beta  != nullptr) ? 1u : 0u;
+  uint32_t N         = ct2_u32(axis_size);
+  id<MTLComputePipelineState> pso = get_normalization_pso(kname);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_x = 0, off_g = 0, off_b = 0, off_y = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x)                 offset:off_x atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(gamma ? gamma : x, &off_g) offset:off_g atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(beta  ? beta  : x, &off_b) offset:off_b atIndex:2];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y, &off_y)                 offset:off_y atIndex:3];
+  [enc setBytes:&has_gamma length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&has_beta  length:sizeof(uint32_t) atIndex:5];
+  [enc setBytes:&N         length:sizeof(uint32_t) atIndex:6];
+  [enc setBytes:&eps       length:sizeof(float)    atIndex:7];
+  [enc setThreadgroupMemoryLength:kNormBlock * sizeof(float) atIndex:0];
+  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)outer_size, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(kNormBlock, 1, 1)];
+  [enc endEncoding];
+}
+
+// Dispatch rms_norm_<T> kernel.
+// Buffer layout:
+//   0: x, 1: gamma, 2: y, 3: N, 4: eps
+//   threadgroup(0): float[NORM_BLOCK]
+static void dispatch_rms_norm(const char* kname,
+                               const void* x, const void* gamma, void* y,
+                               ctranslate2::dim_t batch_size,
+                               ctranslate2::dim_t depth,
+                               float eps) {
+  if (batch_size == 0 || depth == 0) return;
+  uint32_t N = ct2_u32(depth);
+  id<MTLComputePipelineState> pso = get_normalization_pso(kname);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_x = 0, off_g = 0, off_y = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x,     &off_x) offset:off_x atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(gamma, &off_g) offset:off_g atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y,     &off_y) offset:off_y atIndex:2];
+  [enc setBytes:&N   length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&eps length:sizeof(float)    atIndex:4];
+  [enc setThreadgroupMemoryLength:kNormBlock * sizeof(float) atIndex:0];
+  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)batch_size, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(kNormBlock, 1, 1)];
+  [enc endEncoding];
+}
+
+// Dispatch softmax_<T> kernel.
+// Buffer layout:
+//   0: x, 1: y, 2: lengths, 3: has_lengths, 4: N, 5: log_mode
+//   threadgroup(0): float[NORM_BLOCK]
+// Null lengths: x is bound as dummy; kernel ignores via has_lengths = 0.
+static void dispatch_softmax(const char* kname,
+                              const void* x, const void* lengths, void* y,
+                              ctranslate2::dim_t batch_size,
+                              ctranslate2::dim_t depth,
+                              bool log_mode) {
+  if (batch_size == 0 || depth == 0) return;
+  uint32_t has_lengths = (lengths != nullptr) ? 1u : 0u;
+  uint32_t N           = ct2_u32(depth);
+  uint32_t log_m       = log_mode ? 1u : 0u;
+  id<MTLComputePipelineState> pso = get_normalization_pso(kname);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_x = 0, off_l = 0, off_y = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x)                     offset:off_x atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y, &off_y)                     offset:off_y atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(lengths ? lengths : x, &off_l) offset:off_l atIndex:2];
+  [enc setBytes:&has_lengths length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&N           length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&log_m       length:sizeof(uint32_t) atIndex:5];
+  [enc setThreadgroupMemoryLength:kNormBlock * sizeof(float) atIndex:0];
+  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)batch_size, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(kNormBlock, 1, 1)];
+  [enc endEncoding];
+}
+
+// ---------------------------------------------------------------------------
+// M5.2 — Gather kernel infrastructure
+// ---------------------------------------------------------------------------
+
+static id<MTLLibrary> get_gather_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kGatherMSL, "gather");
+}
+
+static id<MTLComputePipelineState> get_gather_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_gather_library, name);
+}
+
+// Dispatch gather_<T> kernel.
+// Buffer layout:
+//   0: src, 1: dst, 2: indices, 3: copy_size, 4: batch_stride, 5: num_indices_per_batch
+//   grid: total_elements threads (one per output element)
+static void dispatch_gather(const char* kname,
+                             const void* src, void* dst, const void* indices,
+                             ctranslate2::dim_t copy_size,
+                             ctranslate2::dim_t batch_stride,
+                             ctranslate2::dim_t num_indices_per_batch,
+                             ctranslate2::dim_t total_elements) {
+  if (total_elements == 0) return;
+  (void)ct2_u32(total_elements);  // guard: MSL `uint gid` is 32-bit
+  uint32_t copy_sz  = ct2_u32(copy_size);
+  uint32_t b_stride = ct2_u32(batch_stride);
+  uint32_t nipb     = ct2_u32(num_indices_per_batch);
+  id<MTLComputePipelineState> pso = get_gather_pso(kname);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_src = 0, off_dst = 0, off_idx = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(src,     &off_src) offset:off_src atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(dst,     &off_dst) offset:off_dst atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(indices, &off_idx) offset:off_idx atIndex:2];
+  [enc setBytes:&copy_sz  length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&b_stride length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&nipb     length:sizeof(uint32_t) atIndex:5];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(total_elements));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(total_elements), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -1532,4 +1694,69 @@ namespace ctranslate2 {
       float, const bfloat16_t*, dim_t, dim_t, const bfloat16_t*, dim_t, dim_t,
       float, bfloat16_t*, dim_t, dim_t, dim_t);
 
+  // -------------------------------------------------------------------------
+  // M5.2 — ctranslate2::metal op dispatch wrappers
+  // Declared in src/metal/ops_metal.h; implemented here.
+  // -------------------------------------------------------------------------
+
+  namespace metal {
+
+    template <typename T>
+    void layer_norm_metal(const T* x, const T* gamma, const T* beta,
+                          T* y, dim_t outer_size, dim_t axis_size, float epsilon) {
+      char kname[kKernelNameBufSize];
+      std::snprintf(kname, sizeof(kname), "layer_norm_%s", MetalTypeName<T>::value);
+      dispatch_layer_norm(kname, x, gamma, beta, y, outer_size, axis_size, epsilon);
+    }
+
+    template <typename T>
+    void rms_norm_metal(const T* x, const T* gamma, T* y,
+                        dim_t batch_size, dim_t depth, float epsilon) {
+      char kname[kKernelNameBufSize];
+      std::snprintf(kname, sizeof(kname), "rms_norm_%s", MetalTypeName<T>::value);
+      dispatch_rms_norm(kname, x, gamma, y, batch_size, depth, epsilon);
+    }
+
+    template <typename T>
+    void softmax_metal(const T* x, const int32_t* lengths, T* y,
+                       dim_t batch_size, dim_t depth, bool log_mode) {
+      char kname[kKernelNameBufSize];
+      std::snprintf(kname, sizeof(kname), "softmax_%s", MetalTypeName<T>::value);
+      dispatch_softmax(kname, x, lengths, y, batch_size, depth, log_mode);
+    }
+
+    template <typename T>
+    void gather_metal(const T* src, T* dst, const int32_t* indices,
+                      dim_t copy_size, dim_t batch_stride,
+                      dim_t num_indices_per_batch, dim_t total_elements) {
+      char kname[kKernelNameBufSize];
+      std::snprintf(kname, sizeof(kname), "gather_%s", MetalTypeName<T>::value);
+      dispatch_gather(kname, src, dst, indices,
+                      copy_size, batch_stride, num_indices_per_batch, total_elements);
+    }
+
+    // Explicit instantiations — normalization (float, float16_t, bfloat16_t)
+    template void layer_norm_metal<float>(const float*, const float*, const float*, float*, dim_t, dim_t, float);
+    template void layer_norm_metal<float16_t>(const float16_t*, const float16_t*, const float16_t*, float16_t*, dim_t, dim_t, float);
+    template void layer_norm_metal<bfloat16_t>(const bfloat16_t*, const bfloat16_t*, const bfloat16_t*, bfloat16_t*, dim_t, dim_t, float);
+
+    template void rms_norm_metal<float>(const float*, const float*, float*, dim_t, dim_t, float);
+    template void rms_norm_metal<float16_t>(const float16_t*, const float16_t*, float16_t*, dim_t, dim_t, float);
+    template void rms_norm_metal<bfloat16_t>(const bfloat16_t*, const bfloat16_t*, bfloat16_t*, dim_t, dim_t, float);
+
+    template void softmax_metal<float>(const float*, const int32_t*, float*, dim_t, dim_t, bool);
+    template void softmax_metal<float16_t>(const float16_t*, const int32_t*, float16_t*, dim_t, dim_t, bool);
+    template void softmax_metal<bfloat16_t>(const bfloat16_t*, const int32_t*, bfloat16_t*, dim_t, dim_t, bool);
+
+    // Explicit instantiations — gather (all 6 element types)
+    template void gather_metal<float>(const float*, float*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+    template void gather_metal<float16_t>(const float16_t*, float16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+    template void gather_metal<bfloat16_t>(const bfloat16_t*, bfloat16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+    template void gather_metal<int32_t>(const int32_t*, int32_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+    template void gather_metal<int16_t>(const int16_t*, int16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+    template void gather_metal<int8_t>(const int8_t*, int8_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
+
+  }  // namespace metal
+
 }  // namespace ctranslate2
+

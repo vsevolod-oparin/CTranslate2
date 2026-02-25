@@ -25,12 +25,14 @@ OUTPUT_FILE = REPO_ROOT / "src" / "metal" / "msl_strings.h"
 # Ordered list of (filename_stem, constant_name).
 # Order must match the order the constants are used in primitives.mm.
 KERNELS = [
-    ("elementwise", "kElementwiseMSL"),
-    ("activation",  "kActivationMSL"),
-    ("broadcast",   "kBroadcastMSL"),
-    ("beam_search", "kBeamSearchMSL"),
-    ("transpose",   "kTransposeMSL"),
-    ("reduction",   "kReductionMSL"),
+    ("elementwise",    "kElementwiseMSL"),
+    ("activation",     "kActivationMSL"),
+    ("broadcast",      "kBroadcastMSL"),
+    ("beam_search",    "kBeamSearchMSL"),
+    ("transpose",      "kTransposeMSL"),
+    ("reduction",      "kReductionMSL"),
+    ("normalization",  "kNormalizationMSL"),
+    ("gather",         "kGatherMSL"),
 ]
 
 # Raw-string delimiter used to wrap the MSL source.

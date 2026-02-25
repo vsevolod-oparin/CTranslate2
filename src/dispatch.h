@@ -12,8 +12,9 @@
     throw std::invalid_argument(NAME " only supports float types");     \
 
 
-#ifndef CT2_WITH_CUDA
+#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
 
+// CPU-only build: only float32 is supported.
 #  define DEVICE_AND_FLOAT_DISPATCH(NAME, DEVICE, TYPE, STMTS)          \
   switch (TYPE) {                                                       \
     TYPE_CASE(float, DEVICE_DISPATCH(DEVICE, (STMTS)))                  \
@@ -22,20 +23,22 @@
 
 #else
 
+// At least one GPU backend (CUDA, Metal, or both).
+// FP16 and BF16 are permitted when the runtime device is any GPU.
+// DEVICE_DISPATCH sets `constexpr Device D` correctly for each backend,
+// so Metal and CUDA both resolve their own primitives<D> specialisation.
 #  define DEVICE_AND_FLOAT_DISPATCH(NAME, DEVICE, TYPE, STMTS)          \
   switch (TYPE) {                                                       \
     TYPE_CASE(float, DEVICE_DISPATCH(DEVICE, (STMTS)))                  \
     TYPE_CASE(float16_t, {                                              \
-      if (DEVICE != Device::CUDA)                                       \
+      if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
         throw std::invalid_argument("FP16 " NAME " is only supported on GPU"); \
-      constexpr Device D = Device::CUDA;                                \
-      (STMTS);                                                          \
+      DEVICE_DISPATCH(DEVICE, (STMTS));                                 \
     })                                                                  \
     TYPE_CASE(bfloat16_t, {                                             \
-      if (DEVICE != Device::CUDA)                                       \
+      if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
         throw std::invalid_argument("BF16 " NAME " is only supported on GPU"); \
-      constexpr Device D = Device::CUDA;                                \
-      (STMTS);                                                          \
+      DEVICE_DISPATCH(DEVICE, (STMTS));                                 \
     })                                                                  \
     NON_FLOAT_CASE(NAME)                                                \
   }

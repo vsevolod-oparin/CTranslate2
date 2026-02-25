@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
-**Revised:** 2026-02-24
-**Status:** Pre-implementation review
+**Revised:** 2026-02-25
+**Status:** In progress — Milestone 1.1 complete
 
 ---
 
@@ -162,11 +162,22 @@ StorageView stores a raw `void*`. For Metal, that pointer comes from `[MTLBuffer
 **Time:** 3–5 days
 **Depends on:** M0
 
-**1.1 Add `Device::METAL` to enum**
+**1.1 Add `Device::METAL` to enum** ✅ DONE (2026-02-25)
 - `include/ctranslate2/devices.h`: add `METAL` after `CUDA`
 - `src/devices.cc`: add `"metal"` to `str_to_device()` and `device_to_str()`; add `get_device_count()` for Metal using `MTLCreateSystemDefaultDevice() != nil ? 1 : 0`
 - `src/device_dispatch.h`: add `DEVICE_CASE(Device::METAL, ...)` inside `#ifdef CT2_WITH_METAL` guard (same pattern as `CT2_WITH_CUDA`)
 - `src/dispatch.h`: update `DEVICE_AND_FLOAT_DISPATCH` FP16/BF16 guards from `DEVICE != Device::CUDA` → `DEVICE != Device::CUDA && DEVICE != Device::METAL`
+- **Actual result:** All files updated. Dispatch macros verified via `tests/test_dispatch_macros.cc`
+  (`clang++ -fsyntax-only`) across all four `CT2_WITH_CUDA` × `CT2_WITH_METAL` combinations:
+  ```
+  CPU-only            : OK
+  Metal-only          : OK
+  CUDA-only           : OK
+  CUDA+Metal          : OK
+  ```
+  New files: `src/metal/device.h`, `src/metal/device.mm`, `tests/test_dispatch_macros.cc`.
+  See `agents/report/milestone-1.1-device-enum.md` for full details.
+- **Note:** `synchronize_stream(Device::METAL)` is a no-op stub; real deferred commit in M2.
 - **PASS:**
   ```cpp
   // tests/devices_test.cc (new)

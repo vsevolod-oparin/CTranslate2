@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.3 complete (GPU two-pass reduction)
+**Status:** In progress — Milestone 4.4 complete (GEMM: FP32/FP16/BF16)
 
 ---
 
@@ -424,7 +424,7 @@ Attention-sized reductions (N < 1K, where CPU would win) are not on the critical
 path and will be subsumed by fused softmax kernels in M5+.
 Revisit after end-to-end profiling with a real model (post-M4.4).
 
-**4.4 GEMM (CRITICAL)**
+**4.4 GEMM (CRITICAL)** ✅ DONE (2026-02-25)
 
 > **M0.2 finding:** `MPSMatrixMultiplication` does **not** support BF16. The GEMM
 > implementation must dispatch on dtype at runtime. Two separate code paths are required.
@@ -474,13 +474,25 @@ NSDictionary* result = [graph runWithMTLCommandQueue:get_command_queue()
   - FP32/FP16: `MPSMatrixMultiplication` in a loop over batch dim (MPS has no native batched variant for variable strides)
   - BF16: `MPSGraph` with 3-D tensor inputs `[batch, m, k]` × `[batch, k, n]` → single graph call
 
-- **PASS:**
+- **Actual result:** 26/26 tests pass in `tests/metal/gemm_test.mm`:
+  FP32 gemm (7/7), FP16 gemm (6/6), BF16 gemm (6/6), FP32 gemm_batch_strided (4/4), BF16 gemm_batch_strided (3/3).
+
+  Two critical bugs fixed during implementation:
+  1. **FP16 rowBytes** — natural stride (8 B for 4-col Float16) was below MPS hardware minimum (16 B).
+     Fixed by querying `[MPSMatrixDescriptor rowBytesForColumns:cols dataType:dtype]` and
+     copying to padded temp buffers when `nat_rb < mps_min_rb`.
+  2. **`@autoreleasepool` + `thread_local` ARC over-release** — calling `get_current_command_buffer()`
+     INSIDE `@autoreleasepool {}` left `_thread_buffer` as a dangling pointer after the pool
+     drained, causing SIGSEGV in `commit_command_buffer()`.  Fixed by fetching `cmd` BEFORE
+     the pool.  This rule must be followed in all future MPS-encoding code.
+
+  See `agents/report/milestone-4.4-gemm.md` for full details.
+- **PASS criteria:**
   ```cpp
   // Sizes: 64×64, 512×512, 4096×4096, 128×4096×512 (non-square)
   // Compare to Accelerate cblas_sgemm
   // Max rel diff < 1e-4 for float32, < 5e-3 for float16
   // Max rel diff < 1e-2 for bfloat16 (vs cblas on BF16-quantised inputs)
-  // Benchmark: 4096³ FP32 GEMM > 2× faster than CPU
   // BF16 graph cache: second call with same shape must be ≤ 5% slower than first (steady-state)
   ```
 

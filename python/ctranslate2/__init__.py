@@ -40,7 +40,9 @@ try:
         Translator,
         contains_model,
         get_cuda_device_count,
+        get_metal_device_count,
         get_supported_compute_types,
+        get_supported_devices,
         set_random_seed,
     )
     from ctranslate2.extensions import register_extensions

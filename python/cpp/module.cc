@@ -10,6 +10,16 @@
 #include "utils.h"
 
 
+static std::vector<std::string>
+get_supported_devices() {
+  std::vector<std::string> devices = {"cpu"};
+  if (ctranslate2::get_device_count(ctranslate2::Device::CUDA) > 0)
+    devices.push_back("cuda");
+  if (ctranslate2::get_device_count(ctranslate2::Device::METAL) > 0)
+    devices.push_back("metal");
+  return devices;
+}
+
 static std::unordered_set<std::string>
 get_supported_compute_types(const std::string& device_str, const int device_index) {
   const auto device = ctranslate2::str_to_device(device_str);
@@ -54,7 +64,15 @@ PYBIND11_MODULE(_ext, m)
         "Helper function to check if a directory seems to contain a CTranslate2 model.");
 
   m.def("get_cuda_device_count", &ctranslate2::get_gpu_count,
-        "Returns the number of visible GPU devices.");
+        "Returns the number of visible CUDA GPU devices.");
+
+  m.def("get_metal_device_count", []() {
+    return ctranslate2::get_device_count(ctranslate2::Device::METAL);
+  }, "Returns the number of visible Metal devices (0 or 1).");
+
+  m.def("get_supported_devices", &get_supported_devices,
+        "Returns the list of devices supported by this build: always includes 'cpu', "
+        "plus 'cuda' and/or 'metal' when at least one such device is available at runtime.");
 
   m.def("get_supported_compute_types", &get_supported_compute_types,
         py::arg("device"),

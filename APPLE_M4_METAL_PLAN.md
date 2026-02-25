@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 1.2 complete
+**Status:** In progress — Milestone 1 complete
 
 ---
 
@@ -210,13 +210,19 @@ StorageView stores a raw `void*`. For Metal, that pointer comes from `[MTLBuffer
   ```
   See `agents/report/milestone-1.2-cmake-integration.md` for full details.
 
-**1.3 Expose device in Python (early)**
-- `python/cpp/module.cc`: add `"metal"` to Python device string list
-- **PASS:**
+**1.3 Expose device in Python (early)** ✅ DONE (2026-02-25)
+- `python/cpp/storage_view.cc`: added `.value("metal", Device::METAL)` to Device enum binding
+- `python/cpp/module.cc`: added `get_supported_devices()` (new; uses `get_device_count()` internally, no `#ifdef` needed) and `get_metal_device_count()` (symmetric with `get_cuda_device_count`)
+- `python/ctranslate2/__init__.py`: exported `get_supported_devices` and `get_metal_device_count`
+- **Actual result:** Changes verified by grep; full test requires Python extension rebuild.
+  See `agents/report/milestone-1.3-python-device-exposure.md` for full details.
+- **PASS** (once extension rebuilt):
   ```python
   import ctranslate2
-  assert "metal" in ctranslate2.get_supported_devices()   # if has Metal
-  t = ctranslate2.Translator("model", device="metal")     # should not throw import error
+  assert "metal" in ctranslate2.get_supported_devices()   # WITH_METAL=ON build on Apple Silicon
+  assert ctranslate2.get_metal_device_count() == 1
+  assert ctranslate2.Device.metal == ctranslate2.Device.metal
+  # CPU-only build: get_supported_devices() == ["cpu"], get_metal_device_count() == 0
   ```
 
 ---

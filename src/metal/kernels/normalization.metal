@@ -164,6 +164,14 @@ kernel void softmax_##T(                                                        
 {                                                                                     \
     const uint row_off  = tgid * N;                                                  \
     const uint active_N = has_lengths ? (uint)lengths[tgid] : N;                    \
+    /* When active_N == 0 (fully-masked row):                                        \
+     *   Pass 1 leaves max_val = -FLT_MAX.                                           \
+     *   Pass 2 sum_e = 0  =>  total_sum = 0.                                        \
+     *   log-softmax: log(0) = -inf, but the write loop over [0, active_N) is        \
+     *     empty so -inf is never used or written.                                   \
+     *   softmax: exp(...) / 0 is never evaluated for the same reason.               \
+     *   The zero-fill pass then writes (T)0 to all N output slots.                  \
+     *   Result: fully-masked row => all-zeros output.  No NaN is produced. */       \
     /* Pass 1: find max for numerical stability */                                   \
     float mx = -FLT_MAX;                                                             \
     for (uint j = tid; j < active_N; j += NORM_BLOCK) {                             \

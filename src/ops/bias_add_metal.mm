@@ -20,22 +20,22 @@ namespace ctranslate2 {
                           StorageView& output,
                           const StorageView* residual) const {
       if (_axis == -1 || _axis == value.rank() - 1) {
-        primitives<Device::METAL>::add_batch_broadcast(bias.data<T>(),
-                                                        value.data<T>(),
-                                                        output.data<T>(),
-                                                        bias.size(),
-                                                        value.size());
+        primitives<D>::add_batch_broadcast(bias.data<T>(),
+                                           value.data<T>(),
+                                           output.data<T>(),
+                                           bias.size(),
+                                           value.size());
       } else {
         const dim_t axis = _axis < 0 ? value.rank() + _axis : _axis;
         dim_t width = 1;
         for (dim_t i = axis + 1; i < value.rank(); ++i)
           width *= value.dim(i);
-        primitives<Device::METAL>::add_block_broadcast(bias.data<T>(),
-                                                        value.data<T>(),
-                                                        output.data<T>(),
-                                                        width,
-                                                        bias.size(),
-                                                        value.size());
+        primitives<D>::add_block_broadcast(bias.data<T>(),
+                                           value.data<T>(),
+                                           output.data<T>(),
+                                           width,
+                                           bias.size(),
+                                           value.size());
       }
       if (residual)
         Add()(*residual, output, output);

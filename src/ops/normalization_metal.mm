@@ -35,10 +35,17 @@ namespace ctranslate2 {
                             const dim_t axis_size,
                             const dim_t inner_size,
                             StorageView& output) const {
+      // The Metal kernel lays out each row as a contiguous block of axis_size
+      // elements: row_off = tgid * axis_size.  This is valid when all dimensions
+      // trailing the normalization axis are size 1 (inner_size == 1), because
+      // then consecutive rows are adjacent in memory regardless of whether axis
+      // is literally the last dimension.  The equivalent check is inner_size == 1,
+      // which is more permissive than "axis == rank-1" while remaining correct.
       if (inner_size != 1)
         throw std::invalid_argument(
-            "Metal LayerNorm: only last-axis normalization is supported "
-            "(inner_size must be 1)");
+            "Metal LayerNorm: only normalization over a memory-contiguous axis "
+            "is supported (all dimensions after the normalization axis must be 1, "
+            "i.e. inner_size == 1)");
       metal::layer_norm_metal<T>(input.data<T>(),
                                   gamma ? gamma->data<T>() : nullptr,
                                   beta  ? beta->data<T>()  : nullptr,

@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.7 complete (beam-search and attention-mask primitives)
+**Status:** In progress — Milestone 4.8 complete (transpose primitives)
 
 ---
 
@@ -521,44 +521,40 @@ NSDictionary* result = [graph runWithMTLCommandQueue:get_command_queue()
   (float32/float16/bfloat16 × 4 ops × basic + in-place/depth=1/block=1 + zero-size).
   See `agents/report/milestone-4.6-broadcast-primitives.md` for full details.
 
-**4.7 Beam-search and attention-mask primitives**
+**4.7 Beam-search and attention-mask primitives** ✅ DONE (2026-02-25)
 
-These are required for generation and variable-length batch handling. Missing them means beam search and padded batches silently produce wrong results.
+See `agents/report/milestone-4.7-beam-search-primitives.md` — 19/19 tests pass.
 
-- **`penalize_previous_tokens(scores, previous_scores, previous_ids, penalty, batch, len, vocab_size)`**
-  - Applies repetition penalty to logits based on previously generated token IDs
-  - Custom Metal compute shader: `src/metal/kernels/beam_search.metal`
-  - **PASS:** Scores for repeated tokens are reduced by `penalty`; scores for new tokens are unchanged; verify numerically against CPU reference for batch=2, len=8, vocab=100
+- **`penalize_previous_tokens`** — GPU kernel (`src/metal/kernels/beam_search.metal`).
+  One thread per batch item, sequential over `length`. `penalty` as `float` via `setBytes:`.
+  CPU wins standalone (~300–500 μs GPU vs <30 μs CPU) due to ~0.4 ms CB overhead;
+  GPU is correct design — encode-only in pipeline, no extra sync cost.
 
-- **`prepare_length_mask(lengths, batch, num_heads, num_queries, mask_future, multi_query, mask)`**
-  - Writes the `int32_t` mask used by attention to handle padding and causal masking
-  - Custom Metal compute shader or CPU fallback (mask creation is cheap; can be done on CPU then uploaded to Metal)
-  - **PASS:** Mask matches CPU output for padded batch (lengths=[3,5], max_len=5) and for causal (mask_future=true)
+- **`prepare_length_mask`** — CPU-side with `commit_and_wait()` flush.
+  O(batch×heads×queries) — GPU kernel launch overhead dominates at typical sizes.
+  0 mismatches, 0.7–273 μs latency.
 
-- **`logsumexp(x, size)` → `float`**
-  - Returns `log(sum(exp(x_i)))` numerically stably; used in beam search log-probability normalization
-  - Note: return type is always `float` even when `T = float16_t` — don't accidentally return `T`
-  - Implement as a reduction kernel (find max, subtract, exp, sum, log, add max back)
-  - **PASS:** `logsumexp([1.0, 2.0, 3.0]) ≈ 3.408` within 1e-5 of CPU result; test with float32 and float16 inputs
+- **`logsumexp`** — CPU-side after `commit_and_wait()`, verified here (done in M4.5).
 
-- **`at(const T* x, dim_t index)` → `T`**
-  - Reads a single element from a Metal buffer at the given index
-  - **Critical subtlety**: Metal GPU writes are not visible to CPU until `synchronize_stream()` is called. `at()` must call `synchronize_stream(Device::METAL)` before reading, or the result will be stale.
-  - **PASS:** Write a value via Metal kernel, call `at()`, verify correct value returned
+- **`at<T>`** — Fixed: now calls `commit_and_wait()` before CPU read (was returning stale data).
 
-**4.8 Transpose primitives**
+**4.8 Transpose primitives** ✅ DONE (2026-02-25)
 
-The `Transpose` op calls `primitives<D>::transpose_2d/3d/4d` internally. These must be specialized separately from the `Transpose` op dispatcher.
+See `agents/report/milestone-4.8-transpose-primitives.md` — 76/76 tests pass.
 
-- `transpose_2d(a, dims, b)` — 2D matrix transpose
-- `transpose_3d(a, dims, perm, b)` — arbitrary 3D permutation
-- `transpose_4d(a, dims, perm, b)` — arbitrary 4D permutation (used for multi-head attention head splitting)
+Implemented via custom MSL compute shaders (`src/metal/kernels/transpose.metal`).
+All three ranks use generic flat-index decomposition (one thread per output element);
+argument structs (`TransposeArgs2D/3D/4D`) bound at `buffer(2)` via `setBytes:`.
+6 MSL types × 3 ranks = 18 kernel functions.
 
-Implementation options:
-- Use `MPSMatrixTranspose` for 2D; custom shader for 3D/4D permutations
-- Or: all via a generic permutation compute shader parameterized by rank+perm
+- `transpose_2d(a, dims, b)` — implicit perm=[1,0]; formula: `b[gid] = a[(gid%rows)*cols + gid/rows]`
+- `transpose_3d(a, dims, perm, b)` — arbitrary 3D permutation via permuted input strides
+- `transpose_4d(a, dims, perm, b)` — arbitrary 4D permutation; critical for MHA head split [0,2,1,3]
 
-- **PASS:** Round-trip test (permute then inverse-permute = identity) for all four shapes; compare to CPU `np.transpose` equivalents
+Performance highlights (encode+commit_and_wait, vs in-pipeline encode-only):
+- 2D: GPU wins at all tested sizes (1.91×–29.76× for 512×512–512×32768)
+- 3D/4D: GPU wins beyond ~1–4 MB; CB overhead dominates below that for standalone calls
+- Reversed perms ([3,2,1,0]): 4.07× GPU even for 262K-element tensors (CPU cache thrash)
 
 ---
 

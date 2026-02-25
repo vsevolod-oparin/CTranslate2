@@ -628,6 +628,160 @@ static void dispatch_penalize(const char* kernel_name,
 }
 
 // ---------------------------------------------------------------------------
+// M4.8 — Transpose kernel infrastructure
+// ---------------------------------------------------------------------------
+
+// Argument structs (C++ side).  Layout must exactly match the MSL structs.
+// All fields are uint32_t, naturally aligned — no padding issues.
+
+struct TransposeArgs2D {
+  uint32_t rows, cols;
+};
+
+struct TransposeArgs3D {
+  uint32_t a_ps0, a_ps1, a_ps2;  // permuted input strides
+  uint32_t b_s0, b_s1;           // output strides (b_s2 = 1, implicit)
+  uint32_t bd1;                   // output dim 1 (for % decomposition)
+};
+
+struct TransposeArgs4D {
+  uint32_t a_ps0, a_ps1, a_ps2, a_ps3;
+  uint32_t b_s0, b_s1, b_s2;
+  uint32_t bd1, bd2;
+};
+
+// MSL source for transpose kernels.
+// Canonical copy lives in src/metal/kernels/transpose.metal.
+static constexpr const char* kTransposeMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+struct TransposeArgs2D { uint rows, cols; };
+struct TransposeArgs3D { uint a_ps0, a_ps1, a_ps2; uint b_s0, b_s1; uint bd1; };
+struct TransposeArgs4D { uint a_ps0, a_ps1, a_ps2, a_ps3; uint b_s0, b_s1, b_s2; uint bd1, bd2; };
+
+#define DEFINE_TRANSPOSE(T)                                                     \
+kernel void transpose_2d_##T(                                                   \
+    device const T*           a    [[buffer(0)]],                               \
+    device       T*           b    [[buffer(1)]],                               \
+    constant TransposeArgs2D& args [[buffer(2)]],                               \
+    uint gid [[thread_position_in_grid]])                                        \
+{ b[gid] = a[(gid % args.rows) * args.cols + (gid / args.rows)]; }             \
+                                                                                \
+kernel void transpose_3d_##T(                                                   \
+    device const T*           a    [[buffer(0)]],                               \
+    device       T*           b    [[buffer(1)]],                               \
+    constant TransposeArgs3D& args [[buffer(2)]],                               \
+    uint gid [[thread_position_in_grid]])                                        \
+{                                                                               \
+  uint i0 =  gid / args.b_s0;                                                  \
+  uint i1 = (gid / args.b_s1) % args.bd1;                                      \
+  uint i2 =  gid % args.b_s1;                                                  \
+  b[gid] = a[i0 * args.a_ps0 + i1 * args.a_ps1 + i2 * args.a_ps2];            \
+}                                                                               \
+                                                                                \
+kernel void transpose_4d_##T(                                                   \
+    device const T*           a    [[buffer(0)]],                               \
+    device       T*           b    [[buffer(1)]],                               \
+    constant TransposeArgs4D& args [[buffer(2)]],                               \
+    uint gid [[thread_position_in_grid]])                                        \
+{                                                                               \
+  uint i0 =  gid / args.b_s0;                                                  \
+  uint i1 = (gid / args.b_s1) % args.bd1;                                      \
+  uint i2 = (gid / args.b_s2) % args.bd2;                                      \
+  uint i3 =  gid % args.b_s2;                                                  \
+  b[gid] = a[i0 * args.a_ps0 + i1 * args.a_ps1 +                               \
+             i2 * args.a_ps2 + i3 * args.a_ps3];                               \
+}
+
+DEFINE_TRANSPOSE(float)
+DEFINE_TRANSPOSE(half)
+DEFINE_TRANSPOSE(int)
+DEFINE_TRANSPOSE(short)
+DEFINE_TRANSPOSE(char)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_TRANSPOSE(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the transpose MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_transpose_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kTransposeMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:nil
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile transpose library";
+      if (err)
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO cache for transpose kernels.
+static id<MTLComputePipelineState> get_transpose_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLLibrary> lib = get_transpose_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil) {
+    throw std::runtime_error(std::string("Metal: transpose kernel not found: ") + name);
+  }
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: transpose PSO creation failed for ") + name;
+    if (err)
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Shared dispatch: 2 data buffers + 1 args struct passed via setBytes:.
+// n = total output elements.
+static void dispatch_transpose(const char* kname,
+                                const void* a, void* b, ctranslate2::dim_t n,
+                                const void* args, size_t args_size) {
+  if (n == 0) return;
+  id<MTLComputePipelineState> pso = get_transpose_pso(kname);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_a = 0, off_b = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  [enc setBytes:args length:args_size atIndex:2];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(n));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(n), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// ---------------------------------------------------------------------------
 // M4.3 — Parallel reduction infrastructure
 // ---------------------------------------------------------------------------
 
@@ -1553,24 +1707,62 @@ namespace ctranslate2 {
     }
   }
 
+  // M4.8 — transpose_2d — GPU kernel (implicit perm = [1,0]).
   template<>
   template <typename T>
   void primitives<Device::METAL>::transpose_2d(const T* a, const dim_t* dims, T* b) {
-    METAL_STUB(transpose_2d);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "transpose_2d_%s", MetalTypeName<T>::value);
+    TransposeArgs2D args{static_cast<uint32_t>(dims[0]), static_cast<uint32_t>(dims[1])};
+    dispatch_transpose(kname, a, b, dims[0] * dims[1], &args, sizeof(args));
   }
 
+  // M4.8 — transpose_3d — GPU kernel (arbitrary 3D permutation).
   template<>
   template <typename T>
   void primitives<Device::METAL>::transpose_3d(
       const T* a, const dim_t* dims, const dim_t* perm, T* b) {
-    METAL_STUB(transpose_3d);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "transpose_3d_%s", MetalTypeName<T>::value);
+    const uint32_t a_stride[3] = {
+      static_cast<uint32_t>(dims[1] * dims[2]),
+      static_cast<uint32_t>(dims[2]),
+      1u
+    };
+    const uint32_t bd1 = static_cast<uint32_t>(dims[perm[1]]);
+    const uint32_t bd2 = static_cast<uint32_t>(dims[perm[2]]);
+    TransposeArgs3D args{
+      a_stride[perm[0]], a_stride[perm[1]], a_stride[perm[2]],
+      bd1 * bd2, bd2,  // b_s0, b_s1
+      bd1
+    };
+    dispatch_transpose(kname, a, b,
+                       dims[0] * dims[1] * dims[2], &args, sizeof(args));
   }
 
+  // M4.8 — transpose_4d — GPU kernel (arbitrary 4D permutation).
   template<>
   template <typename T>
   void primitives<Device::METAL>::transpose_4d(
       const T* a, const dim_t* dims, const dim_t* perm, T* b) {
-    METAL_STUB(transpose_4d);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "transpose_4d_%s", MetalTypeName<T>::value);
+    const uint32_t a_stride[4] = {
+      static_cast<uint32_t>(dims[1] * dims[2] * dims[3]),
+      static_cast<uint32_t>(dims[2] * dims[3]),
+      static_cast<uint32_t>(dims[3]),
+      1u
+    };
+    const uint32_t bd1 = static_cast<uint32_t>(dims[perm[1]]);
+    const uint32_t bd2 = static_cast<uint32_t>(dims[perm[2]]);
+    const uint32_t bd3 = static_cast<uint32_t>(dims[perm[3]]);
+    TransposeArgs4D args{
+      a_stride[perm[0]], a_stride[perm[1]], a_stride[perm[2]], a_stride[perm[3]],
+      bd1 * bd2 * bd3, bd2 * bd3, bd3,  // b_s0, b_s1, b_s2
+      bd1, bd2
+    };
+    dispatch_transpose(kname, a, b,
+                       dims[0] * dims[1] * dims[2] * dims[3], &args, sizeof(args));
   }
 
   // M4.5 — logsumexp: CPU-side after flushing pending GPU work.

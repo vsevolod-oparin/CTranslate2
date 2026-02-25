@@ -35,9 +35,9 @@ All other CPU-reads-after-GPU-write patterns in this file guard with `metal::com
 
 ---
 
-### 1.2 `min` and `max` element-wise overloads are runtime stubs
+### 1.2 `min` and `max` element-wise overloads are runtime stubs ✅ FIXED (2026-02-25)
 
-**Severity: High (runtime throw)**
+**Was: High (runtime throw) — now resolved.**
 
 Four public API overloads unconditionally throw `std::runtime_error` at runtime via `METAL_STUB`:
 
@@ -394,7 +394,7 @@ Suggested case: fill an array of N = 65536 bfloat16 values with 1.0. The exact s
 | # | Category | Severity | Item |
 |---|----------|----------|------|
 | 1.1 | Bug | Medium | `convert` missing `commit_and_wait()` flush before CPU read |
-| 1.2 | Bug | High | `min`/`max` element-wise are runtime throw stubs |
+| 1.2 | Bug | High | `min`/`max` element-wise are runtime throw stubs — **FIXED** |
 | 1.3 | Latent | Low | `uint32_t` truncation of `dim_t` kernel args; silent for N > 2^32 |
 | 2.1 | Quality | Medium | PSO creation boilerplate repeated six times; extract `PSOCache` helper |
 | 2.2 | Quality | Medium | Library compile boilerplate repeated six times; extract `compile_library_once` |

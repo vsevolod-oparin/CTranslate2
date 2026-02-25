@@ -77,6 +77,40 @@ DEFINE_ALL(char)
 #if defined(__HAVE_BFLOAT__)
 DEFINE_ALL(bfloat)
 #endif
+
+// Min / Max using ternary comparison (avoids MSL min()/max() overload
+// ambiguity for bfloat; also correct for integer types without float cast).
+#define DEFINE_MINMAX_BINARY(name, sel, T)                              \
+  kernel void name##_##T(                                               \
+      device const T* a [[buffer(0)]],                                  \
+      device const T* b [[buffer(1)]],                                  \
+      device       T* c [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { T va = a[gid], vb = b[gid]; c[gid] = (va sel vb) ? va : vb; }
+
+#define DEFINE_MINMAX_SCALAR(name, sel, T)                              \
+  kernel void name##_scalar_##T(                                        \
+      device const T* x [[buffer(0)]],                                  \
+      constant     T& a [[buffer(1)]],                                  \
+      device       T* y [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { T vx = x[gid]; y[gid] = (vx sel a) ? vx : a; }
+
+#define DEFINE_MINMAX(T)              \
+  DEFINE_MINMAX_BINARY(min, <, T)    \
+  DEFINE_MINMAX_BINARY(max, >, T)    \
+  DEFINE_MINMAX_SCALAR(min, <, T)    \
+  DEFINE_MINMAX_SCALAR(max, >, T)
+
+DEFINE_MINMAX(float)
+DEFINE_MINMAX(half)
+DEFINE_MINMAX(int)
+DEFINE_MINMAX(short)
+DEFINE_MINMAX(char)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_MINMAX(bfloat)
+#endif
 )msl";
 
 // Lazy-compile the element-wise MSL library.  Thread-safe; compiled once.
@@ -1606,28 +1640,40 @@ namespace ctranslate2 {
     dispatch_binary(kname, a, b, c, size);
   }
 
+  // M4.2 (extended) — min(scalar, vector, out) — GPU kernel: y[i] = min(a, x[i])
   template<>
   template <typename T>
   void primitives<Device::METAL>::min(T a, const T* x, T* y, dim_t size) {
-    METAL_STUB(min);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "min_scalar_%s", MetalTypeName<T>::value);
+    dispatch_scalar(kname, &a, sizeof(T), x, y, size);
   }
 
+  // M4.2 (extended) — min(vector, vector, out) — GPU kernel: c[i] = min(a[i], b[i])
   template<>
   template <typename T>
   void primitives<Device::METAL>::min(const T* a, const T* b, T* c, dim_t size) {
-    METAL_STUB(min);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "min_%s", MetalTypeName<T>::value);
+    dispatch_binary(kname, a, b, c, size);
   }
 
+  // M4.2 (extended) — max(scalar, vector, out) — GPU kernel: y[i] = max(a, x[i])
   template<>
   template <typename T>
   void primitives<Device::METAL>::max(T a, const T* x, T* y, dim_t size) {
-    METAL_STUB(max);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "max_scalar_%s", MetalTypeName<T>::value);
+    dispatch_scalar(kname, &a, sizeof(T), x, y, size);
   }
 
+  // M4.2 (extended) — max(vector, vector, out) — GPU kernel: c[i] = max(a[i], b[i])
   template<>
   template <typename T>
   void primitives<Device::METAL>::max(const T* a, const T* b, T* c, dim_t size) {
-    METAL_STUB(max);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "max_%s", MetalTypeName<T>::value);
+    dispatch_binary(kname, a, b, c, size);
   }
 
   // M4.2 — mul(scalar, vector, out) — GPU kernel

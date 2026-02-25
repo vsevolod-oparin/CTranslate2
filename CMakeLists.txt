@@ -261,7 +261,13 @@ set(METAL_SOURCES
   src/metal/device.mm
   src/metal/utils.mm
   src/metal/allocator.mm
-  src/metal/primitives.mm
+  src/metal/primitives_memory.mm
+  src/metal/primitives_elementwise.mm
+  src/metal/primitives_reduction.mm
+  src/metal/primitives_gemm.mm
+  src/metal/primitives_transpose.mm
+  src/metal/primitives_beam_search.mm
+  src/metal/primitives_norm_gather.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm

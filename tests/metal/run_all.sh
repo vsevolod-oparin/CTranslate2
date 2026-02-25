@@ -61,7 +61,9 @@ CTX_SRCS="src/metal/device.mm src/metal/utils.mm"
 ALLOC_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm"
 
 # Full stack: context + allocator + primitives + C++ allocator/device glue
-FULL_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm src/metal/primitives.mm src/allocator.cc src/devices.cc src/cpu/allocator.cc"
+# primitives.mm was split into 7 focused translation units; list them all here.
+PRIM_SRCS="src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm src/metal/primitives_norm_gather.mm"
+FULL_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm ${PRIM_SRCS} src/allocator.cc src/devices.cc src/cpu/allocator.cc"
 
 # ---------------------------------------------------------------------------
 # Compiler / linker flags
@@ -87,9 +89,10 @@ FW_GRAPH="${FW_BASE} -framework MetalPerformanceShadersGraph"
 # framework_flags : -framework ... flags (expanded at array creation)
 #
 # Ordering: context → allocator → storage → primitives → arithmetic
-#           → reduction → gemm → activation → broadcast → beam_search
-#           → transpose → convert → truncation → minmax
+#           → reduction → gemm → activation → broadcast → dispatch (M5.1)
+#           → beam_search → transpose → convert → truncation → minmax
 #           → pso_warmup → large_transpose → reduce_sum_precision
+#           → normalization_gather (M5.2)
 # ---------------------------------------------------------------------------
 TESTS=(
   "context_test|-O0|${CTX_SRCS}|${FW_BASE}"
@@ -102,6 +105,7 @@ TESTS=(
   "gemm_test|-O2|${FULL_SRCS}|${FW_GRAPH}"
   "activation_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "broadcast_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "dispatch_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "beam_search_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "transpose_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "convert_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
@@ -110,6 +114,7 @@ TESTS=(
   "pso_warmup_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "large_transpose_test|-O2|${FULL_SRCS}|${FW_GRAPH}"
   "reduce_sum_precision_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "normalization_gather_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
 )
 TOTAL=${#TESTS[@]}
 

@@ -26,7 +26,10 @@
 //     -DCT2_WITH_METAL \
 //     tests/metal/normalization_gather_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
-//     src/metal/primitives.mm \
+//     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
+//     src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm \
+//     src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm \
+//     src/metal/primitives_norm_gather.mm \
 //     src/allocator.cc src/devices.cc src/cpu/allocator.cc \
 //     -framework Metal -framework Foundation \
 //     -framework MetalPerformanceShaders \

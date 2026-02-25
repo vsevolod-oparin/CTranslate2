@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 3.2 complete
+**Status:** In progress — Milestone 4.1 complete
 
 ---
 
@@ -370,25 +370,21 @@ See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full det
 
 **Key insight:** Because we use `MTLResourceStorageModeShared`, all Metal buffers are already CPU-accessible via their `contents` pointer. Primitives operate on those raw pointers directly for element-wise ops. For GEMM and reductions, use MPS objects encoded into the current command buffer.
 
-**4.1 Memory primitives (`fill`, `copy`, `convert`)**
-- `src/metal/primitives.mm`:
-  - `fill<T>(T* x, T a, dim_t size)` — encode `MPSMatrixCopy` fill, or use a tiny Metal compute kernel
-  - `copy<T>(T* x, T* y, dim_t size)` — `memcpy` (shared memory) + CPU fence, or `MTLBlitCommandEncoder`
-  - `convert<float, float16_t>(...)` — MPSGraph cast node, or SIMD CPU conversion (unified memory)
-- **PASS:**
-  ```cpp
-  // tests/metal/primitives_test.mm
-  // fill
-  std::vector<float> buf(64);
-  float* metal_ptr = metal_alloc<float>(64);
-  primitives<Device::METAL>::fill(metal_ptr, 3.14f, 64);
-  synchronize_stream(Device::METAL);
-  for (int i=0; i<64; i++) ASSERT_NEAR(metal_ptr[i], 3.14f, 1e-6);
-  // copy
-  primitives<Device::METAL>::copy(metal_ptr, dst_ptr, 64);
-  synchronize_stream(Device::METAL);
-  ASSERT_NEAR(dst_ptr[0], 3.14f, 1e-6);
-  ```
+**4.1 Memory primitives (`fill`, `copy`, `convert`)** ✅ DONE (2026-02-25)
+- Unified memory: all four methods are CPU-side operations on shared-mode MTLBuffer
+  contents pointers — correct because CPU writes happen-before GPU command encoding.
+  - `fill<T>`: `std::fill` — replaces stub
+  - `strided_fill<T>`: stride loop — replaces stub
+  - `indexed_fill<T>`: index loop — replaces stub
+  - `copy<T>`: `std::memcpy` — was real since M3.2
+  - `convert<U,V>`: `std::copy` with implicit `half_float::half` / `bfloat16_t` conversion — replaces stub
+- **Actual result:** 15/15 assertions pass in `tests/metal/primitives_test.mm`:
+  fill (float32/int32/float16), strided_fill, indexed_fill, convert (all 3 round-trips).
+  `StorageView::zero()`, `fill()`, and `to(DataType)` are now unblocked.
+  **Architecture note:** CPU-side is the permanent design for these four primitives,
+  not a stub. Metal command buffer commit overhead (~0.4 ms from M0.3) far exceeds
+  the cost of a CPU fill/convert for all tensor sizes used in inference.
+  See `agents/report/milestone-4.1-memory-primitives.md` for full details.
 
 **4.2 Arithmetic primitives (`add`, `mul`, `sub`)**
 - Use Metal compute shaders (simple element-wise kernels in `src/metal/kernels/elementwise.metal`)

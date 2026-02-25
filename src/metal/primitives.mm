@@ -1,22 +1,24 @@
-// primitives<Device::METAL> — M3.2 implementation.
+// primitives<Device::METAL> — M3.2 + M4.1 implementation.
 //
-// cross_device_primitives (CPU↔Metal):
-//   On Apple Silicon all memory is unified.  MTLResourceStorageModeShared
-//   buffers expose a void* via [buf contents] that is valid for both CPU and
-//   GPU access.  "Copying" between CPU and Metal is therefore a plain memcpy.
-//   The caller is responsible for synchronising the GPU (commit_and_wait) before
-//   reading Metal-written data on the CPU.
+// All Metal buffers use MTLResourceStorageModeShared (unified memory).
+// Their contents pointer is simultaneously valid for CPU and GPU access.
 //
-// primitives<Device::METAL>:
-//   at() and copy() are real implementations; all other methods throw
-//   std::runtime_error("not yet implemented") — they will be replaced in M4.
+// Memory primitives (fill, copy, convert) are therefore implemented as
+// CPU-side operations on the shared pointer — correct, because CPU writes
+// happen-before subsequent GPU command encoding on Apple Silicon.
+//
+// Arithmetic, reduction, and GEMM primitives are implemented in later
+// milestones (M4.2+).  Until then they throw "not yet implemented".
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <algorithm>
 #include <cstring>
 #include <stdexcept>
 #include <string>
+
+#include "ctranslate2/types.h"
 
 #include "ctranslate2/primitives.h"
 #include "metal/utils.h"
@@ -71,28 +73,38 @@ namespace ctranslate2 {
 #define METAL_STUB(name) \
   throw std::runtime_error("primitives<METAL>::" #name ": not yet implemented (scheduled for M4)")
 
+  // M4.1 — Memory primitives.
+  //
+  // Unified memory: the Metal buffer's contents pointer is CPU-writable.
+  // CPU writes are visible to any subsequent GPU command encoding (Apple
+  // Silicon memory coherency guarantee).  No GPU kernel is needed.
+
   template<>
   template <typename T>
   void primitives<Device::METAL>::fill(T* x, T a, dim_t size) {
-    METAL_STUB(fill);
+    std::fill(x, x + size, a);
   }
 
   template<>
   template <typename T>
   void primitives<Device::METAL>::strided_fill(T* x, T a, dim_t inc_x, dim_t size) {
-    METAL_STUB(strided_fill);
+    for (dim_t i = 0; i < size; ++i, x += inc_x)
+      *x = a;
   }
 
   template<>
   template <typename T>
   void primitives<Device::METAL>::indexed_fill(T* x, T a, const int32_t* indices, dim_t num_indices) {
-    METAL_STUB(indexed_fill);
+    for (dim_t i = 0; i < num_indices; ++i)
+      x[indices[i]] = a;
   }
 
+  // convert — std::copy relies on implicit narrowing/widening conversions
+  // defined by half_float::half and bfloat16_t assignment operators.
   template<>
   template <typename U, typename V>
   void primitives<Device::METAL>::convert(const U* x, V* y, dim_t size) {
-    METAL_STUB(convert);
+    std::copy(x, x + size, y);
   }
 
   template<>

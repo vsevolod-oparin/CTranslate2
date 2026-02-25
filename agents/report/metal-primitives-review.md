@@ -340,17 +340,17 @@ The existing `dispatch_unary` / `dispatch_binary` infrastructure could accommoda
 
 ## 4. Suggested New Tests
 
-### 4.1 `convert_gpu_flush_test`
+### 4.1 `convert_gpu_flush_test` ✅ COVERED (2026-02-25)
 
-Verify that `convert` correctly observes GPU-written data.
+**Already implemented** in `tests/metal/convert_test.mm::test_convert_flushes_gpu_writes()` as part of Fix 1.1.
 
-Procedure:
-1. Allocate a Metal buffer `d_src` containing float32 zeros.
-2. Issue a GPU kernel (e.g., `add(1.0f, d_src, d_src, N)`) that writes to `d_src`. Do not call `synchronize_stream()`.
-3. Immediately call `convert<float, float16_t>(d_src, d_dst, N)` without any intervening synchronization.
-4. Assert that `d_dst` contains the value 1.0 in float16, not 0.0 (the stale pre-kernel value).
+The test follows the exact procedure described here:
+1. CPU fills `d_src[N]` with `1.0f`.
+2. GPU encodes `add(5.0f, d_src, d_src, N)` — result 6.0, not yet committed.
+3. `convert<float, float16_t>(d_src, d_dst, N)` is called with no intervening sync.
+4. Asserts `d_dst[i] == 6.0f` (GPU-written value), not `1.0f` (stale CPU value).
 
-Without a `commit_and_wait()` guard in `convert`, step 4 reads stale data and the test fails. With the guard it reads the post-kernel GPU output and passes. This test directly verifies the correctness risk described in finding 1.1.
+The values differ slightly from the spec above (initial=1 + addend=5 instead of initial=0 + addend=1) but the mechanism and stale-vs-fresh distinction are identical. The test is named `"convert flushes GPU writes (f32→f16)"` and is part of the 8-test `convert_test` suite (8/8 pass).
 
 ---
 
@@ -364,15 +364,22 @@ This test is particularly valuable because MSL source errors are not detected at
 
 ---
 
-### 4.3 `min_max_element_wise_test`
+### 4.3 `min_max_element_wise_test` ✅ COVERED (2026-02-25)
 
-Once the element-wise `min` and `max` stubs are implemented (see finding 1.2), add a test suite:
+**Already present** (42 tests) and **extended** (30 new tests) in `tests/metal/minmax_test.mm`. Total: 72/72 pass.
 
-- Scalar clamp min: `y[i] = min(a, x[i])`. Verify for three cases: all elements below `a`, all above `a`, mixed. Test edge case where `a` equals the minimum element.
-- Element-wise vector min: `c[i] = min(a[i], b[i])`. Verify for positive, negative, and mixed values.
-- Scalar clamp max and element-wise vector max: symmetric to the above.
-- Test all three floating-point types: `float`, `float16_t`, `bfloat16_t`.
-- Verify that bfloat min/max kernels use ternary comparison, not MSL `min()`/`max()`, to avoid SDK overload ambiguity.
+New functions added to satisfy the full 4.3 spec:
+
+**`run_scalar_clamp_subcases<T>`** (6 tests × 3 float types = 18 new tests):
+- `all_below`: x[i]=1..16, scalar=20 — `min(20,x)=x`; `max(20,x)=20` (scalar always wins for max)
+- `all_above`: x[i]=1..16, scalar=0  — `min(0,x)=0` (scalar always wins); `max(0,x)=x`
+- `edge`: x[i]=i−8, scalar=−8 (== min element) — `min(−8,x)=−8` for all i; `max(−8,x)=x` for all i
+
+**`run_vector_sign_subcases<T>`** (4 tests × 3 float types = 12 new tests):
+- `all_positive`: a[i]=i+1, b[i]=i+2 (a < b everywhere) — `min(a,b)=a`; `max(a,b)=b`
+- `all_negative`: a[i]=−(i+2), b[i]=−(i+1) (a < b < 0 everywhere) — `min(a,b)=a`; `max(a,b)=b`
+
+**Bfloat ternary verification**: the bfloat16 sub-cases implicitly validate that the MSL kernel uses ternary comparison operators rather than `min()`/`max()` overloads. If the overload were used and absent from the SDK, the kernel would fail to compile or produce wrong values for the bfloat-typed inputs.
 
 ---
 

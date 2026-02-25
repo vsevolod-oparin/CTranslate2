@@ -57,14 +57,14 @@ namespace ctranslate2 {
   }
 
 #define SINGLE_ARG(...) __VA_ARGS__
-#define TYPE_DISPATCH(TYPE_ENUM, STMTS)             \
-  switch (TYPE_ENUM) {                              \
-    TYPE_CASE(float, SINGLE_ARG(STMTS))             \
-    TYPE_CASE(int8_t, SINGLE_ARG(STMTS))            \
-    TYPE_CASE(int16_t, SINGLE_ARG(STMTS))           \
-    TYPE_CASE(int32_t, SINGLE_ARG(STMTS))           \
-    TYPE_CASE(float16_t, SINGLE_ARG(STMTS))         \
-    TYPE_CASE(bfloat16_t, SINGLE_ARG(STMTS))        \
+#define TYPE_DISPATCH(TYPE_ENUM, STMTS)                      \
+  switch (TYPE_ENUM) {                                       \
+    TYPE_CASE(float, SINGLE_ARG(STMTS))                      \
+    TYPE_CASE(int8_t, SINGLE_ARG(STMTS))                     \
+    TYPE_CASE(int16_t, SINGLE_ARG(STMTS))                    \
+    TYPE_CASE(int32_t, SINGLE_ARG(STMTS))                    \
+    TYPE_CASE(ctranslate2::float16_t, SINGLE_ARG(STMTS))     \
+    TYPE_CASE(ctranslate2::bfloat16_t, SINGLE_ARG(STMTS))    \
   }
 
 #define DECLARE_ALL_TYPES(FUNC)                 \
@@ -72,7 +72,7 @@ namespace ctranslate2 {
   FUNC(int8_t)                                  \
   FUNC(int16_t)                                 \
   FUNC(int32_t)                                 \
-  FUNC(float16_t)                               \
-  FUNC(bfloat16_t)
+  FUNC(ctranslate2::float16_t)                  \
+  FUNC(ctranslate2::bfloat16_t)
 
 }

@@ -30,12 +30,12 @@
 #  define DEVICE_AND_FLOAT_DISPATCH(NAME, DEVICE, TYPE, STMTS)          \
   switch (TYPE) {                                                       \
     TYPE_CASE(float, DEVICE_DISPATCH(DEVICE, (STMTS)))                  \
-    TYPE_CASE(float16_t, {                                              \
+    TYPE_CASE(ctranslate2::float16_t, {                                  \
       if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
         throw std::invalid_argument("FP16 " NAME " is only supported on GPU"); \
       DEVICE_DISPATCH(DEVICE, (STMTS));                                 \
     })                                                                  \
-    TYPE_CASE(bfloat16_t, {                                             \
+    TYPE_CASE(ctranslate2::bfloat16_t, {                                \
       if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
         throw std::invalid_argument("BF16 " NAME " is only supported on GPU"); \
       DEVICE_DISPATCH(DEVICE, (STMTS));                                 \

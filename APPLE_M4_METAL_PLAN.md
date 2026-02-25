@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.8 complete (transpose primitives)
+**Status:** In progress — Milestone 5.1 complete (dispatch macro Metal FP16/BF16 update)
 
 ---
 
@@ -563,18 +563,22 @@ Performance highlights (encode+commit_and_wait, vs in-pipeline encode-only):
 **Time:** 1 week
 **Depends on:** M1 (dispatch macros), M4 (primitives)
 
-**5.1 Update `DEVICE_AND_FLOAT_DISPATCH` for Metal FP16/BF16**
-- `src/dispatch.h`: extend the `CT2_WITH_CUDA` block or add a parallel `CT2_WITH_METAL` block
-  ```cpp
-  #ifdef CT2_WITH_METAL
-  TYPE_CASE(float16_t, {
-    if (DEVICE != Device::CUDA && DEVICE != Device::METAL)
-      throw std::invalid_argument("FP16 " NAME " is only supported on GPU");
-    ...
-  })
-  #endif
-  ```
-- **PASS:** `DEVICE_AND_FLOAT_DISPATCH` with `Device::METAL` + `float16_t` dispatches without throwing
+**5.1 Update `DEVICE_AND_FLOAT_DISPATCH` for Metal FP16/BF16** ✅ DONE (2026-02-25)
+
+See `agents/report/milestone-5.1-dispatch-macro-update.md` — 14/14 tests pass.
+
+- `src/dispatch.h`: unified `#else` block covers any GPU backend (CUDA, Metal, or both).
+  FP16 and BF16 TYPE_CASEs check `DEVICE != Device::CUDA && DEVICE != Device::METAL` before
+  throwing, so Metal gets the same GPU-float treatment as CUDA.
+- **Fix applied:** TYPE_CASE tokens qualified as `ctranslate2::float16_t` /
+  `ctranslate2::bfloat16_t` to resolve ambiguity when `dispatch.h` is `#include`d
+  from `.mm` files (Metal ARM headers inject conflicting `::float16_t`/`::bfloat16_t`
+  at global scope). All 4 build configurations (CPU-only, Metal-only, CUDA-only,
+  CUDA+Metal) pass `clang++ -fsyntax-only`.
+- **PASS:** `tests/metal/dispatch_test.mm` 14/14:
+  - float32/float16/bfloat16 + Metal → no throw; D==METAL, sizeof(T) correct
+  - float16/bfloat16 + CPU → throws `std::invalid_argument` with "FP16"/"BF16"
+  - float16/bfloat16 end-to-end Metal add: results correct
 
 **5.2 Add `Device::METAL` specializations to each op**
 - For each op, add `template<> void LayerNorm::compute<Device::METAL, float>(...)` in new `src/ops/layer_norm_metal.mm`

@@ -102,149 +102,87 @@ Several primitives cast `dim_t` (which is `int64_t` on 64-bit platforms) to `uin
 
 ## 2. Code Quality and Maintainability
 
-### 2.1 PSO creation boilerplate repeated across six kernel groups
+### 2.1 PSO creation boilerplate repeated across six kernel groups ✅ FIXED (2026-02-25)
 
-**Severity: Medium (maintenance burden)**
+**Was: Medium — now resolved.**
 
-Each of the six kernel groups (elementwise, activation, broadcast, beam_search, transpose, reduction) contains a functionally identical PSO lookup function. The structure is the same in every case:
+**Applied fix** (`src/metal/primitives.mm`): Added `make_pso(lib, name)` and `PSOCache` struct before the first library function. Each of the six `get_*_pso` functions is now a 3-line one-liner:
 
-1. Declare a static `std::unordered_map<std::string, id<MTLComputePipelineState>>` and a static `std::mutex`.
-2. Acquire the lock and check the cache.
-3. On miss: call the corresponding `get_*_library()` function.
-4. Look up the function by name; throw if nil.
-5. Create the PSO; throw if nil.
-6. Insert into cache and return.
+```cpp
+static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_elementwise_library, name);
+}
+```
 
-This pattern spans approximately 30 lines per group, giving roughly 180 lines of near-identical code across the six functions. The functions differ only in the library they call and the prefix of their error messages.
-
-Because the pattern is duplicated, any future change — for example, switching from `newComputePipelineStateWithFunction:error:` to the async `newComputePipelineStateWithFunction:completionHandler:`, or adding PSO descriptor options — must be applied six times and can be forgotten in some copies.
-
-**Suggested refactoring:** Extract the repeated logic into two shared helpers in the anonymous namespace:
-
-1. A `make_pso(id<MTLLibrary> lib, const char* name) -> id<MTLComputePipelineState>` function that performs the function lookup and PSO creation with uniform error handling.
-2. A small `PSOCache` struct (or class) holding the `std::unordered_map` and `std::mutex` with a single `get(id<MTLLibrary> lib, const char* name)` method. Each library group then creates one `static PSOCache` instance.
-
-This reduces the six ~30-line functions to six one-line calls.
+`PSOCache` holds a `std::unordered_map` + `std::mutex` and a templated `get(LibFn, name)` method. `make_pso` performs the function lookup and PSO creation with uniform error handling. ~180 lines of duplicated boilerplate reduced to ~18 lines (6 × 3).
 
 ---
 
-### 2.2 Library compilation boilerplate repeated across six kernel groups
+### 2.2 Library compilation boilerplate repeated across six kernel groups ✅ FIXED (2026-02-25)
 
-**Severity: Medium (maintenance burden)**
+**Was: Medium — now resolved.**
 
-The six `get_*_library()` functions (`get_elementwise_library`, `get_activation_library`, `get_broadcast_library`, `get_beam_search_library`, `get_transpose_library`, `get_reduction_library`) share identical structure:
+**Applied fix** (`src/metal/primitives.mm`): Added `compile_library_once(flag, lib_out, msl_src, label, opts=nil)` helper. Each of the six `get_*_library` functions is now a 3-line one-liner:
 
-1. Declare a `static id<MTLLibrary> lib = nil` and a `static std::once_flag flag`.
-2. Call `std::call_once`.
-3. Convert the MSL string to `NSString`.
-4. Call `newLibraryWithSource:options:error:`.
-5. Check for nil, construct an error message, throw.
-
-The only differences are the MSL source string, the compile options (only the activation library passes non-nil options), and the label used in the error message. This is approximately 15 lines per group, 90 lines total.
-
-**Suggested refactoring:** Extract a shared helper:
-
-```
-static id<MTLLibrary> compile_library_once(
-    std::once_flag& flag,
-    id<MTLLibrary>& lib_out,
-    const char* msl_src,
-    const char* label,
-    MTLCompileOptions* opts = nil);
+```cpp
+static id<MTLLibrary> get_elementwise_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kElementwiseMSL, "elementwise");
+}
 ```
 
-The six functions collapse to six one-line calls with their respective arguments.
+~90 lines of duplicated boilerplate reduced to ~18 lines (6 × 3).
 
 ---
 
 ### 2.3 MSL source duplicated between `.metal` files and embedded C strings
 
-**Severity: Medium (source of silent divergence)**
+**Severity: Medium (source of silent divergence) — build-system change, deferred**
 
-Six `.metal` files exist at `src/metal/kernels/`:
-
-- `elementwise.metal`
-- `activation.metal`
-- `broadcast.metal`
-- `beam_search.metal`
-- `transpose.metal`
-- `reduction.metal`
-
-These are described in comments as the "canonical copies". However, at runtime the Metal libraries are compiled from verbatim C raw string literals (`kElementwiseMSL`, `kActivationMSL`, etc.) embedded in `primitives.mm`. The `.metal` files are not consumed by the build system; their value is documentation and IDE support.
-
-This means every edit to a `.metal` file must be manually mirrored in the corresponding `k*MSL` string. The two copies can silently diverge: a developer refines the `.metal` source for readability or correctness, forgets to update the embedded string, and the change is never actually executed at runtime. The reverse is equally possible — a hotfix applied to the embedded string is never reflected in the documented `.metal` file.
-
-**Suggested improvement (two options):**
-
-Option A (lighter): Add a CI step or a build-time check that compares the SHA-1 (or any stable hash) of each `.metal` file against a recorded expected hash stored in a comment or sidecar file next to the `k*MSL` string. The build fails if hashes diverge.
-
-Option B (heavier, preferred long-term): Add a code-generation step that automatically produces the `k*MSL` strings from the `.metal` files at build time (e.g., via a CMake `configure_file` or a Python script that hex-encodes the `.metal` content into a C header). The duplication then becomes mechanical and always correct.
+The divergence risk remains. Both options (CI hash check or CMake code-generation) require build-system changes outside the scope of the current primitives refactoring. The existing `"This is the exact content of src/metal/kernels/X.metal"` comments in each `k*MSL` string document the relationship. A future PR should implement Option B (CMake `configure_file` or equivalent) to make the sync mechanical.
 
 ---
 
-### 2.4 `MTLLanguageVersion3_1` on the activation library has no effect
+### 2.4 `MTLLanguageVersion3_1` on the activation library ✅ FIXED (2026-02-25)
 
-**Severity: Low (misleading comment)**
+**Was: Low — now resolved.**
 
-In `get_activation_library()` (line 274):
-
-```objc
-MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-opts.languageVersion = MTLLanguageVersion3_1;
-```
-
-The comment above reads: "We request Metal 3.1 (macOS 14+) to ensure erf() is available — it was added to the Metal standard math library in MSL 3.1."
-
-However, the activation kernels do not call `erf()`. They call `ct2_erf()`, the Abramowitz and Stegun polynomial approximation defined in the MSL source string itself, precisely because MSL's built-in `erf()` was found to be unavailable even after setting `MTLLanguageVersion3_1`. The comment's stated reason for the option is therefore factually incorrect.
-
-The `MTLLanguageVersion3_1` option has no effect on the compiled kernels as written. All other five library compilation calls pass `nil` options. Leaving a non-nil options object with an inaccurate justifying comment creates confusion for future maintainers: they may believe `MTLLanguageVersion3_1` is a prerequisite for correct activation behavior, and may be reluctant to remove it or consolidate it with the other libraries.
-
-**Suggested fix:** Pass `nil` options to `get_activation_library()` matching the pattern of the other five libraries. Update the comment near `ct2_erf()` to clarify that the polynomial approximation is used because the MSL built-in was unavailable, making the language version option unnecessary.
+**Applied fix** (`src/metal/primitives.mm`):
+- Removed the `MTLCompileOptions` object and `MTLLanguageVersion3_1` from `get_activation_library()`. Now passes `nil` options, matching all other five groups.
+- Updated the `ct2_erf` comment to state: "Metal Shading Language does not provide erf() in metal_stdlib, *even when MTLLanguageVersion3_1 is requested*. We therefore use a polynomial approximation; this also makes the activation library compile-option-free."
+- The refactoring in 2.1/2.2 reinforces this: `get_activation_library` is now a one-liner with no options argument, making the absence of special options visually obvious.
 
 ---
 
-### 2.5 Inconsistent error message format across kernel groups
+### 2.5 Inconsistent error message format across kernel groups ✅ FIXED (2026-02-25)
 
-**Severity: Low**
+**Was: Low — resolved as side effect of 2.1.**
 
-Error messages for missing kernel functions use different prefix strings depending on which group they come from:
+All six `get_*_pso` functions now go through the single `make_pso` helper which emits:
+- `"Metal: kernel not found: <name>"` for missing functions
+- `"Metal: PSO creation failed for <name>: <Metal error>"` for creation failures
 
-| Group | "not found" message |
-|---|---|
-| Elementwise | `"Metal: kernel not found: "` |
-| Activation | `"Metal: activation kernel not found: "` |
-| Broadcast | `"Metal: broadcast kernel not found: "` |
-| Beam search | `"Metal: beam_search kernel not found: "` |
-| Transpose | `"Metal: transpose kernel not found: "` |
-| Reduction | `"Metal: reduction kernel not found: "` |
-
-The PSO creation failure messages are also inconsistent: beam_search uses `"Metal: beam_search PSO creation failed for "` while the others use `"Metal: PSO creation failed for "`.
-
-When the PSO boilerplate is unified into a shared helper (see 2.1), these messages will naturally become consistent as a side effect of having a single code path.
+The former per-group prefixes (`"activation kernel not found"`, `"beam_search kernel not found"`, `"beam_search PSO creation failed for"`, etc.) are gone.
 
 ---
 
-### 2.6 `alloc_temp_buffer` usage within `dispatch_mps_gemm` bypasses pool and triggers a CPU copy before the buffer is used by the GPU
+### 2.6 CPU-GPU coherency in `dispatch_mps_gemm` ✅ FIXED (2026-02-25)
 
-**Severity: Low (correctness note, not a bug)**
+**Was: Low — now resolved.**
 
-In `dispatch_mps_gemm`, when `pad_a` or `pad_b` is true, the code uses `alloc_temp_buffer` to create a fresh MTLBuffer and then immediately writes to it with `std::memcpy` (lines 1074-1075, 1085-1086). This memcpy happens on the CPU before any GPU command is encoded, which is correct — CPU writes to a Shared-mode buffer are coherent with the GPU on subsequent encodings.
+**Applied fix** (`src/metal/primitives.mm`): Added an explanatory comment above the `pad_a`/`pad_b` buffer preparation block:
 
-However, the pattern relies on the implicit understanding that (1) the CPU memcpy completes before the GPU starts, and (2) no intervening GPU command on a different thread could observe a half-written buffer. Both hold because the buffer is freshly allocated (not shared with any prior encoding) and the encoding happens in the same thread immediately after the copy. This is correct but the correctness is non-obvious. A comment explaining why no CPU-GPU synchronization is required between the memcpy and the encoding would benefit future readers.
+> CPU writes to freshly-allocated `MTLResourceStorageModeShared` buffers are immediately visible to the GPU on Apple Silicon unified memory. No explicit flush is required between the `memcpy` calls and the subsequent MPS encode because (a) each buffer is newly allocated so no prior GPU encoding holds a reference to it, and (b) the encode happens in the same thread immediately after the copy completes.
 
 ---
 
 ### 2.7 `buffer_for_ptr` performs a linear scan through all live allocations
 
-**Severity: Low (not a hot path today)**
+**Severity: Low — deferred (out of scope)**
 
-`MetalAllocator::buffer_for_ptr` in `allocator.mm` (line 41-54) iterates through `_live` — a `std::unordered_map<void*, LiveEntry>` — with a range-for loop, comparing each base pointer's range against the query. This is an O(N) scan where N is the number of live allocations.
-
-The `_live` map stores entries keyed by the exact base pointer of each allocation, so a mid-allocation pointer (e.g., a pointer into the middle of a buffer) cannot be resolved by a direct `find()`. The comment acknowledges this: "Iterates _live to find the enclosing allocation. O(n) where n is the number of live allocations — typically a few dozen in inference."
-
-For normal inference workloads with a stable allocation set, this is not a bottleneck. Every call to `dispatch_binary`, `dispatch_scalar`, `dispatch_broadcast1`, `dispatch_broadcast2`, `dispatch_unary`, `dispatch_transpose`, and the GEMM path calls `metal_buffer_for_ptr` two to three times. In a transformer layer with batch=1, these calls are in the hundreds per forward pass.
-
-If the allocation count grows (e.g., KV cache with large context windows creating many independently allocated buffers), the scan could become measurable. A future optimization would replace the linear scan with an interval tree or sorted array supporting binary search, but this is out of scope for the current milestone.
+Acknowledged in the existing comment. O(N) scan is acceptable for current workloads (typically a few dozen live allocations). Replace with an interval tree or sorted array when/if KV cache growth makes it measurable.
 
 ---
 
@@ -354,7 +292,22 @@ The values differ slightly from the spec above (initial=1 + addend=5 instead of 
 
 ---
 
-### 4.2 `pso_warmup_test`
+### 4.2 `pso_warmup_test` ✅ COVERED (2026-02-25)
+
+**Implemented** in `tests/metal/pso_warmup_test.mm` (12/12 pass).
+
+One kernel from each of the six library groups is triggered via the public API and wrapped in a `no_exception()` helper. If any `newLibraryWithSource:` or `newComputePipelineStateWithFunction:` call fails, the test FAILS:
+
+| Group | Trigger call | Types tested |
+|-------|-------------|-------------|
+| elementwise | `add(vec, vec, out, N)` | f32, f16 |
+| activation | `relu(x, y, N)`, `gelu(x, y, N)` | f32 (relu), f32 (gelu/ct2_erf), bf16 |
+| broadcast | `add_batch_broadcast(a, b, c, 2, 4)` | f32, f16 |
+| beam_search | `penalize_previous_tokens(…)` | f32 |
+| transpose | `transpose_2d(a, dims, b)` | f32, f16 |
+| reduction | `sum(x, N)`, `max_element(x, N)` | f32 |
+
+Original description:
 
 Verify that all six MSL libraries compile cleanly at process startup.
 
@@ -383,7 +336,20 @@ New functions added to satisfy the full 4.3 spec:
 
 ---
 
-### 4.4 `large_transpose_test`
+### 4.4 `large_transpose_test` ✅ COVERED (2026-02-25)
+
+**Implemented** in `tests/metal/large_transpose_test.mm` (7/7 pass).
+
+All cases compare GPU output against the CPU reference from `transpose_test.mm`. Shapes exercise `gid` values up to 1,048,575 — confirming the MSL `uint gid` arithmetic (`i0 = gid/b_s0`, `i1 = (gid/b_s1)%bd1`, `i2 = gid%b_s1`) is correct throughout:
+
+| Case | Shape | Elements | Permutation(s) |
+|------|-------|----------|----------------|
+| 2D large | [1024, 512] | 524,288 | [1,0] |
+| 3D attention | [32, 128, 256] | 1,048,576 | [2,0,1], [0,2,1], [1,0,2] |
+| 4D MHA | [4, 32, 64, 128] | 1,048,576 | [0,2,1,3], [3,2,1,0] |
+| 4D decode | [1, 16, 512, 128] | 1,048,576 | [0,2,1,3] |
+
+Original description:
 
 Test 2D, 3D, and 4D transpose for tensors with per-dimension sizes around 1024 to verify that the index decomposition arithmetic in the MSL kernels (`gid / b_s0`, `gid % bd1`, etc.) remains correct for large element counts.
 
@@ -391,7 +357,24 @@ Current tests likely cover small tensors used in development. A test with, for e
 
 ---
 
-### 4.5 `reduce_sum_precision_test`
+### 4.5 `reduce_sum_precision_test` ✅ COVERED (2026-02-25)
+
+**Implemented** in `tests/metal/reduce_sum_precision_test.mm` (6/6 pass).
+
+PASS/FAIL checks only that the result is finite and no exception is thrown. Relative errors are informational baselines. Observed results on M4 (N=65536):
+
+| Type | fill=1.0 (exact=65536) | fill=1/3 (exact≈21845) |
+|------|----------------------|----------------------|
+| float32 | 0.00e+00 (exact) | 7.15e-07 |
+| float16 | overflow (inf) — expected, max=65504 | 7.57e-03 |
+| bfloat16 | 0.00e+00 (exact) | **3.91e-02** |
+
+Key findings:
+- For `fill=1.0` the bfloat16 result is exact: all partial sums are powers of 2 (256.0 per group, 65536.0 total), exactly representable in BF16 — the precision problem doesn't manifest here.
+- For `fill=1/3` the bfloat16 error is 3.91% versus 1.95e-03 for float32-over-BF16 reference (CPU accumulating in float32 over the same BF16 inputs). This confirms finding 3.4: the GPU accumulation in BF16 adds ~20× more error than the input quantisation noise alone.
+- The reference (CPU float32 accumulation over BF16 inputs) gives 1.95e-03 — this is the floor achievable if the kernel switched to float threadgroup memory as `reduce_amax` does.
+
+Original description:
 
 Verify that `sum<bfloat16_t>` produces an acceptably accurate result for large arrays with a known analytic sum.
 
@@ -418,11 +401,11 @@ Suggested case: fill an array of N = 65536 bfloat16 values with 1.0. The exact s
 | 3.3 | Perf | Low | Small-matrix FP32/FP16 GEMM with `pad_c` commits command buffer unconditionally |
 | 3.4 | Perf | Low | `reduce_sum<bfloat16_t>` accumulates in bfloat precision; consider float accumulator as in `reduce_amax` |
 | 3.5 | Perf | Low | `convert` is CPU-only; a GPU kernel would be faster for large type conversions |
-| 4.1 | Test | — | Add `convert_gpu_flush_test` to verify finding 1.1 |
-| 4.2 | Test | — | Add `pso_warmup_test` to catch MSL syntax errors at test time |
-| 4.3 | Test | — | Add `min_max_element_wise_test` after finding 1.2 is resolved |
-| 4.4 | Test | — | Add `large_transpose_test` for production-scale tensor shapes |
-| 4.5 | Test | — | Add `reduce_sum_precision_test` to baseline bfloat16 accumulation error |
+| 4.1 | Test | — | Add `convert_gpu_flush_test` to verify finding 1.1 — **COVERED** |
+| 4.2 | Test | — | Add `pso_warmup_test` to catch MSL syntax errors at test time — **COVERED** |
+| 4.3 | Test | — | Add `min_max_element_wise_test` after finding 1.2 is resolved — **COVERED** |
+| 4.4 | Test | — | Add `large_transpose_test` for production-scale tensor shapes — **COVERED** |
+| 4.5 | Test | — | Add `reduce_sum_precision_test` to baseline bfloat16 accumulation error — **COVERED** |
 
 **Recommended implementation order:**
 

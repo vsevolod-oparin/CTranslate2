@@ -114,59 +114,83 @@ DEFINE_MINMAX(bfloat)
 #endif
 )msl";
 
-// Lazy-compile the element-wise MSL library.  Thread-safe; compiled once.
-static id<MTLLibrary> get_elementwise_library() {
-  static id<MTLLibrary> lib = nil;
-  static std::once_flag flag;
-  std::call_once(flag, [] {
+// ---------------------------------------------------------------------------
+// Shared infrastructure: library compilation and PSO caching (2.1 / 2.2)
+//
+// Previously each of the six kernel groups duplicated ~15 lines of library
+// compilation code and ~30 lines of PSO cache code.  These three helpers
+// collapse that to one-liners per group and guarantee consistent error
+// messages (fixing 2.5 as a side effect).
+// ---------------------------------------------------------------------------
+
+// Compile an MSL library from a C string exactly once.  Thread-safe.
+// `flag` and `lib_out` are static locals owned by the calling library getter.
+static id<MTLLibrary> compile_library_once(std::once_flag& flag,
+                                            id<MTLLibrary>& lib_out,
+                                            const char* msl_src,
+                                            const char* label,
+                                            MTLCompileOptions* opts = nil) {
+  std::call_once(flag, [&] {
     NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kElementwiseMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:nil
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile elementwise library";
-      if (err) {
+    NSString* src = [NSString stringWithUTF8String:msl_src];
+    lib_out = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src options:opts error:&err];
+    if (lib_out == nil) {
+      std::string msg = std::string("Metal: failed to compile ") + label + " library";
+      if (err)
         msg += std::string(": ") + [err.localizedDescription UTF8String];
-      }
       throw std::runtime_error(msg);
     }
   });
-  return lib;
+  return lib_out;
 }
 
-// PSO (pipeline state object) cache.  Keyed by kernel function name.
-static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_elementwise_library();
+// Create a single PSO from a named function in a library.
+static id<MTLComputePipelineState> make_pso(id<MTLLibrary> lib, const char* name) {
   NSString* nsname = [NSString stringWithUTF8String:name];
   id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
+  if (fn == nil)
     throw std::runtime_error(std::string("Metal: kernel not found: ") + name);
-  }
-
   NSError* err = nil;
   id<MTLComputePipelineState> pso =
       [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
+          newComputePipelineStateWithFunction:fn error:&err];
   if (pso == nil) {
     std::string msg = std::string("Metal: PSO creation failed for ") + name;
     if (err)
       msg += std::string(": ") + [err.localizedDescription UTF8String];
     throw std::runtime_error(msg);
   }
-  cache[name] = pso;
   return pso;
+}
+
+// Thread-safe PSO cache.  Each kernel group owns one static instance.
+// Keyed by kernel function name; populated lazily on first use.
+struct PSOCache {
+  std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  std::mutex mtx;
+
+  template <typename LibFn>
+  id<MTLComputePipelineState> get(LibFn lib_fn, const char* name) {
+    std::lock_guard<std::mutex> lock(mtx);
+    auto it = cache.find(name);
+    if (it != cache.end()) return it->second;
+    return cache[name] = make_pso(lib_fn(), name);
+  }
+};
+
+// ---------------------------------------------------------------------------
+
+// Lazy-compile the element-wise MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_elementwise_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kElementwiseMSL, "elementwise");
+}
+
+static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_elementwise_library, name);
 }
 
 // Checked narrowing: dim_t (int64_t) → uint32_t.
@@ -260,9 +284,11 @@ static constexpr const char* kActivationMSL = R"msl(
 #include <metal_stdlib>
 using namespace metal;
 
-// Metal Shading Language does not provide erf() in its standard library.
-// We implement it via the Abramowitz & Stegun polynomial approximation
-// (formula 7.1.28, max absolute error 1.5e-7):
+// Metal Shading Language does not provide erf() in metal_stdlib, even when
+// MTLLanguageVersion3_1 is requested.  We therefore implement it via the
+// Abramowitz & Stegun polynomial approximation (formula 7.1.28,
+// max absolute error 1.5e-7); this also makes the activation library
+// compile-option-free (nil opts, matching the other five groups):
 //
 //   t = 1 / (1 + 0.3275911 * |x|)
 //   erf(x) ≈ sign(x) * (1 - poly(t) * exp(-x*x))
@@ -316,59 +342,20 @@ DEFINE_ACTIVATION_OPS(bfloat)
 // We request Metal 3.1 (macOS 14+) to ensure erf() is available — it was
 // added to the Metal standard math library in MSL 3.1.  Our deployment
 // target is already macOS 14 (set in CMakeLists.txt for BF16 support).
+// Note: MTLLanguageVersion3_1 was previously set here on the assumption that
+// it would make MSL's built-in erf() available.  It does not — erf() is absent
+// from metal_stdlib regardless of language version.  The activation kernels use
+// ct2_erf() (a polynomial approximation defined in the MSL source) instead,
+// so no special compile options are needed.  nil options match all other groups.
 static id<MTLLibrary> get_activation_library() {
   static id<MTLLibrary> lib = nil;
   static std::once_flag flag;
-  std::call_once(flag, [] {
-    NSError* err = nil;
-    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
-    opts.languageVersion = MTLLanguageVersion3_1;
-    NSString* src = [NSString stringWithUTF8String:kActivationMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:opts
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile activation library";
-      if (err)
-        msg += std::string(": ") + [err.localizedDescription UTF8String];
-      throw std::runtime_error(msg);
-    }
-  });
-  return lib;
+  return compile_library_once(flag, lib, kActivationMSL, "activation");
 }
 
-// PSO cache for activation kernels.
 static id<MTLComputePipelineState> get_activation_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_activation_library();
-  NSString* nsname = [NSString stringWithUTF8String:name];
-  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
-    throw std::runtime_error(std::string("Metal: activation kernel not found: ") + name);
-  }
-
-  NSError* err = nil;
-  id<MTLComputePipelineState> pso =
-      [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
-  if (pso == nil) {
-    std::string msg = std::string("Metal: PSO creation failed for ") + name;
-    if (err)
-      msg += std::string(": ") + [err.localizedDescription UTF8String];
-    throw std::runtime_error(msg);
-  }
-  cache[name] = pso;
-  return pso;
+  static PSOCache cache;
+  return cache.get(get_activation_library, name);
 }
 
 // Dispatch a unary element-wise activation kernel: y[i] = f(x[i]).
@@ -449,58 +436,15 @@ DEFINE_BROADCAST_OPS(bfloat)
 #endif
 )msl";
 
-// Lazy-compile the broadcast MSL library.  Thread-safe; compiled once.
 static id<MTLLibrary> get_broadcast_library() {
   static id<MTLLibrary> lib = nil;
   static std::once_flag flag;
-  std::call_once(flag, [] {
-    NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kBroadcastMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:nil
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile broadcast library";
-      if (err)
-        msg += std::string(": ") + [err.localizedDescription UTF8String];
-      throw std::runtime_error(msg);
-    }
-  });
-  return lib;
+  return compile_library_once(flag, lib, kBroadcastMSL, "broadcast");
 }
 
-// PSO cache for broadcast kernels.
 static id<MTLComputePipelineState> get_broadcast_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_broadcast_library();
-  NSString* nsname = [NSString stringWithUTF8String:name];
-  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
-    throw std::runtime_error(std::string("Metal: broadcast kernel not found: ") + name);
-  }
-
-  NSError* err = nil;
-  id<MTLComputePipelineState> pso =
-      [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
-  if (pso == nil) {
-    std::string msg = std::string("Metal: PSO creation failed for ") + name;
-    if (err)
-      msg += std::string(": ") + [err.localizedDescription UTF8String];
-    throw std::runtime_error(msg);
-  }
-  cache[name] = pso;
-  return pso;
+  static PSOCache cache;
+  return cache.get(get_broadcast_library, name);
 }
 
 // Dispatch a broadcast kernel: 3 data buffers + 1 uint32 constant at buffer(3).
@@ -592,58 +536,15 @@ DEFINE_PENALIZE(bfloat)
 #endif
 )msl";
 
-// Lazy-compile the beam-search MSL library.  Thread-safe; compiled once.
 static id<MTLLibrary> get_beam_search_library() {
   static id<MTLLibrary> lib = nil;
   static std::once_flag flag;
-  std::call_once(flag, [] {
-    NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kBeamSearchMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:nil
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile beam_search library";
-      if (err)
-        msg += std::string(": ") + [err.localizedDescription UTF8String];
-      throw std::runtime_error(msg);
-    }
-  });
-  return lib;
+  return compile_library_once(flag, lib, kBeamSearchMSL, "beam_search");
 }
 
-// PSO cache for beam-search kernels.
 static id<MTLComputePipelineState> get_beam_search_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_beam_search_library();
-  NSString* nsname = [NSString stringWithUTF8String:name];
-  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
-    throw std::runtime_error(std::string("Metal: beam_search kernel not found: ") + name);
-  }
-
-  NSError* err = nil;
-  id<MTLComputePipelineState> pso =
-      [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
-  if (pso == nil) {
-    std::string msg = std::string("Metal: beam_search PSO creation failed for ") + name;
-    if (err)
-      msg += std::string(": ") + [err.localizedDescription UTF8String];
-    throw std::runtime_error(msg);
-  }
-  cache[name] = pso;
-  return pso;
+  static PSOCache cache;
+  return cache.get(get_beam_search_library, name);
 }
 
 // Dispatch penalize_previous_tokens: one thread per batch item.
@@ -763,54 +664,12 @@ DEFINE_TRANSPOSE(bfloat)
 static id<MTLLibrary> get_transpose_library() {
   static id<MTLLibrary> lib = nil;
   static std::once_flag flag;
-  std::call_once(flag, [] {
-    NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kTransposeMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:nil
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile transpose library";
-      if (err)
-        msg += std::string(": ") + [err.localizedDescription UTF8String];
-      throw std::runtime_error(msg);
-    }
-  });
-  return lib;
+  return compile_library_once(flag, lib, kTransposeMSL, "transpose");
 }
 
-// PSO cache for transpose kernels.
 static id<MTLComputePipelineState> get_transpose_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_transpose_library();
-  NSString* nsname = [NSString stringWithUTF8String:name];
-  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
-    throw std::runtime_error(std::string("Metal: transpose kernel not found: ") + name);
-  }
-
-  NSError* err = nil;
-  id<MTLComputePipelineState> pso =
-      [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
-  if (pso == nil) {
-    std::string msg = std::string("Metal: transpose PSO creation failed for ") + name;
-    if (err)
-      msg += std::string(": ") + [err.localizedDescription UTF8String];
-    throw std::runtime_error(msg);
-  }
-  cache[name] = pso;
-  return pso;
+  static PSOCache cache;
+  return cache.get(get_transpose_library, name);
 }
 
 // Shared dispatch: 2 data buffers + 1 args struct passed via setBytes:.
@@ -981,56 +840,12 @@ DEFINE_REDUCE_MAX_ELEMENT(bfloat)
 static id<MTLLibrary> get_reduction_library() {
   static id<MTLLibrary> lib = nil;
   static std::once_flag flag;
-  std::call_once(flag, [] {
-    NSError* err = nil;
-    NSString* src = [NSString stringWithUTF8String:kReductionMSL];
-    lib = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src
-                     options:nil
-                       error:&err];
-    if (lib == nil) {
-      std::string msg = "Metal: failed to compile reduction library";
-      if (err) {
-        msg += std::string(": ") + [err.localizedDescription UTF8String];
-      }
-      throw std::runtime_error(msg);
-    }
-  });
-  return lib;
+  return compile_library_once(flag, lib, kReductionMSL, "reduction");
 }
 
-// PSO cache for reduction kernels.
 static id<MTLComputePipelineState> get_reduction_pso(const char* name) {
-  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
-  static std::mutex cache_mutex;
-
-  std::lock_guard<std::mutex> lock(cache_mutex);
-  auto it = cache.find(name);
-  if (it != cache.end()) {
-    return it->second;
-  }
-
-  id<MTLLibrary> lib = get_reduction_library();
-  NSString* nsname = [NSString stringWithUTF8String:name];
-  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
-  if (fn == nil) {
-    throw std::runtime_error(std::string("Metal: reduction kernel not found: ") + name);
-  }
-
-  NSError* err = nil;
-  id<MTLComputePipelineState> pso =
-      [ctranslate2::metal::get_metal_device()
-          newComputePipelineStateWithFunction:fn
-                                       error:&err];
-  if (pso == nil) {
-    std::string msg = std::string("Metal: reduction PSO creation failed for ") + name;
-    if (err) {
-      msg += std::string(": ") + [err.localizedDescription UTF8String];
-    }
-    throw std::runtime_error(msg);
-  }
-  cache[name] = pso;
-  return pso;
+  static PSOCache cache;
+  return cache.get(get_reduction_library, name);
 }
 
 // Fixed threadgroup size for all reduction kernels.
@@ -1118,6 +933,14 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
   const bool pad_c = (nat_rb_c < mps_rb_c);
 
   // Prepare buffers — copy to row-padded temps when natural stride is too small.
+  //
+  // Coherency note (2.6): CPU memcpy to freshly-allocated MTLResourceStorageModeShared
+  // buffers is immediately visible to the GPU on Apple Silicon unified memory.  No
+  // explicit CPU→GPU flush is required between the memcpy calls below and the MPS
+  // encode that follows because (a) each buffer is newly allocated so no prior GPU
+  // encoding holds a reference to it, and (b) the encode happens in the same thread
+  // immediately after the copy completes — there is no window in which the GPU could
+  // observe a half-written buffer.
   id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;

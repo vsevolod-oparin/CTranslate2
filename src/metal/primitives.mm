@@ -199,6 +199,150 @@ static constexpr size_t kKernelNameBufSize = 64;
 
 
 // ---------------------------------------------------------------------------
+// M4.5 — Activation / transcendental kernel infrastructure
+// ---------------------------------------------------------------------------
+
+// MSL source for all unary activation and transcendental kernels.
+// This is the exact content of src/metal/kernels/activation.metal embedded
+// as a C++ string and compiled at runtime via newLibraryWithSource:.
+static constexpr const char* kActivationMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+// Metal Shading Language does not provide erf() in its standard library.
+// We implement it via the Abramowitz & Stegun polynomial approximation
+// (formula 7.1.28, max absolute error 1.5e-7):
+//
+//   t = 1 / (1 + 0.3275911 * |x|)
+//   erf(x) ≈ sign(x) * (1 - poly(t) * exp(-x*x))
+//   poly(t) = t*(a1 + t*(a2 + t*(a3 + t*(a4 + t*a5))))
+//
+// Always operates in float32 regardless of kernel input type.
+static float ct2_erf(float x) {
+  const float p  = 0.3275911f;
+  const float a1 =  0.254829592f;
+  const float a2 = -0.284496736f;
+  const float a3 =  1.421413741f;
+  const float a4 = -1.453152027f;
+  const float a5 =  1.061405429f;
+  float sign = (x >= 0.f) ? 1.f : -1.f;
+  float ax = fabs(x);
+  float t  = 1.f / (1.f + p * ax);
+  float poly = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
+  return sign * (1.f - poly * exp(-ax * ax));
+}
+
+#define DEFINE_UNARY(name, T, expr)                     \
+kernel void name##_##T(                                 \
+    device const T* x [[buffer(0)]],                    \
+    device       T* y [[buffer(1)]],                    \
+    uint gid [[thread_position_in_grid]])                \
+{ float v = (float)x[gid]; y[gid] = (T)(expr); }
+
+#define DEFINE_ACTIVATION_OPS(T)                                                         \
+  DEFINE_UNARY(exp,          T, exp(v))                                                  \
+  DEFINE_UNARY(log,          T, log(v))                                                  \
+  DEFINE_UNARY(cos,          T, cos(v))                                                  \
+  DEFINE_UNARY(sin,          T, sin(v))                                                  \
+  DEFINE_UNARY(tanh,         T, tanh(v))                                                 \
+  DEFINE_UNARY(relu,         T, fmax(v, 0.f))                                            \
+  DEFINE_UNARY(sigmoid,      T, 1.f / (1.f + exp(-v)))                                  \
+  DEFINE_UNARY(swish,        T, v / (1.f + exp(-v)))                                    \
+  DEFINE_UNARY(gelu,         T, 0.5f * v * (1.f + ct2_erf(v * 0.7071067811865475f)))   \
+  DEFINE_UNARY(gelu_tanh,    T, 0.5f * v * (1.f + tanh(0.7978845608028654f *            \
+                                (v + 0.044715f * v * v * v))))                           \
+  DEFINE_UNARY(gelu_sigmoid, T, v / (1.f + exp(-1.702f * v)))
+
+DEFINE_ACTIVATION_OPS(float)
+DEFINE_ACTIVATION_OPS(half)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_ACTIVATION_OPS(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the activation MSL library.  Thread-safe; compiled once.
+// We request Metal 3.1 (macOS 14+) to ensure erf() is available — it was
+// added to the Metal standard math library in MSL 3.1.  Our deployment
+// target is already macOS 14 (set in CMakeLists.txt for BF16 support).
+static id<MTLLibrary> get_activation_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+    opts.languageVersion = MTLLanguageVersion3_1;
+    NSString* src = [NSString stringWithUTF8String:kActivationMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:opts
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile activation library";
+      if (err)
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO cache for activation kernels.
+static id<MTLComputePipelineState> get_activation_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLLibrary> lib = get_activation_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil) {
+    throw std::runtime_error(std::string("Metal: activation kernel not found: ") + name);
+  }
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: PSO creation failed for ") + name;
+    if (err)
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Dispatch a unary element-wise activation kernel: y[i] = f(x[i]).
+// x is buffer(0), y is buffer(1).
+static void dispatch_unary(const char* kernel_name,
+                            const void* x, void* y,
+                            ctranslate2::dim_t size) {
+  if (size == 0) return;
+  id<MTLComputePipelineState> pso = get_activation_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_x = 0, off_y = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x) offset:off_x atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y, &off_y) offset:off_y atIndex:1];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+
+// ---------------------------------------------------------------------------
 // M4.3 — Parallel reduction infrastructure
 // ---------------------------------------------------------------------------
 
@@ -1083,77 +1227,49 @@ namespace ctranslate2 {
     METAL_STUB(transpose_4d);
   }
 
+  // M4.5 — logsumexp: CPU-side after flushing pending GPU work.
+  // log(Σ exp(x[i])) computed stably as log(Σ exp(x[i] - max)) + max.
   template<>
   template <typename T>
   float primitives<Device::METAL>::logsumexp(const T* x, dim_t size) {
-    METAL_STUB(logsumexp);
+    if (size == 0) return 0.f;
+    metal::commit_and_wait();  // flush any pending GPU writes to x
+    float maxval = (float)x[0];
+    for (dim_t i = 1; i < size; ++i)
+      maxval = std::max(maxval, (float)x[i]);
+    float sum = 0.f;
+    for (dim_t i = 0; i < size; ++i)
+      sum += std::exp((float)x[i] - maxval);
+    return std::log(sum) + maxval;
   }
 
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::exp(const T* x, T* y, dim_t size) {
-    METAL_STUB(exp);
+  // M4.5 — GPU unary activation / transcendental kernels.
+  // Each dispatches into the per-thread command buffer (encode-only;
+  // committed at synchronize_stream).
+
+#define METAL_UNARY_OP(cpp_name, kernel_prefix)                         \
+  template<>                                                            \
+  template <typename T>                                                 \
+  void primitives<Device::METAL>::cpp_name(const T* x, T* y, dim_t size) { \
+    char kname[kKernelNameBufSize];                                     \
+    std::snprintf(kname, sizeof(kname), kernel_prefix "_%s",           \
+                  MetalTypeName<T>::value);                             \
+    dispatch_unary(kname, x, y, size);                                  \
   }
 
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::log(const T* x, T* y, dim_t size) {
-    METAL_STUB(log);
-  }
+  METAL_UNARY_OP(exp,          "exp")
+  METAL_UNARY_OP(log,          "log")
+  METAL_UNARY_OP(cos,          "cos")
+  METAL_UNARY_OP(sin,          "sin")
+  METAL_UNARY_OP(tanh,         "tanh")
+  METAL_UNARY_OP(relu,         "relu")
+  METAL_UNARY_OP(sigmoid,      "sigmoid")
+  METAL_UNARY_OP(swish,        "swish")
+  METAL_UNARY_OP(gelu,         "gelu")
+  METAL_UNARY_OP(gelu_tanh,    "gelu_tanh")
+  METAL_UNARY_OP(gelu_sigmoid, "gelu_sigmoid")
 
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::cos(const T* x, T* y, dim_t size) {
-    METAL_STUB(cos);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::sin(const T* x, T* y, dim_t size) {
-    METAL_STUB(sin);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::tanh(const T* x, T* y, dim_t size) {
-    METAL_STUB(tanh);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::relu(const T* x, T* y, dim_t size) {
-    METAL_STUB(relu);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::gelu(const T* x, T* y, dim_t size) {
-    METAL_STUB(gelu);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::gelu_tanh(const T* x, T* y, dim_t size) {
-    METAL_STUB(gelu_tanh);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::gelu_sigmoid(const T* x, T* y, dim_t size) {
-    METAL_STUB(gelu_sigmoid);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::sigmoid(const T* x, T* y, dim_t size) {
-    METAL_STUB(sigmoid);
-  }
-
-  template<>
-  template <typename T>
-  void primitives<Device::METAL>::swish(const T* x, T* y, dim_t size) {
-    METAL_STUB(swish);
-  }
+#undef METAL_UNARY_OP
 
   template<>
   void primitives<Device::METAL>::compute_u8_compensation(

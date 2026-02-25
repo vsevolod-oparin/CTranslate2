@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.4 complete (GEMM: FP32/FP16/BF16)
+**Status:** In progress — Milestone 4.5 complete (activation/transcendental primitives)
 
 ---
 
@@ -496,12 +496,16 @@ NSDictionary* result = [graph runWithMTLCommandQueue:get_command_queue()
   // BF16 graph cache: second call with same shape must be ≤ 5% slower than first (steady-state)
   ```
 
-**4.5 Transcendental and activation primitives (`exp`, `log`, `cos`, `sin`, `tanh`, `relu`, `gelu`, `gelu_tanh`, `gelu_sigmoid`, `sigmoid`, `swish`)**
-- Use MPSGraph unary ops for `exp`, `log`, `cos`, `sin`, `tanh`, `sigmoid`
-- `relu` → `MPSCNNNeuronReLU` or MPSGraph threshold
-- `gelu` (erf form), `gelu_tanh` (tanh approximation), `gelu_sigmoid` → MPSGraph composite or custom Metal shader
-- `swish(x) = x * sigmoid(x)` → compose with Metal shader or MPSGraph
-- **PASS:** Compare all variants to CPU reference within 1e-4 for float32, 5e-3 for float16
+**4.5 Transcendental and activation primitives (`exp`, `log`, `cos`, `sin`, `tanh`, `relu`, `gelu`, `gelu_tanh`, `gelu_sigmoid`, `sigmoid`, `swish`)** ✅ DONE (2026-02-25)
+- Custom MSL unary kernels (not MPSGraph) — all 11 ops encode into the deferred command buffer.
+- `kActivationMSL` string + separate `get_activation_library()`/`get_activation_pso()` in `primitives.mm`.
+- `dispatch_unary(kernel, x, y, size)` helper — mirrors `dispatch_binary` with 2 buffers.
+- **`erf` not in MSL stdlib** — implemented `ct2_erf()` inline using Abramowitz & Stegun 7.1.28 polynomial (max error 1.5e-7); avoids any MSL version dependency.
+- All intermediate arithmetic in float32; result cast back to T — works uniformly for half and bfloat.
+- `logsumexp` — CPU-side after `commit_and_wait()` (log-sum-exp with max-subtraction for numerical stability).
+- **Actual result:** 138/138 tests pass in `tests/metal/activation_test.mm`
+  (float32/float16/bfloat16 × 11 ops + logsumexp + zero-size no-crash).
+  See `agents/report/milestone-4.5-activation-primitives.md` for full details.
 
 **4.6 Broadcast and scatter primitives**
 

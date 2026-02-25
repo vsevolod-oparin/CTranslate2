@@ -1,28 +1,195 @@
-// primitives<Device::METAL> — M3.2 + M4.1 implementation.
+// primitives<Device::METAL> — M3.2 + M4.1 + M4.2 implementation.
 //
 // All Metal buffers use MTLResourceStorageModeShared (unified memory).
 // Their contents pointer is simultaneously valid for CPU and GPU access.
 //
-// Memory primitives (fill, copy, convert) are therefore implemented as
-// CPU-side operations on the shared pointer — correct, because CPU writes
-// happen-before subsequent GPU command encoding on Apple Silicon.
+// Memory primitives (fill, copy, convert) — M4.1 — are CPU-side operations.
+// CPU writes are visible to the GPU before the next command encoding on Apple
+// Silicon (unified memory coherency).
 //
-// Arithmetic, reduction, and GEMM primitives are implemented in later
-// milestones (M4.2+).  Until then they throw "not yet implemented".
+// Arithmetic primitives (add, sub, mul) — M4.2 — are GPU compute kernels.
+// They encode into the thread-local command buffer; results are only
+// committed to the GPU when synchronize_stream(METAL) is called.
 
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
+#import <MetalPerformanceShaders/MetalPerformanceShaders.h>
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
+#include <mutex>
 #include <stdexcept>
 #include <string>
+#include <unordered_map>
 
 #include "ctranslate2/types.h"
 
 #include "ctranslate2/primitives.h"
 #include "metal/utils.h"
 #include "type_dispatch.h"
+
+// ---------------------------------------------------------------------------
+// M4.2 — element-wise compute kernel infrastructure
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// MSL source for element-wise kernels (add, sub, mul in vector and scalar
+// broadcast forms).  This is the exact content of
+// src/metal/kernels/elementwise.metal embedded as a C++ string.
+static constexpr const char* kElementwiseMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_BINARY(name, op, T)                                      \
+  kernel void name##_##T(                                               \
+      device const T* a [[buffer(0)]],                                  \
+      device const T* b [[buffer(1)]],                                  \
+      device       T* c [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { c[gid] = a[gid] op b[gid]; }
+
+#define DEFINE_SCALAR(name, op, T)                                      \
+  kernel void name##_scalar_##T(                                        \
+      device const T* x [[buffer(0)]],                                  \
+      constant     T& a [[buffer(1)]],                                  \
+      device       T* y [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { y[gid] = a op x[gid]; }
+
+#define DEFINE_ALL(T)          \
+  DEFINE_BINARY(add, +, T)    \
+  DEFINE_BINARY(sub, -, T)    \
+  DEFINE_BINARY(mul, *, T)    \
+  DEFINE_SCALAR(add, +, T)    \
+  DEFINE_SCALAR(mul, *, T)
+
+DEFINE_ALL(float)
+DEFINE_ALL(half)
+DEFINE_ALL(int)
+DEFINE_ALL(short)
+DEFINE_ALL(char)
+
+#if defined(__HAVE_BFLOAT__)
+DEFINE_ALL(bfloat)
+#endif
+)msl";
+
+// Lazy-compile the element-wise MSL library.  Thread-safe; compiled once.
+static id<MTLLibrary> get_elementwise_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  std::call_once(flag, [] {
+    NSError* err = nil;
+    NSString* src = [NSString stringWithUTF8String:kElementwiseMSL];
+    lib = [ctranslate2::metal::get_metal_device()
+        newLibraryWithSource:src
+                     options:nil
+                       error:&err];
+    if (lib == nil) {
+      std::string msg = "Metal: failed to compile elementwise library";
+      if (err)
+        msg += std::string(": ") + [err.localizedDescription UTF8String];
+      throw std::runtime_error(msg);
+    }
+  });
+  return lib;
+}
+
+// PSO (pipeline state object) cache.  Keyed by kernel function name.
+static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
+  static std::unordered_map<std::string, id<MTLComputePipelineState>> cache;
+  static std::mutex cache_mutex;
+
+  std::lock_guard<std::mutex> lock(cache_mutex);
+  auto it = cache.find(name);
+  if (it != cache.end())
+    return it->second;
+
+  id<MTLLibrary> lib = get_elementwise_library();
+  NSString* nsname = [NSString stringWithUTF8String:name];
+  id<MTLFunction> fn = [lib newFunctionWithName:nsname];
+  if (fn == nil)
+    throw std::runtime_error(std::string("Metal: kernel not found: ") + name);
+
+  NSError* err = nil;
+  id<MTLComputePipelineState> pso =
+      [ctranslate2::metal::get_metal_device()
+          newComputePipelineStateWithFunction:fn
+                                       error:&err];
+  if (pso == nil) {
+    std::string msg = std::string("Metal: PSO creation failed for ") + name;
+    if (err)
+      msg += std::string(": ") + [err.localizedDescription UTF8String];
+    throw std::runtime_error(msg);
+  }
+  cache[name] = pso;
+  return pso;
+}
+
+// Dispatch a binary vector-op-vector kernel:  c[i] = a[i] op b[i].
+static void dispatch_binary(const char* kernel_name,
+                             const void* a, const void* b, void* c,
+                             ctranslate2::dim_t size) {
+  if (size == 0)
+    return;
+  id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// Dispatch a scalar-op-vector kernel:  y[i] = a op x[i].
+// scalar_val points to sizeof(T) bytes of the scalar value; passed via
+// setBytes (inlined into the argument table, no buffer allocation needed).
+static void dispatch_scalar(const char* kernel_name,
+                             const void* scalar_val, size_t scalar_bytes,
+                             const void* x, void* y,
+                             ctranslate2::dim_t size) {
+  if (size == 0)
+    return;
+  id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  NSUInteger off_x = 0, off_y = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x) offset:off_x atIndex:0];
+  [enc setBytes:scalar_val length:scalar_bytes atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y, &off_y) offset:off_y atIndex:2];
+  NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
+                                       static_cast<NSUInteger>(size));
+  [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
+  [enc endEncoding];
+}
+
+// Map from C++ type to its Metal (MSL) type name string.
+template <typename T> struct MetalTypeName;
+template<> struct MetalTypeName<float>                   { static constexpr const char* value = "float"; };
+template<> struct MetalTypeName<ctranslate2::float16_t>  { static constexpr const char* value = "half";  };
+template<> struct MetalTypeName<ctranslate2::bfloat16_t> { static constexpr const char* value = "bfloat"; };
+template<> struct MetalTypeName<int8_t>                  { static constexpr const char* value = "char";  };
+template<> struct MetalTypeName<int16_t>                 { static constexpr const char* value = "short"; };
+template<> struct MetalTypeName<int32_t>                 { static constexpr const char* value = "int";   };
+
+// Generous upper bound for any formatted elementwise kernel name
+// (e.g. "mul_scalar_bfloat").  Kept large so future op names with longer
+// prefixes or type suffixes don't silently truncate via snprintf.
+static constexpr size_t kKernelNameBufSize = 64;
+
+}  // anonymous namespace
 
 namespace ctranslate2 {
 
@@ -131,16 +298,22 @@ namespace ctranslate2 {
     METAL_STUB(amax);
   }
 
+  // M4.2 — add(scalar, vector, out) — GPU kernel
   template<>
   template <typename T>
   void primitives<Device::METAL>::add(T a, const T* x, T* y, dim_t size) {
-    METAL_STUB(add);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "add_scalar_%s", MetalTypeName<T>::value);
+    dispatch_scalar(kname, &a, sizeof(T), x, y, size);
   }
 
+  // M4.2 — add(vector, vector, out) — GPU kernel
   template<>
   template <typename T>
   void primitives<Device::METAL>::add(const T* a, const T* b, T* c, dim_t size) {
-    METAL_STUB(add);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "add_%s", MetalTypeName<T>::value);
+    dispatch_binary(kname, a, b, c, size);
   }
 
   template<>
@@ -164,10 +337,13 @@ namespace ctranslate2 {
     METAL_STUB(add_block_broadcast);
   }
 
+  // M4.2 — sub(vector, vector, out) — GPU kernel
   template<>
   template <typename T>
   void primitives<Device::METAL>::sub(const T* a, const T* b, T* c, dim_t size) {
-    METAL_STUB(sub);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "sub_%s", MetalTypeName<T>::value);
+    dispatch_binary(kname, a, b, c, size);
   }
 
   template<>
@@ -194,16 +370,22 @@ namespace ctranslate2 {
     METAL_STUB(max);
   }
 
+  // M4.2 — mul(scalar, vector, out) — GPU kernel
   template<>
   template <typename T>
   void primitives<Device::METAL>::mul(T a, const T* x, T* y, dim_t size) {
-    METAL_STUB(mul);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "mul_scalar_%s", MetalTypeName<T>::value);
+    dispatch_scalar(kname, &a, sizeof(T), x, y, size);
   }
 
+  // M4.2 — mul(vector, vector, out) — GPU kernel
   template<>
   template <typename T>
   void primitives<Device::METAL>::mul(const T* a, const T* b, T* c, dim_t size) {
-    METAL_STUB(mul);
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "mul_%s", MetalTypeName<T>::value);
+    dispatch_binary(kname, a, b, c, size);
   }
 
   template<>

@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-02-25
-**Status:** In progress — Milestone 4.1 complete
+**Status:** In progress — Milestone 4.2 complete
 
 ---
 
@@ -386,15 +386,19 @@ See `agents/report/milestone-2.2-2.4-sync-scoped-error-handling.md` for full det
   the cost of a CPU fill/convert for all tensor sizes used in inference.
   See `agents/report/milestone-4.1-memory-primitives.md` for full details.
 
-**4.2 Arithmetic primitives (`add`, `mul`, `sub`)**
-- Use Metal compute shaders (simple element-wise kernels in `src/metal/kernels/elementwise.metal`)
-- These are the first custom Metal shaders, but trivial to write and test
-- Alternative: MPSGraph for each — but overhead is too high for small ops
-- **PASS:**
-  ```cpp
-  // Reference: CPU result
-  // Metal: apply op, sync, compare element-wise (max abs diff < 1e-5 for float32)
-  ```
+**4.2 Arithmetic primitives (`add`, `mul`, `sub`)** ✅ DONE (2026-02-25)
+- MSL element-wise kernels compiled at runtime from embedded source string via
+  `newLibraryWithSource:options:error:` — one library per process, PSO cached per kernel name.
+- `metal_buffer_for_ptr(ptr, offset_out)` added to look up `id<MTLBuffer>` + byte offset
+  from any pointer (including mid-allocation offsets for row-slice operations).
+- Five kernel families: `add_float`, `sub_float`, `mul_float`, `add_scalar_float`,
+  `mul_scalar_float` (and likewise for `half`, `int`, `short`, `char`, `bfloat`).
+- Scalar argument bound via `setBytes:` (inlined into argument table — no buffer needed).
+- All kernels encode into the per-thread `MTLCommandBuffer`; commit only at `synchronize_stream`.
+- **Actual result:** 21/21 assertions pass in `tests/metal/arithmetic_test.mm`:
+  add_scalar (float32/float16/int32), add_vec (float32/float16), sub_vec (float32),
+  mul_scalar (float32/float16/int32), mul_vec (float32/float16), zero-size no-ops.
+- See `agents/report/milestone-4.2-arithmetic-primitives.md` for full design details.
 
 **4.3 Reduction primitives (`sum`, `max`, `amax`, `max_element`)**
 - Use `MPSMatrixSum` or a custom reduction kernel

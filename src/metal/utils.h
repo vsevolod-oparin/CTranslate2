@@ -51,6 +51,17 @@ namespace ctranslate2 {
     void commit_command_buffer();
 
   }  // namespace metal
+
+  // ---------------------------------------------------------------------------
+  // Buffer lookup (ObjC++ only — needs id<MTLBuffer>)
+  // ---------------------------------------------------------------------------
+
+  // Returns the MTLBuffer that contains ptr (which may be any byte offset
+  // within a MetalAllocator allocation) and fills *offset_out with the byte
+  // offset of ptr within that buffer.  Throws if ptr was not allocated by
+  // MetalAllocator.
+  id<MTLBuffer> metal_buffer_for_ptr(const void* ptr, NSUInteger* offset_out);
+
 }  // namespace ctranslate2
 
 

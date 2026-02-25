@@ -32,6 +32,27 @@ namespace ctranslate2 {
 
     class MetalAllocator : public Allocator {
     public:
+      // Returns the MTLBuffer that contains ptr and sets *offset_out to the
+      // byte offset of ptr within that buffer.  Needed by compute encoders
+      // (which take id<MTLBuffer> + offset, not raw void*).
+      //
+      // Iterates _live to find the enclosing allocation.  O(n) where n is
+      // the number of live allocations — typically a few dozen in inference.
+      id<MTLBuffer> buffer_for_ptr(const void* ptr, NSUInteger* offset_out) {
+        const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto& [base, entry] : _live) {
+          const uint8_t* base_ptr = static_cast<const uint8_t*>(base);
+          if (byte_ptr >= base_ptr && byte_ptr < base_ptr + entry.requested_size) {
+            if (offset_out)
+              *offset_out = static_cast<NSUInteger>(byte_ptr - base_ptr);
+            return entry.buffer;
+          }
+        }
+        throw std::runtime_error("Metal: pointer not in any live allocation");
+      }
+
+
       void* allocate(size_t size, int /*device_index*/) override {
         std::lock_guard<std::mutex> lock(_mutex);
 
@@ -98,6 +119,15 @@ namespace ctranslate2 {
   Allocator& get_allocator<Device::METAL>() {
     static metal::MetalAllocator allocator;
     return allocator;
+  }
+
+  // Free function callable from primitives.mm (ObjC++ TU).
+  // Returns the MTLBuffer that contains ptr and fills *offset_out with the
+  // byte offset of ptr within that buffer.
+  id<MTLBuffer> metal_buffer_for_ptr(const void* ptr, NSUInteger* offset_out) {
+    return static_cast<metal::MetalAllocator&>(
+        get_allocator<Device::METAL>())
+        .buffer_for_ptr(ptr, offset_out);
   }
 
 }  // namespace ctranslate2

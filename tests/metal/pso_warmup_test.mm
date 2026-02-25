@@ -55,6 +55,7 @@
 #include "ctranslate2/primitives.h"
 #include "ctranslate2/devices.h"
 #include "ctranslate2/types.h"
+#include "metal/ops_metal.h"
 #include "metal/utils.h"
 
 // Resolve ::float16_t / ctranslate2::float16_t conflict from arm_vector_types.h.
@@ -293,11 +294,88 @@ static void test_reduction_warmup() {
 }
 
 // ---------------------------------------------------------------------------
+// 7. Normalization library — layer_norm / rms_norm / softmax
+// ---------------------------------------------------------------------------
+
+static void test_normalization_warmup() {
+  std::printf("\n--- warmup: normalization library ---\n");
+
+  const int N = 8;
+  float*   xf  = metal_alloc<float>(N);
+  float*   gf  = metal_alloc<float>(N);
+  float*   yf  = metal_alloc<float>(N);
+  ct2_f16* xh  = metal_alloc<ct2_f16>(N);
+  ct2_f16* yh  = metal_alloc<ct2_f16>(N);
+  ct2_bf16* xb = metal_alloc<ct2_bf16>(N);
+  ct2_bf16* gb = metal_alloc<ct2_bf16>(N);
+  ct2_bf16* yb = metal_alloc<ct2_bf16>(N);
+  for (int i = 0; i < N; ++i) {
+    xf[i] = float(i + 1);  gf[i] = 1.f;
+    xh[i] = ct2_f16(float(i + 1));
+    xb[i] = ct2_bf16(float(i + 1)); gb[i] = ct2_bf16(1.f);
+  }
+
+  bool ok = no_exception([&] {
+    metal::layer_norm_metal<float>(xf, nullptr, nullptr, yf, 1, N, 1e-5f);
+    metal::commit_and_wait();
+  });
+  CHECK("normalization library compiles (layer_norm float)", ok);
+
+  ok = no_exception([&] {
+    metal::softmax_metal<ct2_f16>(xh, nullptr, yh, 1, N, false);
+    metal::commit_and_wait();
+  });
+  CHECK("normalization library compiles (softmax half)", ok);
+
+  ok = no_exception([&] {
+    metal::rms_norm_metal<ct2_bf16>(xb, gb, yb, 1, N, 1e-6f);
+    metal::commit_and_wait();
+  });
+  CHECK("normalization library compiles (rms_norm bfloat)", ok);
+
+  metal_free(xf); metal_free(gf); metal_free(yf);
+  metal_free(xh); metal_free(yh);
+  metal_free(xb); metal_free(gb); metal_free(yb);
+}
+
+// ---------------------------------------------------------------------------
+// 8. Gather library — gather kernel for float and int32
+// ---------------------------------------------------------------------------
+
+static void test_gather_warmup() {
+  std::printf("\n--- warmup: gather library ---\n");
+
+  float*   src_f = metal_alloc<float>(4);
+  float*   dst_f = metal_alloc<float>(2);
+  int32_t* src_i = metal_alloc<int32_t>(4);
+  int32_t* dst_i = metal_alloc<int32_t>(2);
+  int32_t* idx   = metal_alloc<int32_t>(2);
+  for (int i = 0; i < 4; ++i) { src_f[i] = float(i); src_i[i] = i * 10; }
+  idx[0] = 0; idx[1] = 2;
+
+  bool ok = no_exception([&] {
+    metal::gather_metal<float>(src_f, dst_f, idx, 1, 4, 2, 2);
+    metal::commit_and_wait();
+  });
+  CHECK("gather library compiles (gather float)", ok);
+
+  ok = no_exception([&] {
+    metal::gather_metal<int32_t>(src_i, dst_i, idx, 1, 4, 2, 2);
+    metal::commit_and_wait();
+  });
+  CHECK("gather library compiles (gather int32)", ok);
+
+  metal_free(src_f); metal_free(dst_f);
+  metal_free(src_i); metal_free(dst_i);
+  metal_free(idx);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
 int main() {
-  std::printf("=== PSO warmup: all six MSL libraries ===\n");
+  std::printf("=== PSO warmup: all eight MSL libraries ===\n");
 
   test_elementwise_warmup();
   test_activation_warmup();
@@ -305,6 +383,8 @@ int main() {
   test_beam_search_warmup();
   test_transpose_warmup();
   test_reduction_warmup();
+  test_normalization_warmup();
+  test_gather_warmup();
 
   std::printf("\n%d passed, %d failed\n", g_passed, g_failed);
   return g_failed > 0 ? 1 : 0;

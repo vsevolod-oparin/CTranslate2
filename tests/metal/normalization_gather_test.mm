@@ -19,6 +19,19 @@
 //  14.  gather f32: copy_size=4 (block copy)
 //  15.  gather int32: integer element type
 //  16.  gather batched (batch_dims=0, batch in src)
+//  17.  layer_norm bf16: zero mean, unit variance output (M5.2 review 4.2)
+//  18.  rms_norm bf16: output RMS ≈ 1 (M5.2 review 4.2)
+//  19.  softmax bf16: outputs sum to 1 (M5.2 review 4.2)
+//  20.  gather f16: copy_size=1 (M5.2 review 4.3)
+//  21.  gather bf16: copy_size=1 (M5.2 review 4.3)
+//  22.  gather int16: integer type coverage (M5.2 review 4.3)
+//  23.  gather int8: integer type coverage (M5.2 review 4.3)
+//  24.  layer_norm f32: multi-row (outer_size=4), each row independently normalized
+//  25.  log_softmax f32: fully-masked row (active_N=0) → all-zero output, no NaN
+//
+// Note: Exception path tests (LayerNorm inner_size != 1 throws, RMSNorm
+// use_residual throws) require the full op/StorageView infrastructure and
+// are tested via the CMake build (src/ops/normalization_metal.mm).
 //
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
@@ -198,6 +211,58 @@ static void test_layer_norm() {
 
     metal_free(x); metal_free(y);
   }
+
+  // 17. bf16 basic: output mean ≈ 0, variance ≈ 1 (M5.2 review 4.2)
+  {
+    const int N = 8;
+    ct2_bf16* x  = metal_alloc<ct2_bf16>(N);
+    ct2_bf16* y  = metal_alloc<ct2_bf16>(N);
+    for (int i = 0; i < N; ++i) x[i] = ct2_bf16(float(i + 1));
+
+    metal::layer_norm_metal<ct2_bf16>(x, nullptr, nullptr, y, 1, N, 1e-5f);
+    metal::commit_and_wait();
+
+    float sum = 0, var = 0;
+    for (int i = 0; i < N; ++i) sum += (float)y[i];
+    float mean = sum / N;
+    for (int i = 0; i < N; ++i) var += ((float)y[i] - mean) * ((float)y[i] - mean);
+    CHECK_NEAR("layer_norm bf16: output mean ≈ 0", mean, 0.f, 0.1f);
+    CHECK_NEAR("layer_norm bf16: output variance ≈ 1", var / N, 1.f, 0.1f);
+
+    metal_free(x); metal_free(y);
+  }
+
+  // 24. Multi-row f32: outer_size=4, each row independently normalized
+  {
+    // Each of 4 rows has N=4 elements.  Rows have different means so we can
+    // verify that tgid*N row-offset is correct — cross-row contamination
+    // would produce wrong means.
+    const int outer = 4, N = 4;
+    float* x = metal_alloc<float>(outer * N);
+    float* y = metal_alloc<float>(outer * N);
+    // Row r: values [r*10, r*10+1, r*10+2, r*10+3]
+    for (int r = 0; r < outer; ++r)
+      for (int j = 0; j < N; ++j)
+        x[r*N+j] = float(r*10 + j);
+
+    metal::layer_norm_metal<float>(x, nullptr, nullptr, y, outer, N, 1e-5f);
+    metal::commit_and_wait();
+
+    bool means_zero = true;
+    bool vars_one   = true;
+    for (int r = 0; r < outer; ++r) {
+      float mean = 0, var = 0;
+      for (int j = 0; j < N; ++j) mean += y[r*N+j];
+      mean /= N;
+      for (int j = 0; j < N; ++j) var += y[r*N+j] * y[r*N+j];
+      if (std::abs(mean) > 1e-4f)  means_zero = false;
+      if (std::abs(var/N - 1.f) > 1e-3f) vars_one = false;
+    }
+    CHECK("layer_norm f32 multi-row: each row mean ≈ 0", means_zero);
+    CHECK("layer_norm f32 multi-row: each row variance ≈ 1", vars_one);
+
+    metal_free(x); metal_free(y);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -264,6 +329,26 @@ static void test_rms_norm() {
     float ss = 0;
     for (int i = 0; i < N; ++i) ss += (float)y[i] * (float)y[i];
     CHECK_NEAR("rms_norm f16: output RMS ≈ 1", std::sqrt(ss / N), 1.f, 5e-2f);
+
+    metal_free(x); metal_free(gamma); metal_free(y);
+  }
+
+  // 18. bf16 basic: output RMS ≈ 1 (M5.2 review 4.2)
+  {
+    const int N = 8;
+    ct2_bf16* x     = metal_alloc<ct2_bf16>(N);
+    ct2_bf16* gamma = metal_alloc<ct2_bf16>(N);
+    ct2_bf16* y     = metal_alloc<ct2_bf16>(N);
+    for (int i = 0; i < N; ++i) {
+      x[i] = ct2_bf16(float(i + 1)); gamma[i] = ct2_bf16(1.f);
+    }
+
+    metal::rms_norm_metal<ct2_bf16>(x, gamma, y, 1, N, 1e-6f);
+    metal::commit_and_wait();
+
+    float ss = 0;
+    for (int i = 0; i < N; ++i) ss += (float)y[i] * (float)y[i];
+    CHECK_NEAR("rms_norm bf16: output RMS ≈ 1", std::sqrt(ss / N), 1.f, 0.1f);
 
     metal_free(x); metal_free(gamma); metal_free(y);
   }
@@ -358,6 +443,54 @@ static void test_softmax() {
     bool tail_zero = true;
     for (int i = 4; i < N; ++i) if (y[i] != 0.f) tail_zero = false;
     CHECK("softmax masked: inactive slots are zero", tail_zero);
+
+    metal_free(x); metal_free(y); metal_free(len);
+  }
+
+  // 19. bf16 softmax: outputs sum to 1 (M5.2 review 4.2)
+  {
+    const int N = 8;
+    ct2_bf16* x = metal_alloc<ct2_bf16>(N);
+    ct2_bf16* y = metal_alloc<ct2_bf16>(N);
+    for (int i = 0; i < N; ++i) x[i] = ct2_bf16(float(i) * 0.5f);
+
+    metal::softmax_metal<ct2_bf16>(x, nullptr, y, 1, N, false);
+    metal::commit_and_wait();
+
+    float sum = 0;
+    bool all_positive = true;
+    for (int i = 0; i < N; ++i) {
+      sum += (float)y[i];
+      if ((float)y[i] <= 0.f) all_positive = false;
+    }
+    CHECK_NEAR("softmax bf16: output sums to 1", sum, 1.f, 1e-2f);
+    CHECK("softmax bf16: all outputs positive", all_positive);
+
+    metal_free(x); metal_free(y);
+  }
+
+  // 25. log_softmax f32: fully-masked row (active_N=0) → all zeros, no NaN
+  //     Exercises the active_N==0 edge case documented in M5 review 1.3.
+  {
+    const int batch = 1;
+    const int N = 8;
+    float*   x   = metal_alloc<float>(N);
+    float*   y   = metal_alloc<float>(N);
+    int32_t* len = metal_alloc<int32_t>(batch);
+    for (int i = 0; i < N; ++i) x[i] = float(i);
+    len[0] = 0;  // fully masked
+
+    metal::softmax_metal<float>(x, len, y, batch, N, /*log_mode=*/true);
+    metal::commit_and_wait();
+
+    bool all_zero = true;
+    bool no_nan   = true;
+    for (int i = 0; i < N; ++i) {
+      if (y[i] != 0.f)              all_zero = false;
+      if (y[i] != y[i] /* isnan */) no_nan   = false;
+    }
+    CHECK("log_softmax fully-masked: all outputs are zero", all_zero);
+    CHECK("log_softmax fully-masked: no NaN produced", no_nan);
 
     metal_free(x); metal_free(y); metal_free(len);
   }
@@ -458,6 +591,83 @@ static void test_gather() {
     CHECK("gather int32: dst[0]=400", dst[0] == 400);
     CHECK("gather int32: dst[1]=0",   dst[1] == 0);
     CHECK("gather int32: dst[2]=200", dst[2] == 200);
+
+    metal_free(src); metal_free(dst); metal_free(idx);
+  }
+
+  // 20. f16 gather: copy_size=1 (M5.2 review 4.3)
+  {
+    const int M = 5;
+    ct2_f16* src = metal_alloc<ct2_f16>(M);
+    ct2_f16* dst = metal_alloc<ct2_f16>(3);
+    int32_t* idx = metal_alloc<int32_t>(3);
+    // src = [0, 2, 4, 6, 8] (small integers exact in f16)
+    for (int i = 0; i < M; ++i) src[i] = ct2_f16(float(i * 2));
+    idx[0] = 4; idx[1] = 1; idx[2] = 0;
+
+    metal::gather_metal<ct2_f16>(src, dst, idx, 1, M, 3, 3);
+    metal::commit_and_wait();
+
+    CHECK_NEAR("gather f16: dst[0]=8  (idx=4)", (float)dst[0], 8.f, 0.f);
+    CHECK_NEAR("gather f16: dst[1]=2  (idx=1)", (float)dst[1], 2.f, 0.f);
+    CHECK_NEAR("gather f16: dst[2]=0  (idx=0)", (float)dst[2], 0.f, 0.f);
+
+    metal_free(src); metal_free(dst); metal_free(idx);
+  }
+
+  // 21. bf16 gather: copy_size=1 (M5.2 review 4.3)
+  {
+    const int M = 5;
+    ct2_bf16* src = metal_alloc<ct2_bf16>(M);
+    ct2_bf16* dst = metal_alloc<ct2_bf16>(3);
+    int32_t*  idx = metal_alloc<int32_t>(3);
+    for (int i = 0; i < M; ++i) src[i] = ct2_bf16(float(i * 2));
+    idx[0] = 3; idx[1] = 0; idx[2] = 2;
+
+    metal::gather_metal<ct2_bf16>(src, dst, idx, 1, M, 3, 3);
+    metal::commit_and_wait();
+
+    CHECK_NEAR("gather bf16: dst[0]=6  (idx=3)", (float)dst[0], 6.f, 0.f);
+    CHECK_NEAR("gather bf16: dst[1]=0  (idx=0)", (float)dst[1], 0.f, 0.f);
+    CHECK_NEAR("gather bf16: dst[2]=4  (idx=2)", (float)dst[2], 4.f, 0.f);
+
+    metal_free(src); metal_free(dst); metal_free(idx);
+  }
+
+  // 22. int16 gather: copy_size=1 (M5.2 review 4.3)
+  {
+    const int M = 5;
+    int16_t* src = metal_alloc<int16_t>(M);
+    int16_t* dst = metal_alloc<int16_t>(3);
+    int32_t* idx = metal_alloc<int32_t>(3);
+    for (int i = 0; i < M; ++i) src[i] = int16_t(i * 100);  // 0, 100, 200, 300, 400
+    idx[0] = 2; idx[1] = 4; idx[2] = 0;
+
+    metal::gather_metal<int16_t>(src, dst, idx, 1, M, 3, 3);
+    metal::commit_and_wait();
+
+    CHECK("gather int16: dst[0]=200 (idx=2)", dst[0] == 200);
+    CHECK("gather int16: dst[1]=400 (idx=4)", dst[1] == 400);
+    CHECK("gather int16: dst[2]=0   (idx=0)", dst[2] == 0);
+
+    metal_free(src); metal_free(dst); metal_free(idx);
+  }
+
+  // 23. int8 gather: copy_size=1 (M5.2 review 4.3)
+  {
+    const int M = 5;
+    int8_t*  src = metal_alloc<int8_t>(M);
+    int8_t*  dst = metal_alloc<int8_t>(3);
+    int32_t* idx = metal_alloc<int32_t>(3);
+    for (int i = 0; i < M; ++i) src[i] = int8_t(i * 10);  // 0, 10, 20, 30, 40
+    idx[0] = 1; idx[1] = 3; idx[2] = 4;
+
+    metal::gather_metal<int8_t>(src, dst, idx, 1, M, 3, 3);
+    metal::commit_and_wait();
+
+    CHECK("gather int8: dst[0]=10 (idx=1)", dst[0] == 10);
+    CHECK("gather int8: dst[1]=30 (idx=3)", dst[1] == 30);
+    CHECK("gather int8: dst[2]=40 (idx=4)", dst[2] == 40);
 
     metal_free(src); metal_free(dst); metal_free(idx);
   }

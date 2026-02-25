@@ -580,24 +580,36 @@ See `agents/report/milestone-5.1-dispatch-macro-update.md` — 14/14 tests pass.
   - float16/bfloat16 + CPU → throws `std::invalid_argument` with "FP16"/"BF16"
   - float16/bfloat16 end-to-end Metal add: results correct
 
-**5.2 Add `Device::METAL` specializations to each op**
-- For each op, add `template<> void LayerNorm::compute<Device::METAL, float>(...)` in new `src/ops/layer_norm_metal.mm`
-- Ops to cover in this milestone (by importance):
-  1. `LayerNorm` — used in every transformer layer
-  2. `RMSNorm` — used in LLaMA/Qwen/modern LLMs
-  3. `Softmax` — used in attention
-  4. `Gemm` / `MatMul` — via `primitives<Device::METAL>::gemm()`
-  5. `Add`, `Mul`, `BiasAdd` — residual connections
-  6. `Transpose` — head splitting in attention
-  7. `Gather` — embedding lookup
-- File naming convention: `src/ops/<op_name>_metal.mm`
-- Each file adds specialization to existing op class, not a new class
-- **PASS for each op:** Run `tests/ops_test.cc` extended with `Device::METAL` parameter:
-  ```cpp
-  // Parameterized test: CPU ref vs Metal
-  INSTANTIATE_TEST_SUITE_P(Metal, OpTest, ::testing::Values(Device::METAL));
-  // Each op test: max(|metal_result - cpu_result|) < tolerance
-  ```
+**5.2 Add `Device::METAL` specializations to each op** ✅ DONE (2026-02-25)
+
+See `agents/report/milestone-5.2-metal-op-specializations.md` and
+`agents/report/milestone-5-review.md` — 22/22 test files pass (601 total assertions).
+
+All ops in scope are implemented:
+
+| Op | Status | Notes |
+|----|--------|-------|
+| `LayerNorm` | ✅ | `src/ops/normalization_metal.mm`; last axis only (non-last-axis throws) |
+| `RMSNorm` | ✅ | `src/ops/normalization_metal.mm`; `use_residual=true` unsupported (throws) |
+| `SoftMax` / `LogSoftMax` | ✅ | `src/ops/normalization_metal.mm`; masking + log mode fully supported |
+| `Gemm` / `MatMul` | ✅ | Via M4.4 primitives; no `_metal.mm` file needed |
+| `Add`, `Mul` | ✅ | Header-inline via `primitives<D>::add` / `primitives<D>::mul` |
+| `BiasAdd` | ✅ | `src/ops/bias_add_metal.mm`; routes to `add_batch_broadcast` / `add_block_broadcast` |
+| `Transpose` | ✅ | Via M4.8 primitives |
+| `Gather` | ✅ | `src/ops/gather_metal.mm`; all 6 MSL types (float/half/bfloat/int/short/char) |
+
+New MSL kernels (`src/metal/kernels/`):
+- `normalization.metal` — layer_norm (two-pass mean+variance), rms_norm (single-pass),
+  softmax (three-pass max→sum_exp→normalize); one-threadgroup-per-row design with float32
+  threadgroup memory for half/bfloat correctness.
+- `gather.metal` — one thread per output element; batched gather via `num_indices_per_batch`.
+
+Code review (`agents/report/milestone-5-review.md`) fully resolved:
+- Bugs 1.1–1.3 fixed; Quality 2.1–2.4 fixed; Performance (Section 3) deferred to M7+.
+- Tests added: `normalization_gather_test.mm` extended to 25 tests; new
+  `normalization_comparison_test.mm` (6 CPU-reference vs Metal checks),
+  `bias_add_test.mm` (11 assertions); `pso_warmup_test.mm` extended to 17 tests (all 8
+  MSL libraries).
 
 ---
 

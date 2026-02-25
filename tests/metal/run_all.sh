@@ -93,6 +93,7 @@ FW_GRAPH="${FW_BASE} -framework MetalPerformanceShadersGraph"
 #           → beam_search → transpose → convert → truncation → minmax
 #           → pso_warmup → large_transpose → reduce_sum_precision
 #           → normalization_gather (M5.2)
+#           → normalization_comparison → bias_add (M5.2 review 4.5, 4.6)
 # ---------------------------------------------------------------------------
 TESTS=(
   "context_test|-O0|${CTX_SRCS}|${FW_BASE}"
@@ -115,6 +116,8 @@ TESTS=(
   "large_transpose_test|-O2|${FULL_SRCS}|${FW_GRAPH}"
   "reduce_sum_precision_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "normalization_gather_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "normalization_comparison_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "bias_add_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
 )
 TOTAL=${#TESTS[@]}
 

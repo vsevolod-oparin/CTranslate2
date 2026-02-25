@@ -15,6 +15,7 @@ option(WITH_RUY "Compile with Ruy backend" OFF)
 option(WITH_CUDA "Compile with CUDA backend" OFF)
 option(WITH_CUDNN "Compile with cuDNN backend" OFF)
 option(WITH_HIP "Compile with AMD HIP GPU backend" OFF)
+option(WITH_METAL "Compile with Apple Metal backend" OFF)
 option(CUDA_DYNAMIC_LOADING "Dynamically load CUDA libraries at runtime" OFF)
 option(ENABLE_CPU_DISPATCH "Compile CPU kernels for multiple ISA and dispatch at runtime" ON)
 option(ENABLE_PROFILING "Compile with profiling support" OFF)
@@ -256,6 +257,9 @@ set(CUDA_SOURCES
   src/ops/awq/gemv_gpu.cu
   src/ops/awq/dequantize_gpu.cu
 )
+set(METAL_SOURCES
+  src/metal/device.mm
+)
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}
   spdlog::spdlog_header_only
@@ -490,6 +494,21 @@ IF (ENABLE_ADDRESS_SANITIZER AND (CMAKE_BUILD_TYPE STREQUAL "Debug" OR CMAKE_BUI
 ELSEIF (ENABLE_ADDRESS_SANITIZER)
   MESSAGE(FATAL_ERROR "SANITIZER requires Debug build type")
 ENDIF ()
+
+if(WITH_METAL)
+  if(NOT APPLE)
+    message(FATAL_ERROR "WITH_METAL=ON requires macOS (Apple platform)")
+  endif()
+  if(CMAKE_VERSION VERSION_LESS "3.16")
+    message(FATAL_ERROR "WITH_METAL=ON requires CMake 3.16 or later (OBJCXX language support)")
+  endif()
+  message(STATUS "Compiling with Apple Metal backend")
+  # Override the global 10.13 minimum: MPSGraph BF16 and Apple9 GPU family require macOS 14+.
+  set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
+  enable_language(OBJCXX)
+  add_definitions(-DCT2_WITH_METAL)
+  list(APPEND SOURCES ${METAL_SOURCES})
+endif()
 
 if (WITH_CUDA)
   if(WITH_HIP)
@@ -789,6 +808,14 @@ set_property(TARGET ${PROJECT_NAME} APPEND PROPERTY
 
 list(APPEND LIBRARIES ${CMAKE_DL_LIBS})
 target_link_libraries(${PROJECT_NAME} PRIVATE ${LIBRARIES})
+if(WITH_METAL)
+  target_link_libraries(${PROJECT_NAME} PRIVATE
+    "-framework Metal"
+    "-framework Foundation"
+    "-framework MetalPerformanceShaders"
+    "-framework MetalPerformanceShadersGraph"
+  )
+endif()
 target_include_directories(${PROJECT_NAME} BEFORE
   PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include> $<INSTALL_INTERFACE:include>
   PRIVATE ${PRIVATE_INCLUDE_DIRECTORIES}

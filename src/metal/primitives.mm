@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <limits>
 #include <mutex>
 #include <numeric>
 #include <stdexcept>
@@ -168,6 +169,20 @@ static id<MTLComputePipelineState> get_elementwise_pso(const char* name) {
   return pso;
 }
 
+// Checked narrowing: dim_t (int64_t) → uint32_t.
+// Used everywhere a dimension or element count is stored in a GPU kernel
+// argument that is declared as uint32_t / uint in MSL.  Throws a descriptive
+// error rather than silently truncating values above 2^32-1.
+static inline uint32_t ct2_u32(ctranslate2::dim_t v) {
+  constexpr ctranslate2::dim_t kMax =
+      static_cast<ctranslate2::dim_t>(std::numeric_limits<uint32_t>::max());
+  if (v < 0 || v > kMax)
+    throw std::runtime_error(
+        "Metal: dimension value " + std::to_string(v) +
+        " overflows uint32_t (Metal kernel argument limit)");
+  return static_cast<uint32_t>(v);
+}
+
 // Dispatch a binary vector-op-vector kernel:  c[i] = a[i] op b[i].
 static void dispatch_binary(const char* kernel_name,
                              const void* a, const void* b, void* c,
@@ -175,6 +190,7 @@ static void dispatch_binary(const char* kernel_name,
   if (size == 0) {
     return;
   }
+  (void)ct2_u32(size);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -201,6 +217,7 @@ static void dispatch_scalar(const char* kernel_name,
   if (size == 0) {
     return;
   }
+  (void)ct2_u32(size);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -360,6 +377,7 @@ static void dispatch_unary(const char* kernel_name,
                             const void* x, void* y,
                             ctranslate2::dim_t size) {
   if (size == 0) return;
+  (void)ct2_u32(size);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_activation_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -493,6 +511,7 @@ static void dispatch_broadcast1(const char* kernel_name,
                                  ctranslate2::dim_t size,
                                  uint32_t param0) {
   if (size == 0) return;
+  (void)ct2_u32(size);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -517,6 +536,7 @@ static void dispatch_broadcast2(const char* kernel_name,
                                  ctranslate2::dim_t size,
                                  uint32_t param0, uint32_t param1) {
   if (size == 0) return;
+  (void)ct2_u32(size);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -799,6 +819,7 @@ static void dispatch_transpose(const char* kname,
                                 const void* a, void* b, ctranslate2::dim_t n,
                                 const void* args, size_t args_size) {
   if (n == 0) return;
+  (void)ct2_u32(n);  // guard: MSL `uint gid` is 32-bit
   id<MTLComputePipelineState> pso = get_transpose_pso(kname);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
@@ -1456,7 +1477,7 @@ namespace ctranslate2 {
     if (size == 0) { return T(0); }
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_sum_%s", MetalTypeName<T>::value);
-    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t n = ct2_u32(size);
     uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
     NSUInteger inp_off = 0;
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
@@ -1484,7 +1505,7 @@ namespace ctranslate2 {
     if (size == 0) { return 0; }
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_max_element_%s", MetalTypeName<T>::value);
-    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t n = ct2_u32(size);
     uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
     NSUInteger inp_off = 0;
     id<MTLBuffer> inp_buf  = metal_buffer_for_ptr(array, &inp_off);
@@ -1524,7 +1545,7 @@ namespace ctranslate2 {
     if (size == 0) { return T(0); }
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_max_%s", MetalTypeName<T>::value);
-    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t n = ct2_u32(size);
     uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
     NSUInteger inp_off = 0;
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
@@ -1555,7 +1576,7 @@ namespace ctranslate2 {
     if (size == 0) { return T(0); }
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_amax_%s", MetalTypeName<T>::value);
-    uint32_t n = static_cast<uint32_t>(size);
+    uint32_t n = ct2_u32(size);
     uint32_t num_groups = (n + kReductionTGS - 1) / kReductionTGS;
     NSUInteger inp_off = 0;
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
@@ -1605,7 +1626,7 @@ namespace ctranslate2 {
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_batch_broadcast_%s", MetalTypeName<T>::value);
-    dispatch_broadcast1(kname, a, b, c, b_size, static_cast<uint32_t>(a_size));
+    dispatch_broadcast1(kname, a, b, c, b_size, ct2_u32(a_size));
   }
 
   // M4.6 — add_depth_broadcast — GPU kernel.
@@ -1617,7 +1638,7 @@ namespace ctranslate2 {
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_depth_broadcast_%s", MetalTypeName<T>::value);
-    uint32_t depth = static_cast<uint32_t>(b_size / a_size);
+    uint32_t depth = ct2_u32(b_size / a_size);
     dispatch_broadcast1(kname, a, b, c, b_size, depth);
   }
 
@@ -1631,8 +1652,8 @@ namespace ctranslate2 {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_block_broadcast_%s", MetalTypeName<T>::value);
     dispatch_broadcast2(kname, a, b, c, b_size,
-                        static_cast<uint32_t>(block),
-                        static_cast<uint32_t>(a_size));
+                        ct2_u32(block),
+                        ct2_u32(a_size));
   }
 
   // M4.2 — sub(vector, vector, out) — GPU kernel
@@ -1707,7 +1728,7 @@ namespace ctranslate2 {
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "mul_batch_broadcast_%s", MetalTypeName<T>::value);
-    dispatch_broadcast1(kname, a, b, c, b_size, static_cast<uint32_t>(a_size));
+    dispatch_broadcast1(kname, a, b, c, b_size, ct2_u32(a_size));
   }
 
   // M4.7 — penalize_previous_tokens — GPU kernel (one thread per batch item).
@@ -1722,9 +1743,9 @@ namespace ctranslate2 {
     dispatch_penalize(kname,
                       scores, previous_scores, previous_ids,
                       static_cast<float>(penalty),
-                      static_cast<uint32_t>(batch_size),
-                      static_cast<uint32_t>(length),
-                      static_cast<uint32_t>(vocabulary_size));
+                      ct2_u32(batch_size),
+                      ct2_u32(length),
+                      ct2_u32(vocabulary_size));
   }
 
   // M4.7 — prepare_length_mask — CPU-side with GPU flush.
@@ -1763,7 +1784,7 @@ namespace ctranslate2 {
   void primitives<Device::METAL>::transpose_2d(const T* a, const dim_t* dims, T* b) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "transpose_2d_%s", MetalTypeName<T>::value);
-    TransposeArgs2D args{static_cast<uint32_t>(dims[0]), static_cast<uint32_t>(dims[1])};
+    TransposeArgs2D args{ct2_u32(dims[0]), ct2_u32(dims[1])};
     dispatch_transpose(kname, a, b, dims[0] * dims[1], &args, sizeof(args));
   }
 
@@ -1775,12 +1796,12 @@ namespace ctranslate2 {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "transpose_3d_%s", MetalTypeName<T>::value);
     const uint32_t a_stride[3] = {
-      static_cast<uint32_t>(dims[1] * dims[2]),
-      static_cast<uint32_t>(dims[2]),
+      ct2_u32(dims[1] * dims[2]),
+      ct2_u32(dims[2]),
       1u
     };
-    const uint32_t bd1 = static_cast<uint32_t>(dims[perm[1]]);
-    const uint32_t bd2 = static_cast<uint32_t>(dims[perm[2]]);
+    const uint32_t bd1 = ct2_u32(dims[perm[1]]);
+    const uint32_t bd2 = ct2_u32(dims[perm[2]]);
     TransposeArgs3D args{
       a_stride[perm[0]], a_stride[perm[1]], a_stride[perm[2]],
       bd1 * bd2, bd2,  // b_s0, b_s1
@@ -1798,14 +1819,14 @@ namespace ctranslate2 {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "transpose_4d_%s", MetalTypeName<T>::value);
     const uint32_t a_stride[4] = {
-      static_cast<uint32_t>(dims[1] * dims[2] * dims[3]),
-      static_cast<uint32_t>(dims[2] * dims[3]),
-      static_cast<uint32_t>(dims[3]),
+      ct2_u32(dims[1] * dims[2] * dims[3]),
+      ct2_u32(dims[2] * dims[3]),
+      ct2_u32(dims[3]),
       1u
     };
-    const uint32_t bd1 = static_cast<uint32_t>(dims[perm[1]]);
-    const uint32_t bd2 = static_cast<uint32_t>(dims[perm[2]]);
-    const uint32_t bd3 = static_cast<uint32_t>(dims[perm[3]]);
+    const uint32_t bd1 = ct2_u32(dims[perm[1]]);
+    const uint32_t bd2 = ct2_u32(dims[perm[2]]);
+    const uint32_t bd3 = ct2_u32(dims[perm[3]]);
     TransposeArgs4D args{
       a_stride[perm[0]], a_stride[perm[1]], a_stride[perm[2]], a_stride[perm[3]],
       bd1 * bd2 * bd3, bd2 * bd3, bd3,  // b_s0, b_s1, b_s2

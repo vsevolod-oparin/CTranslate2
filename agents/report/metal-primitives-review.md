@@ -81,24 +81,22 @@ One specific caution: MSL's `min()` and `max()` overloads for `bfloat` may be ab
 
 ---
 
-### 1.3 `uint32_t` truncation of `dim_t` in GPU kernel arguments
+### 1.3 `uint32_t` truncation of `dim_t` in GPU kernel arguments ✅ FIXED (2026-02-25)
 
-**Severity: Low (theoretical, not a practical concern today)**
+**Was: Low (theoretical) — now resolved.**
 
-Several primitives cast `dim_t` (which is `int64_t` on 64-bit platforms) to `uint32_t` before passing it as a kernel argument:
+**Applied fix** (`src/metal/primitives.mm`):
+- Added `ct2_u32(dim_t v)` helper: validated narrowing cast that throws `std::runtime_error` with a clear message instead of silently truncating values above 2^32-1. Also rejects negative values.
+- Added `(void)ct2_u32(size);` guard at the top of all six dispatch helpers (`dispatch_binary`, `dispatch_scalar`, `dispatch_unary`, `dispatch_broadcast1`, `dispatch_broadcast2`, `dispatch_transpose`) — covers the implicit MSL `uint gid` truncation path.
+- Replaced all 16 raw `static_cast<uint32_t>(dim_t_expr)` call-sites in reduction, broadcast, penalize, and transpose dispatches with `ct2_u32(...)`.
+- Added `#include <limits>` to support `std::numeric_limits<uint32_t>::max()`.
 
-```
-// e.g., src/metal/primitives.mm:1421, 1449, 1489, 1519
-uint32_t n = static_cast<uint32_t>(size);
-```
+**Test added:** `tests/metal/truncation_test.mm` (9/9 pass).
+Key tests: `dispatch_binary` and `dispatch_scalar` paths throw on `UINT32_MAX + 1`; negative `dim_t` also throws; normal-sized dispatch produces correct results (regression guard).
 
-Similarly, the MSL kernels use `uint gid [[thread_position_in_grid]]` which is a 32-bit unsigned integer. For element counts above 2^32 (approximately 4 billion), `gid` wraps to zero and elements beyond the 4-billion index are silently skipped.
+Original description:
 
-In practice, inference tensors stay well below this limit. A 50k-token, 8192-dimension float32 activation tensor is approximately 1.6 GB, which is 410 million elements — within the 32-bit range. The risk is theoretical for the foreseeable hardware envelope.
-
-However, the truncation is silent. A `static_assert` or a runtime check in the dispatch helpers would surface the assumption explicitly rather than leaving it to be discovered through a data corruption in a future setting.
-
-The `dispatch_penalize` function has a related pattern: `batch_size`, `length`, and `vocab_size` are all truncated from `dim_t` to `uint32_t`. A 250k-vocabulary model is well within 32-bit range, but the truncation deserves a note in the relevant dispatch function.
+Several primitives cast `dim_t` (which is `int64_t` on 64-bit platforms) to `uint32_t` before passing it as a kernel argument silently. The MSL kernels use `uint gid [[thread_position_in_grid]]` (32-bit); for element counts above 2^32, `gid` wraps to zero and elements beyond that index are silently skipped. The truncation was silent — corruption would only be discovered through a future data bug.
 
 ---
 

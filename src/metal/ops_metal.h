@@ -1,7 +1,8 @@
 // src/metal/ops_metal.h
 //
 // Declarations for Metal dispatch functions used by high-level ops
-// (LayerNorm, RMSNorm, SoftMax, Gather).  Implemented in primitives.mm.
+// (LayerNorm, RMSNorm, SoftMax, Gather).  Implemented in
+// src/metal/primitives_norm_gather.mm.
 //
 // Include only from .mm files compiled with Metal support (CT2_WITH_METAL).
 // Part of M5.2 — Metal op specializations.

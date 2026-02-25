@@ -1,9 +1,10 @@
-// Tests for 4.2 — PSO warmup: verify all six MSL libraries compile cleanly.
+// Tests for 4.2 — PSO warmup: verify all eight MSL libraries compile cleanly.
 //
-// Each of the six kernel groups in primitives.mm has its own MSL source string
-// that is compiled lazily on first use via `newLibraryWithSource:`.  Syntax
-// errors in any embedded string surface only at runtime (during the first
-// transformer layer forward pass), not at C++ compile time.
+// Each of the eight kernel groups (split across primitives_*.mm files) has its
+// own MSL source string that is compiled lazily on first use via
+// `newLibraryWithSource:`.  Syntax errors in any embedded string surface only
+// at runtime (during the first transformer layer forward pass), not at C++
+// compile time.
 //
 // This test triggers one kernel from every library group and asserts that no
 // std::exception is thrown (which is what compile_library_once and make_pso
@@ -16,6 +17,8 @@
 //   4. beam_search   — penalize_previous_tokens
 //   5. transpose     — transpose_2d/3d/4d
 //   6. reduction     — reduce_sum / reduce_max / reduce_amax / max_element
+//   7. normalization — layer_norm / rms_norm / softmax
+//   8. gather        — gather
 //
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
@@ -25,7 +28,13 @@
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
 //     src/metal/allocator.mm \
-//     src/metal/primitives.mm \
+//     src/metal/primitives_memory.mm \
+//     src/metal/primitives_elementwise.mm \
+//     src/metal/primitives_reduction.mm \
+//     src/metal/primitives_gemm.mm \
+//     src/metal/primitives_transpose.mm \
+//     src/metal/primitives_beam_search.mm \
+//     src/metal/primitives_norm_gather.mm \
 //     src/allocator.cc \
 //     src/devices.cc \
 //     src/cpu/allocator.cc \

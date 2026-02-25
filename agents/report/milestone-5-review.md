@@ -387,10 +387,10 @@ bias_add with relu activation: negative values clamped to 0
 | 1.1 | Bug | Low | ✅ Fixed (2026-02-25) | `bias_add_metal.mm` hardcodes `Device::METAL` instead of template param `D` |
 | 1.2 | Bug | Low | ✅ Fixed (2026-02-25) | LayerNorm guard comment/message clarified: `inner_size == 1` is the correct invariant |
 | 1.3 | Bug | Low | ✅ Fixed (2026-02-25) | Softmax `active_N == 0` log(0) path explained with inline comment in MSL kernel |
-| 2.1 | Quality | Low | Open | `ops_metal.h` comment says "Implemented in primitives.mm" (stale after split) |
-| 2.2 | Quality | Low | Open | `pso_warmup_test.mm` says "six kernel groups" — now 8; normalization/gather not tested |
-| 2.3 | Quality | Low | Open | LayerNorm constraint description imprecise (`inner_size == 1` vs `axis == rank-1`) |
-| 2.4 | Quality | Low | Open | `use_residual` Metal limitation not documented in `rms_norm.h` API |
+| 2.1 | Quality | Low | ✅ Fixed (2026-02-25) | `ops_metal.h` comment updated to `Implemented in primitives_norm_gather.mm` |
+| 2.2 | Quality | Low | ✅ Fixed (2026-02-25) | `pso_warmup_test.mm` updated: "eight kernel groups", lists normalization/gather, updated build cmd |
+| 2.3 | Quality | Low | ✅ Fixed (2026-02-25) | Resolved by Bug 1.2 fix: `normalization_metal.mm` comment fully explains `inner_size == 1` invariant |
+| 2.4 | Quality | Low | ✅ Fixed (2026-02-25) | `rms_norm.h` constructor now has comment documenting Device::METAL limitation for `use_residual` |
 | 3.1 | Perf | Low | Deferred (M7+) | `NORM_BLOCK = 256` wastes threads for small N; dynamic threadgroup size would improve utilisation |
 | 3.2 | Perf | Low | Deferred | Softmax recomputes `exp(x - max)` twice per element; unavoidable for large N but worth documenting |
 | 3.3 | Perf | Low | Deferred | `gather_metal` 1D dispatch; 2D grid would expose more scheduler parallelism for large embeddings |
@@ -423,8 +423,8 @@ All M5.2 ops are implemented. The functional gaps are documented limitations (no
 - LayerNorm restricted to last axis
 - RMSNorm `use_residual` not supported
 
-The primary outstanding work is **test coverage** (items 4.1–4.6), with three low-severity
-code quality fixes (1.1, 2.1, 2.3).
+The primary outstanding work is **test coverage** (items 4.1–4.6). All Section 1 (bugs) and
+Section 2 (quality) items are now resolved.
 
 ---
 

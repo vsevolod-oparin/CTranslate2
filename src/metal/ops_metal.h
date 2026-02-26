@@ -45,6 +45,18 @@ namespace ctranslate2 {
                       dim_t copy_size, dim_t batch_stride,
                       dim_t num_indices_per_batch, dim_t total_elements);
 
+    // rotary_metal: apply rotary position embeddings to a 2-D view of
+    //   [total_vecs, depth].
+    //   sin/cos: [max_time, ndims] tables.
+    //   is_transposed=false: t = vec / head_size  (FA2 layout)
+    //   is_transposed=true:  t = vec % max_time   (std layout)
+    template <typename T>
+    void rotary_metal(const T* input, const T* sin_buf, const T* cos_buf,
+                      T* output,
+                      dim_t total_vecs, dim_t depth, dim_t ndims,
+                      dim_t max_time, dim_t head_size,
+                      bool interleave, bool is_transposed);
+
     // sdpa_metal: scaled dot-product attention.
     //   q/k/v layout: [batch, seqlen, num_heads, head_dim] (interleaved heads).
     //   output layout: same shape as q.

@@ -673,9 +673,17 @@ Key design notes:
 M6.1 SDPA tests (8/8) still pass after refactor.
 Report: `agents/report/milestone-6.2-kv-cache.md`
 
-**6.3 Rotary embeddings (RoPE)**
-- `src/ops/rotary_metal.mm`: apply RoPE to Q/K tensors on Metal
-- **PASS:** Metal RoPE output matches CPU within 1e-4 for float32
+**6.3 Rotary embeddings (RoPE)** ✅ DONE (2026-02-26)
+- `src/metal/ops_rotary.mm`: MSL kernel + `metal::rotary_metal<T>()` free function
+- `src/ops/rotary_metal.mm`: `Rotary::compute<Device::METAL>` wrapper
+- `src/ops/flash_attention_metal.mm`: CPU RoPE for decode path (offset > 0)
+- Tests: `tests/metal/rotary_test.mm` — 9/9 pass (f32/f16/bf16, interleave/non-interleave, both layouts, partial rotation)
+- Benchmark: `tests/metal/m63_bench.mm` — 24/24 accuracy checks pass
+  - float32 GPU crossover: ~t=2048 (h8, hd64) → 1.13x
+  - float16 GPU: approaches crossover ~t=2048 (0.82x); GB-limited
+  - bfloat16 GPU crossover: t=2048 → 1.22x
+  - CB overhead (~0.4 ms) dominates at small shapes; GPU wins at 2K+ tokens in prefill
+- Report: `agents/report/milestone-6.3-rotary.md`
 
 **6.4 ALiBi positional bias**
 - `src/ops/alibi_add_metal.mm`

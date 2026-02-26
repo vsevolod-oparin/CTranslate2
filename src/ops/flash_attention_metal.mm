@@ -2,18 +2,25 @@
 //
 // M6.1 — FlashAttention::compute<Device::METAL>.
 // M6.2 — KV-cache update (offset > 0 path).
+// M6.3 — Rotary embeddings (RoPE) for the decode path.
 //
 // Implements scaled dot-product attention on the Metal backend.
 // Calls metal::sdpa_metal<T> from src/metal/ops_sdpa.mm.
 //
 // M6.1 scope (offset == 0): SDPA over full Q/K/V without cache.
+//   RoPE: applied by the layer (RotaryEmbeddings::apply) before this call;
+//   rotary_cos/sin are nullptr here.
+//
 // M6.2 scope (offset > 0):  KV-cache update + SDPA decode step.
 //   Algorithm:
 //     1. commit_and_wait()  — flush any pending GPU writes so CPU can read
 //                             the new keys/values (written by prior linear ops).
-//     2. CPU memcpy         — write new K/V into cached_keys/values at position
+//     2. CPU RoPE (M6.3)    — apply rotary position `offset` to Q and new K
+//                             using the half-sized cos/sin tables supplied by
+//                             the layer (rotary_cos/sin != nullptr).
+//     3. CPU memcpy         — write new K/V into cached_keys/values at position
 //                             `offset` (unified memory, zero-copy GPU side).
-//     3. sdpa_metal         — attend Q over the full valid cache [0, offset+seqlen_new).
+//     4. sdpa_metal         — attend Q over the full valid cache [0, offset+seqlen_new).
 //
 // KV cache layout: [batch, total_cache_slots, num_heads_k, head_dim].
 //   Per-batch slice starts at b * total_cache_slots * num_heads_k * head_dim.
@@ -25,14 +32,21 @@
 //   we force is_causal=false when sq==1 (mirrors the CUDA FlashAttention
 //   implementation).
 //
-// Still unsupported in M6.2 (guard throws):
-//   rotary embeddings, ALiBi, sliding window, attention weight output,
+// RoPE half-table format (rotary_cos / rotary_sin for decode):
+//   Shape [total_positions, ndims/2] — only the "positive-frequency" half.
+//   rotary_cos->dim(1) = ndims/2,  rotary_sin->dim(1) = ndims/2.
+//   ndims = rotary_cos->dim(1) * 2.
+//   Row `offset` gives the cos/sin for position `offset`.
+//
+// Still unsupported in M6.3 (guard throws):
+//   ALiBi, sliding window, attention weight output,
 //   seqlen_q > 1 with offset > 0 (chunk-prefill into KV cache).
 
 #include "ctranslate2/ops/flash_attention.h"
 
 #include <cstring>
 #include <stdexcept>
+#include <vector>
 
 #include "metal/ops_metal.h"
 #include "metal/utils.h"
@@ -40,6 +54,64 @@
 
 namespace ctranslate2 {
   namespace ops {
+
+    // -------------------------------------------------------------------------
+    // apply_rope_half — CPU RoPE for one token using half-sized cos/sin tables.
+    //
+    //   x:       token vector [depth] (in-place)
+    //   cos_row: cos[offset, 0..half_dim)   (half_dim = ndims/2)
+    //   sin_row: sin[offset, 0..half_dim)
+    //   ndims:   number of dimensions that rotate  (depth >= ndims)
+    //   depth:   full head dimension
+    //   interleave: false → non-interleave (LLaMA-style half rotation)
+    //               true  → interleave     (GPT-NeoX-style pair rotation)
+    //
+    // Non-interleave:
+    //   middle = ndims/2
+    //   y[d]        = x[d]        * cos[d]      - x[d+middle] * sin[d]   d < middle
+    //   y[d+middle] = x[d+middle] * cos[d]      + x[d]        * sin[d]   d < middle
+    //
+    // Interleave:
+    //   y[2i]   = x[2i]   * cos[i] - x[2i+1] * sin[i]   i < ndims/2
+    //   y[2i+1] = x[2i+1] * cos[i] + x[2i]   * sin[i]   i < ndims/2
+    //
+    // Elements d in [ndims, depth) are passed through unchanged.
+    // -------------------------------------------------------------------------
+    template <typename T>
+    static void apply_rope_half(T* x,
+                                const T* cos_row,
+                                const T* sin_row,
+                                dim_t ndims,
+                                dim_t depth,
+                                bool interleave) {
+      const dim_t half = ndims / 2;
+      // Stack buffer for non-interleave in-place computation.
+      std::vector<float> tmp(static_cast<size_t>(ndims));
+
+      if (!interleave) {
+        // Non-interleave: load ndims elements, compute, write back.
+        for (dim_t d = 0; d < half; ++d) {
+          const float xd  = float(x[d]);
+          const float xp  = float(x[d + half]);
+          const float cd  = float(cos_row[d]);
+          const float sd  = float(sin_row[d]);
+          tmp[d]        = xd * cd - xp * sd;
+          tmp[d + half] = xp * cd + xd * sd;
+        }
+        for (dim_t d = 0; d < ndims; ++d) x[d] = T(tmp[d]);
+      } else {
+        // Interleave: pairs (2i, 2i+1) → can update in-place without temp.
+        for (dim_t i = 0; i < half; ++i) {
+          const float xe = float(x[2 * i]);
+          const float xo = float(x[2 * i + 1]);
+          const float ci = float(cos_row[i]);
+          const float si = float(sin_row[i]);
+          x[2 * i]     = T(xe * ci - xo * si);
+          x[2 * i + 1] = T(xo * ci + xe * si);
+        }
+      }
+      // Elements [ndims, depth) are passed through unchanged.
+    }
 
     template <Device D>
     void FlashAttention::compute(StorageView& queries,
@@ -52,25 +124,21 @@ namespace ctranslate2 {
                                   bool return_normalized_attention,
                                   StorageView* rotary_cos,
                                   StorageView* rotary_sin,
-                                  const bool /*rotary_interleave*/,
+                                  const bool rotary_interleave,
                                   StorageView* alibi,
                                   dim_t offset) const {
       // Guards for features not yet supported.
-      if (rotary_cos || rotary_sin) {
-        throw std::invalid_argument(
-            "Metal FlashAttention: rotary embeddings are not supported (M6.2 scope)");
-      }
       if (alibi) {
         throw std::invalid_argument(
-            "Metal FlashAttention: ALiBi is not supported (M6.2 scope)");
+            "Metal FlashAttention: ALiBi is not supported (M6.3 scope)");
       }
       if (_sliding_window > 0) {
         throw std::invalid_argument(
-            "Metal FlashAttention: sliding window is not supported (M6.2 scope)");
+            "Metal FlashAttention: sliding window is not supported (M6.3 scope)");
       }
       if (return_normalized_attention && attention) {
         throw std::invalid_argument(
-            "Metal FlashAttention: attention weight output is not supported (M6.2 scope)");
+            "Metal FlashAttention: attention weight output is not supported (M6.3 scope)");
       }
 
       // Input shape: [batch, seqlen_q, num_heads, head_dim]
@@ -84,7 +152,7 @@ namespace ctranslate2 {
 
       if (offset > 0) {
         // -----------------------------------------------------------------------
-        // M6.2 — KV-cache decode path
+        // M6.2/M6.3 — KV-cache decode path
         // -----------------------------------------------------------------------
         if (!cached_keys || !cached_values) {
           throw std::invalid_argument(
@@ -93,11 +161,11 @@ namespace ctranslate2 {
         if (seqlen_q > 1) {
           throw std::invalid_argument(
               "Metal FlashAttention: chunk-prefill (seqlen_q > 1 with offset > 0) "
-              "is not supported in M6.2");
+              "is not supported in M6.3");
         }
 
         // Flush pending GPU writes (linear projections wrote keys/values via
-        // GPU kernels; CPU must see the results before the memcpy below).
+        // GPU kernels; CPU must see the results before the operations below).
         metal::commit_and_wait();
 
         const dim_t seqlen_new   = keys.dim(1);
@@ -105,13 +173,42 @@ namespace ctranslate2 {
         const dim_t row_elements = static_cast<dim_t>(num_heads_k) * head_dim;
         const dim_t seqlen_k_eff = offset + seqlen_new;
 
-        // Write new K/V into cache at position `offset` (one batch at a time).
         TYPE_DISPATCH(queries.dtype(), {
+          T*       q_ptr   = queries.data<T>();
+          T*       k_new   = keys.data<T>();
           T*       k_cache = cached_keys->data<T>();
           T*       v_cache = cached_values->data<T>();
-          const T* k_new   = keys.data<T>();
           const T* v_new   = values.data<T>();
 
+          // M6.3: Apply RoPE to Q and new K using the half-sized cos/sin tables.
+          //   rotary_cos shape: [total_positions, ndims/2]
+          //   rotary_sin shape: [total_positions, ndims/2]
+          //   The layer supplies these only for offset > 0 (decode path).
+          if (rotary_cos != nullptr && rotary_sin != nullptr) {
+            const dim_t half_dim = rotary_cos->dim(1);
+            const dim_t ndims    = half_dim * 2;
+            const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
+            const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
+
+            // Apply to Q: layout [batch, sq=1, nh, hd] → nh vectors per batch.
+            for (dim_t b = 0; b < batch_size; ++b) {
+              for (dim_t h = 0; h < num_heads; ++h) {
+                T* xq = q_ptr + (b * num_heads + h) * head_dim;
+                apply_rope_half(xq, cos_row, sin_row, ndims, head_dim,
+                                rotary_interleave);
+              }
+            }
+            // Apply to new K: layout [batch, seqlen_new=1, nhk, hd].
+            for (dim_t b = 0; b < batch_size; ++b) {
+              for (dim_t hk = 0; hk < num_heads_k; ++hk) {
+                T* xk = k_new + (b * num_heads_k + hk) * head_dim;
+                apply_rope_half(xk, cos_row, sin_row, ndims, head_dim,
+                                rotary_interleave);
+              }
+            }
+          }
+
+          // Write new K/V into cache at position `offset` (one batch at a time).
           for (dim_t b = 0; b < batch_size; ++b) {
             T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
             T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
@@ -126,7 +223,7 @@ namespace ctranslate2 {
           const bool eff_causal = _is_causal && (seqlen_q > 1);
 
           metal::sdpa_metal<T>(
-              queries.data<T>(), k_cache, v_cache, output.data<T>(),
+              q_ptr, k_cache, v_cache, output.data<T>(),
               batch_size, seqlen_q, seqlen_k_eff,
               num_heads, num_heads_k, head_dim,
               _queries_scale, eff_causal);
@@ -135,6 +232,8 @@ namespace ctranslate2 {
       } else {
         // -----------------------------------------------------------------------
         // M6.1 — Prefill / no-cache path (offset == 0)
+        // rotary_cos/sin == nullptr here: the layer (RotaryEmbeddings::apply)
+        // already applied RoPE to Q and K before calling FlashAttention.
         // -----------------------------------------------------------------------
         const dim_t seqlen_k = keys.dim(1);
 

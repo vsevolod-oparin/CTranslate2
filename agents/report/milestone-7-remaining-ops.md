@@ -204,6 +204,64 @@ All M7 ops are CPU-side (via `commit_and_wait()` + shared-memory access):
 
 ---
 
+## Benchmark (`tests/metal/m7_bench.mm`, observed on Apple M4)
+
+Both paths use Metal-allocated I/O buffers. "Metal" = commit_and_wait() + algorithm.
+"CPU" = same algorithm without sync. `commit_and_wait()` with no pending GPU work: **~0 µs**.
+In a real pipeline (GPU busy before the op), commit adds ~0.4 ms.
+
+| Op | Shape | Metal µs | CPU µs | Ratio |
+|----|-------|----------|--------|-------|
+| **commit baseline** | empty (no GPU work) | 0 | — | — |
+| **Concat axis=0** | [256×512]+[256×512] | 31 | 24 | 0.77x |
+| **Concat axis=0** | [1024×512]+[1024×512] | 79 | 77 | 0.97x |
+| **Concat axis=0** | [1024×2048]+[1024×2048] | 344 | 314 | 0.91x |
+| **Concat axis=1** | [1024×512]+[1024×1024] | 95 | 94 | 0.99x |
+| **Split axis=0** | [512×512]→2×[256×512] | 14 | 14 | 1.00x |
+| **Split axis=0** | [2048×512]→2×[1024×512] | 63 | 60 | 0.95x |
+| **Tile** | [256×1024]×4→[1024×1024] | 57 | 57 | 1.00x |
+| **Tile** | [1024×2048]×4→[4096×2048] | 489 | 436 | 0.89x |
+| **TopK k=1** | batch=1, vocab=32768 | 15 | 15 | 1.00x |
+| **TopK k=1** | batch=1, vocab=100352 | 46 | 45 | 1.00x |
+| **TopK k=5** | batch=1, vocab=32768 | 14 | 14 | 1.00x |
+| **TopK k=10** | batch=1, vocab=65536 | 27 | 27 | 1.02x |
+| **TopPMask** | p=0.90, vocab=32768 | 1267 | 1251 | 0.99x |
+| **TopPMask** | p=0.95, vocab=100352 | 5033 | 4974 | 0.99x |
+| **Mean** | [256×1024]→[256] | 106 | 106 | 1.00x |
+| **Mean** | [256×512×128]→[256×128] | 9589 | 9631 | 1.00x |
+| **MedianFilter** | width=3, [80×1500] | 820 | 856 | 1.04x |
+| **MedianFilter** | width=5, [80×3000] | 6052 | 6056 | 1.00x |
+| **GumbelMax** | vocab=32768 | 153 | 152 | 1.00x |
+| **GumbelMax** | vocab=100352 | 466 | 466 | 1.00x |
+| **Multinomial** | vocab=32768, samples=1 | 46 | 46 | 1.00x |
+
+**Key finding**: Metal ≈ CPU (1.00x) for all ops because:
+1. `commit_and_wait()` with no pending GPU work is essentially free (~0 µs).
+2. The algorithm runs on the CPU in both paths (same Metal-shared memory).
+3. In a real pipeline the commit cost (~0.4 ms) would add latency only at the GPU→CPU boundary.
+
+**Most expensive ops**: TopPMask (std::sort O(N log N)), Mean mid-axis (strided access ~9.6 ms for 33M elements), MedianFilter (std::nth_element per position).
+
+### Benchmark build command
+
+```bash
+clang++ -std=c++17 -O2 \
+    -I include -I src \
+    -DCT2_WITH_METAL \
+    tests/metal/m7_bench.mm \
+    src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
+    src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
+    src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm \
+    src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm \
+    src/allocator.cc src/devices.cc src/cpu/allocator.cc \
+    -framework Metal -framework Foundation \
+    -framework MetalPerformanceShaders \
+    -framework MetalPerformanceShadersGraph \
+    -o m7_bench && ./m7_bench
+```
+
+---
+
 ## Deferred Items
 
 | Item | Notes |

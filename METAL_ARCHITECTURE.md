@@ -1,6 +1,6 @@
 # Metal Backend Architecture
 
-**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M9.1 complete
+**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M9.2 complete
 
 ---
 
@@ -137,7 +137,7 @@ Primitives: primitives<Device::METAL>::gemm / add / relu / ...
 | float32 | `MPSMatrixMultiplication` | Eager, encode-only |
 | float16 | `MPSMatrixMultiplication` | Eager, encode-only |
 | bfloat16 | `MPSGraph` matmul | **Commits immediately** (MPSGraph limitation) |
-| int8 | Not supported natively | Dequantize to f16, then f16 GEMM (M9 scope) |
+| int8→int32 | CPU int8→f32 + `MPSMatrixMultiplication` + CPU f32→int32 | No native MPS INT8; dequantize-before-GEMM workaround (M9.2) |
 
 `MPSMatrixMultiplication` requires `rowBytes ≥ rowBytesForColumns:` (MPS minimum alignment).
 `primitives_gemm.mm` auto-pads into a temporary buffer when needed.
@@ -266,5 +266,6 @@ Only `float`, `float16_t`, `bfloat16_t` are dispatched by `DEVICE_AND_FLOAT_DISP
 | M8.2 | Integration validation: full decoder layer (cross-attn sq≠sk, KV-cache decode), 11/11 pass |
 | M8.3 | Conv1D: im2col MSL kernel + Metal GEMM; f32/f16/bf16; 7/7 pass, errors ~1e-7 |
 | M9.1 | INT8 Quantize/Dequantize: GPU kernels (quantize/dequantize/dequantize_gemm_output); 15/15 pass |
+| M9.2 | INT8 GEMM: CPU int8→f32, float32 MPS GEMM, CPU f32→int32; 9/9 pass, norm error 0.43% |
 | M9.3 | gemm_pack_b returns 0 (was already done in M4.4) |
 | M9.4 | compute_u8_compensation changed from METAL_STUB to no-op |

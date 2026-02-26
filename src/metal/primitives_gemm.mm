@@ -2,7 +2,7 @@
 //
 // M4.4 — GEMM primitives for Device::METAL.
 //
-// Two paths depending on element type:
+// Three paths depending on element type:
 //
 //   Path A (FP32 / FP16): MPSMatrixMultiplication.
 //     Encodes into the per-thread command buffer (encode-only).
@@ -13,6 +13,11 @@
 //     MPSMatrixMultiplication asserts at runtime for BF16 (verified in M0.2).
 //     MPSGraph runs synchronously on its own queue — pending GPU work is
 //     flushed with commit_and_wait() before each graph execution.
+//
+//   Path C (INT8 → INT32): dequantize INT8 inputs to FP32 on CPU, run FP32
+//     MPS GEMM, then round FP32 → INT32 on CPU.  Metal MPS has no native
+//     INT8 matmul as of macOS 14.  FP32 represents the accumulator exactly
+//     for k ≤ ~1040 (max int8 product 127*127*k < 2^24 = 16,777,216).
 //
 // Critical: get_current_command_buffer() must be called OUTSIDE
 // @autoreleasepool{} to avoid use-after-free of the thread-local CB.
@@ -310,6 +315,143 @@ static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
   run_bf16_gemm_inner(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc);
 }
 
+// ---------------------------------------------------------------------------
+// Path C — INT8 → INT32 GEMM
+//
+// Low-level MPS GEMM helper: takes id<MTLBuffer> arguments directly.
+// Used by dispatch_int8_gemm because temp buffers from alloc_temp_buffer
+// are not registered in the MetalAllocator's live map (so metal_buffer_for_ptr
+// would throw); we pass the MTLBuffers directly instead.
+// ---------------------------------------------------------------------------
+
+static void dispatch_mps_gemm_buf(
+    bool transpose_a, bool transpose_b,
+    ctranslate2::dim_t m, ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha,
+    id<MTLBuffer> buf_a, NSUInteger off_a, NSUInteger rb_a,
+    NSUInteger rows_a, NSUInteger cols_a,
+    id<MTLBuffer> buf_b, NSUInteger off_b, NSUInteger rb_b,
+    NSUInteger rows_b, NSUInteger cols_b,
+    id<MTLBuffer> buf_c, NSUInteger off_c, NSUInteger rb_c,
+    MPSDataType dtype) {
+  // Fetch command buffer BEFORE @autoreleasepool to avoid use-after-free.
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  @autoreleasepool {
+    MPSMatrixDescriptor* descA =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
+                                              columns:cols_a
+                                             rowBytes:rb_a
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descB =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
+                                              columns:cols_b
+                                             rowBytes:rb_b
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descC =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)m
+                                              columns:(NSUInteger)n
+                                             rowBytes:rb_c
+                                             dataType:dtype];
+    MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
+    MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
+    MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
+
+    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    MPSMatrixMultiplication* gemm_op =
+        [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                           transposeLeft:(BOOL)transpose_a
+                                          transposeRight:(BOOL)transpose_b
+                                             resultRows:(NSUInteger)m
+                                          resultColumns:(NSUInteger)n
+                                        interiorColumns:(NSUInteger)k
+                                                  alpha:(double)alpha
+                                                   beta:0.0];
+    [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+  }
+}
+
+// INT8 GEMM: convert int8 A and B to float32, run float32 MPS GEMM,
+// round float32 result to int32.  Only beta=0 is supported.
+static void dispatch_int8_gemm(
+    bool transpose_a, bool transpose_b,
+    ctranslate2::dim_t m, ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha,
+    const int8_t* a, ctranslate2::dim_t lda,
+    const int8_t* b, ctranslate2::dim_t ldb,
+    float beta,
+    int32_t* c, ctranslate2::dim_t ldc) {
+  if (m == 0 || n == 0 || k == 0) return;
+  if (beta != 0.0f)
+    throw std::runtime_error("Metal INT8 GEMM: only beta=0 is supported");
+
+  // Physical layout of A and B in memory:
+  //   !transpose_a → rows_a = m, cols_a = k
+  //    transpose_a → rows_a = k, cols_a = m
+  // (Same for B with transpose_b, n, k.)
+  const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
+  const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
+  const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
+  const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
+
+  // Flush pending GPU work before CPU reads from a/b.
+  ctranslate2::metal::commit_and_wait();
+
+  // Query MPS minimum rowBytes for float32.
+  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
+  @autoreleasepool {
+    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a
+                                              dataType:MPSDataTypeFloat32];
+    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b
+                                              dataType:MPSDataTypeFloat32];
+    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n
+                                              dataType:MPSDataTypeFloat32];
+  }
+
+  // Use padded row bytes to satisfy MPS alignment requirements.
+  const NSUInteger rb_a = std::max((NSUInteger)lda * sizeof(float), mps_rb_a);
+  const NSUInteger rb_b = std::max((NSUInteger)ldb * sizeof(float), mps_rb_b);
+  const NSUInteger rb_c = std::max((NSUInteger)n   * sizeof(float), mps_rb_c);
+
+  // Allocate float32 temporary buffers (Shared mode, CPU+GPU coherent).
+  id<MTLBuffer> tmp_a = alloc_temp_buffer(rows_a * rb_a);
+  id<MTLBuffer> tmp_b = alloc_temp_buffer(rows_b * rb_b);
+  id<MTLBuffer> tmp_c = alloc_temp_buffer((NSUInteger)m * rb_c);
+
+  // CPU: convert int8 → float32 row by row, respecting lda / ldb strides.
+  for (NSUInteger r = 0; r < rows_a; ++r) {
+    float*        dst = reinterpret_cast<float*>(
+                      static_cast<uint8_t*>([tmp_a contents]) + r * rb_a);
+    const int8_t* src = a + r * (NSUInteger)lda;
+    for (NSUInteger ci = 0; ci < cols_a; ++ci)
+      dst[ci] = static_cast<float>(src[ci]);
+  }
+  for (NSUInteger r = 0; r < rows_b; ++r) {
+    float*        dst = reinterpret_cast<float*>(
+                      static_cast<uint8_t*>([tmp_b contents]) + r * rb_b);
+    const int8_t* src = b + r * (NSUInteger)ldb;
+    for (NSUInteger ci = 0; ci < cols_b; ++ci)
+      dst[ci] = static_cast<float>(src[ci]);
+  }
+  std::memset([tmp_c contents], 0, (NSUInteger)m * rb_c);
+
+  // Encode float32 MPS GEMM using temp buffers directly.
+  dispatch_mps_gemm_buf(
+      transpose_a, transpose_b, m, n, k, alpha,
+      tmp_a, 0, rb_a, rows_a, cols_a,
+      tmp_b, 0, rb_b, rows_b, cols_b,
+      tmp_c, 0, rb_c, MPSDataTypeFloat32);
+
+  // Wait for GPU, then round float32 → int32 (handles ldc stride).
+  ctranslate2::metal::commit_and_wait();
+  for (ctranslate2::dim_t row = 0; row < m; ++row) {
+    const float* src = reinterpret_cast<const float*>(
+        static_cast<const uint8_t*>([tmp_c contents]) + (NSUInteger)row * rb_c);
+    int32_t* dst = c + row * ldc;
+    for (ctranslate2::dim_t col = 0; col < n; ++col)
+      dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
+  }
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -343,6 +485,9 @@ namespace ctranslate2 {
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {
       dispatch_bf16_gemm(transpose_a, transpose_b, m, n, k,
                          alpha, beta, a, lda, b, ldb, c, ldc);
+    } else if constexpr (std::is_same_v<In, int8_t> && std::is_same_v<Out, int32_t>) {
+      dispatch_int8_gemm(transpose_a, transpose_b, m, n, k,
+                         alpha, a, lda, b, ldb, beta, c, ldc);
     } else {
       METAL_STUB(gemm);
     }
@@ -381,6 +526,14 @@ namespace ctranslate2 {
                             a + i * stridea, lda,
                             b + i * strideb, ldb,
                             c + i * stridec, ldc);
+    } else if constexpr (std::is_same_v<In, int8_t> && std::is_same_v<Out, int32_t>) {
+      for (dim_t i = 0; i < batch_size; ++i)
+        dispatch_int8_gemm(transpose_a, transpose_b, m, n, k,
+                           alpha,
+                           a + i * stridea, lda,
+                           b + i * strideb, ldb,
+                           beta,
+                           c + i * stridec, ldc);
     } else {
       METAL_STUB(gemm_batch_strided);
     }
@@ -396,6 +549,8 @@ namespace ctranslate2 {
       const float16_t*, bool, dim_t, dim_t, float, float16_t*);
   template dim_t primitives<Device::METAL>::gemm_pack_b(
       const bfloat16_t*, bool, dim_t, dim_t, float, bfloat16_t*);
+  template dim_t primitives<Device::METAL>::gemm_pack_b(
+      const int8_t*, bool, dim_t, dim_t, float, int8_t*);
 
   template void primitives<Device::METAL>::gemm<float, float>(
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
@@ -409,6 +564,10 @@ namespace ctranslate2 {
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
       float, const bfloat16_t*, dim_t, const bfloat16_t*, dim_t,
       float, bfloat16_t*, dim_t, const bfloat16_t*);
+  template void primitives<Device::METAL>::gemm<int8_t, int32_t>(
+      bool, bool, bool, bool, dim_t, dim_t, dim_t,
+      float, const int8_t*, dim_t, const int8_t*, dim_t,
+      float, int32_t*, dim_t, const int32_t*);
 
   template void primitives<Device::METAL>::gemm_batch_strided<float, float>(
       bool, bool, dim_t, dim_t, dim_t,
@@ -422,5 +581,9 @@ namespace ctranslate2 {
       bool, bool, dim_t, dim_t, dim_t,
       float, const bfloat16_t*, dim_t, dim_t, const bfloat16_t*, dim_t, dim_t,
       float, bfloat16_t*, dim_t, dim_t, dim_t);
+  template void primitives<Device::METAL>::gemm_batch_strided<int8_t, int32_t>(
+      bool, bool, dim_t, dim_t, dim_t,
+      float, const int8_t*, dim_t, dim_t, const int8_t*, dim_t, dim_t,
+      float, int32_t*, dim_t, dim_t, dim_t);
 
 }  // namespace ctranslate2

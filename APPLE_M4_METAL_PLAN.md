@@ -644,10 +644,34 @@ Key design details:
 
 Report: `agents/report/milestone-6.1-sdpa.md`
 
-**6.2 KV-cache update (`update_state`)**
-- The decoder caches keys/values across steps — ensure Metal StorageViews support this correctly
-- Test with iterative decode (simulate 10 decode steps)
-- **PASS:** Cached Metal KV matches CPU cached KV at each step
+**6.2 KV-cache update (`update_state`)** ✅ DONE (2026-02-26)
+
+Implementation in `src/ops/flash_attention_metal.mm` (offset > 0 path):
+1. `commit_and_wait()` — flush pending GPU writes (linear projections wrote new K/V via GPU kernels;
+   CPU must see the data before the memcpy).
+2. CPU memcpy per batch item — write `keys/values[batch, seqlen_new, nh_k, hd]` into
+   `cached_keys/values[batch, total_cache, nh_k, hd]` at position `offset`.
+   Unified memory means this is immediately visible to the GPU.
+3. `sdpa_metal(Q, cached_K, cached_V, out, seqlen_k=offset+seqlen_new, is_causal=false)`.
+   `is_causal=false` for decode (sq==1): all cache positions are in the past of the current query;
+   the KV cache boundary already provides the temporal constraint.
+
+Key design notes:
+- `seqlen_k_eff = offset + seqlen_new` — attend only over the valid cache range, not total_cache slots.
+- `seqlen_q > 1` with `offset > 0` (chunk-prefill into cache) throws: not needed for standard decode.
+- The memcpy pattern mirrors `prepare_length_mask` (M4.7): CPU-side work on unified memory buffers,
+  preceded by `commit_and_wait()` to ensure GPU writes are visible.
+
+**PASS:** 6/6 tests in `tests/metal/kv_cache_test.mm`
+- float32 decode (batch=1, nh=4, hd=32, prefill=4, 10 steps): max err 2.98e-07
+- float32 GQA decode (nh=4, nh_k=2, hd=16, prefill=4, 5 steps): max err 8.94e-08
+- float32 batch=2 decode (nh=2, hd=16, prefill=3, 5 steps): max err 1.19e-07
+- float16 decode (prefill=4, 5 steps): max err 4.23e-04
+- bfloat16 decode (prefill=3, 3 steps): max err 3.49e-03
+- Cache contents verified: each slot written at correct offset, prior slots intact
+
+M6.1 SDPA tests (8/8) still pass after refactor.
+Report: `agents/report/milestone-6.2-kv-cache.md`
 
 **6.3 Rotary embeddings (RoPE)**
 - `src/ops/rotary_metal.mm`: apply RoPE to Q/K tensors on Metal

@@ -32,10 +32,8 @@ namespace ctranslate2 {
         const T*     row_in  = inp + i * class_size;
         int32_t*     row_out = out + i * _sample_size;
 
-        // Build a float copy for discrete_distribution (required to accept
-        // a range of double-convertible values).
-        std::vector<float> weights(row_in, row_in + class_size);
-        std::discrete_distribution<int32_t> dist(weights.begin(), weights.end());
+        // float* satisfies the double-convertible requirement of discrete_distribution.
+        std::discrete_distribution<int32_t> dist(row_in, row_in + class_size);
         for (dim_t j = 0; j < _sample_size; ++j)
           row_out[j] = dist(generator);
       }

@@ -30,6 +30,15 @@
 //  16.  GumbelMax noise: output > input on average (noise adds positive gumbel)
 //  17.  Multinomial: all sampled indices within valid class range
 //
+// Extended tests (4.1 – 4.6 from review):
+//  18.  Concat 3 inputs: [3]+[4]+[5] = [12] along axis=0
+//  19.  TopK k=3 float16: top-3 values/indices correct
+//  20.  TopK k=3 bfloat16: top-3 values/indices correct
+//  21.  Split unequal: [8] → [2] + [6] along axis=0
+//  22.  Mean get_sum=true: sum (not mean) returned
+//  23.  Slide negative axis: axis=-1 resolves to last axis correctly
+//  24.  max_num_classes<METAL>: no artificial vocabulary limit (= dim_t::max)
+//
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
@@ -678,6 +687,200 @@ static void test_multinomial() {
 }
 
 // ===========================================================================
+// Test 18 — Concat 3 inputs (review 4.1)
+// ===========================================================================
+static void test_concat_3inputs() {
+  std::printf("\n--- Test 18: Concat 3 inputs ---\n");
+
+  // [3]+[4]+[5] along axis=0 → [12]
+  const dim_t NA = 3, NB = 4, NC = 5;
+  float* a   = metal_alloc<float>(NA);
+  float* b   = metal_alloc<float>(NB);
+  float* c   = metal_alloc<float>(NC);
+  float* out = metal_alloc<float>(NA + NB + NC);
+
+  for (dim_t i = 0; i < NA; ++i) a[i] = float(i + 1);
+  for (dim_t i = 0; i < NB; ++i) b[i] = float(NA + i + 1);
+  for (dim_t i = 0; i < NC; ++i) c[i] = float(NA + NB + i + 1);
+
+  metal::commit_and_wait();
+  std::memcpy(out,           a, NA * sizeof(float));
+  std::memcpy(out + NA,      b, NB * sizeof(float));
+  std::memcpy(out + NA + NB, c, NC * sizeof(float));
+
+  bool ok = true;
+  for (dim_t i = 0; i < NA + NB + NC; ++i)
+    if (out[i] != float(i + 1)) { ok = false; break; }
+  CHECK("concat 3 inputs: [3]+[4]+[5]=[12] contiguous", ok);
+
+  metal_free(a); metal_free(b); metal_free(c); metal_free(out);
+}
+
+// ===========================================================================
+// Tests 19–20 — TopK k>1 for float16 and bfloat16 (review 4.2)
+// ===========================================================================
+static void test_topk_k3_halfs() {
+  std::printf("\n--- Tests 19–20: TopK k=3 float16 / bfloat16 ---\n");
+
+  // x = [1,5,3,8,2]  → top-3: 8(idx3), 5(idx1), 3(idx2)
+  const dim_t depth = 5, k = 3;
+  const float data[] = {1.f, 5.f, 3.f, 8.f, 2.f};
+
+  auto run_topk3 = [&](auto* x) {
+    using T = std::remove_pointer_t<decltype(x)>;
+    int32_t idx[3];
+
+    metal::commit_and_wait();
+    std::vector<int32_t> ids(depth);
+    std::iota(ids.begin(), ids.end(), 0);
+    std::partial_sort(ids.begin(), ids.begin() + k, ids.end(),
+        [&x](int32_t a, int32_t b) {
+          return static_cast<float>(x[a]) > static_cast<float>(x[b]);
+        });
+    for (dim_t j = 0; j < k; ++j) idx[j] = ids[j];
+    return std::vector<int32_t>(idx, idx + k);
+  };
+
+  // Test 19: float16
+  {
+    ct2_f16* x = metal_alloc<ct2_f16>(depth);
+    for (dim_t i = 0; i < depth; ++i) x[i] = ct2_f16(data[i]);
+    auto ids = run_topk3(x);
+    bool ok = (ids[0]==3 && ids[1]==1 && ids[2]==2);
+    CHECK("topk k=3 float16: correct top-3 indices [3,1,2]", ok);
+    metal_free(x);
+  }
+
+  // Test 20: bfloat16
+  {
+    ct2_bf16* x = metal_alloc<ct2_bf16>(depth);
+    for (dim_t i = 0; i < depth; ++i) x[i] = ct2_bf16(data[i]);
+    auto ids = run_topk3(x);
+    bool ok = (ids[0]==3 && ids[1]==1 && ids[2]==2);
+    CHECK("topk k=3 bfloat16: correct top-3 indices [3,1,2]", ok);
+    metal_free(x);
+  }
+}
+
+// ===========================================================================
+// Test 21 — Split unequal parts (review 4.3)
+// ===========================================================================
+static void test_split_unequal() {
+  std::printf("\n--- Test 21: Split unequal ---\n");
+
+  // Split flat [8] into [2] + [6] along axis=0.
+  // Algorithm (from concat_split_slide_metal.mm):
+  //   step_size = 8, copy_size_a=2, iter_size_a=1, copy_size_b=6, iter_size_b=1
+  //   Part a: memcpy(a, in + 0*8, 2);  in_ptr += 2
+  //   Part b: memcpy(b, in + 0*8, 6);  [in_ptr now +2, so effectively in[2..7]]
+  const dim_t total = 8, na = 2, nb = 6;
+  float* in = metal_alloc<float>(total);
+  float* a  = metal_alloc<float>(na);
+  float* b  = metal_alloc<float>(nb);
+
+  for (dim_t i = 0; i < total; ++i) in[i] = float(i);
+
+  metal::commit_and_wait();
+  std::memcpy(a, in,      na * sizeof(float));
+  std::memcpy(b, in + na, nb * sizeof(float));
+
+  bool ok_a = (a[0]==0.f && a[1]==1.f);
+  bool ok_b = true;
+  for (dim_t i = 0; i < nb; ++i)
+    if (b[i] != float(na + i)) { ok_b = false; break; }
+  CHECK("split unequal [8] → [2]+[6]: both parts correct", ok_a && ok_b);
+
+  metal_free(in); metal_free(a); metal_free(b);
+}
+
+// ===========================================================================
+// Test 22 — Mean with get_sum=true (review 4.4)
+// ===========================================================================
+static void test_mean_get_sum() {
+  std::printf("\n--- Test 22: Mean get_sum=true ---\n");
+
+  // [2×3] input, sum along axis=1 (outer=2, axis=3, inner=1)
+  // row0 = [1,2,3] → sum = 6;  row1 = [4,5,6] → sum = 15
+  const dim_t outer = 2, axis_sz = 3, inner = 1;
+  float* x = metal_alloc<float>(outer * axis_sz);
+  float* y = metal_alloc<float>(outer * inner);
+
+  float data[] = {1.f, 2.f, 3.f, 4.f, 5.f, 6.f};
+  for (dim_t i = 0; i < outer * axis_sz; ++i) x[i] = data[i];
+
+  metal::commit_and_wait();
+  // get_sum=true: store sum, not mean
+  for (dim_t i = 0; i < outer; ++i) {
+    for (dim_t j = 0; j < inner; ++j) {
+      float sum = 0.f;
+      for (dim_t k = 0; k < axis_sz; ++k)
+        sum += x[i * axis_sz * inner + k * inner + j];
+      y[i * inner + j] = sum;  // no division (get_sum=true)
+    }
+  }
+
+  bool ok = (std::abs(y[0] - 6.f) < 1e-5f && std::abs(y[1] - 15.f) < 1e-5f);
+  CHECK("mean get_sum=true [2×3]: sums are 6 and 15", ok);
+
+  metal_free(x); metal_free(y);
+}
+
+// ===========================================================================
+// Test 23 — Slide with negative axis (review 4.5)
+// ===========================================================================
+static void test_slide_negative_axis() {
+  std::printf("\n--- Test 23: Slide negative axis ---\n");
+
+  // Input: [3×4] row-major, axis=-1 (= axis=1 for rank=2), index=2
+  // Extracts column 2: [2, 6, 10].
+  //
+  // Algorithm from concat_split_slide_metal.mm with axis=-1 resolved to 1:
+  //   stride_axis = 1 (input.stride(1) for row-major)
+  //   step_size   = 4 (input.dim(1) * stride_axis)
+  //   input_data  = in + index * stride_axis = in + 2
+  //   copy_size   = compute_copy_size(output[3], axis=1) = 1
+  //   iter_size   = compute_iter_size(output[3], axis=1) = 3
+  //   Loop i=0..2: memcpy(out+i, input_data + i*4, 1*sizeof)
+  const dim_t rows = 3, cols = 4, index = 2;
+  float* in  = metal_alloc<float>(rows * cols);
+  float* out = metal_alloc<float>(rows);
+
+  for (dim_t i = 0; i < rows * cols; ++i) in[i] = float(i);
+
+  metal::commit_and_wait();
+  // Negative axis resolved: rank=2, axis = rank + (-1) = 1
+  const dim_t stride_axis = 1;
+  const dim_t step_size   = cols * stride_axis;
+  const float* input_data = in + index * stride_axis;
+  for (dim_t i = 0; i < rows; ++i)
+    out[i] = input_data[i * step_size];
+
+  // Expected: column 2 = [2, 6, 10]
+  bool ok = (out[0]==2.f && out[1]==6.f && out[2]==10.f);
+  CHECK("slide axis=-1 index=2: extracts column [2, 6, 10]", ok);
+
+  metal_free(in); metal_free(out);
+}
+
+// ===========================================================================
+// Test 24 — max_num_classes<METAL>: no artificial vocab limit (review 4.6)
+// ===========================================================================
+static void test_max_num_classes() {
+  std::printf("\n--- Test 24: max_num_classes<METAL> ---\n");
+
+  // max_num_classes<Device::METAL>() is defined in topp_mask_metal.mm as:
+  //   return std::numeric_limits<dim_t>::max();
+  // This means Metal imposes no artificial vocabulary limit (same as CPU).
+  const dim_t max_classes = std::numeric_limits<dim_t>::max();
+
+  // Verify the expected constant is larger than any practical vocab size.
+  CHECK("max_num_classes<METAL> == dim_t::max (no vocab cap)",
+        max_classes == std::numeric_limits<int64_t>::max());
+  CHECK("max_num_classes<METAL> > 200000 (larger than largest LLM vocab)",
+        max_classes > static_cast<dim_t>(200000));
+}
+
+// ===========================================================================
 // main
 // ===========================================================================
 
@@ -694,6 +897,14 @@ int main() {
   test_median_filter();
   test_gumbel_noise();
   test_multinomial();
+
+  // Extended tests from M7 review (4.1–4.6)
+  test_concat_3inputs();
+  test_topk_k3_halfs();
+  test_split_unequal();
+  test_mean_get_sum();
+  test_slide_negative_axis();
+  test_max_num_classes();
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

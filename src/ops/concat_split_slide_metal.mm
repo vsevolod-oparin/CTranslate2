@@ -26,14 +26,14 @@ namespace ctranslate2 {
     // concat_split_slide_cpu.cc.
     // -----------------------------------------------------------------------
 
-    static dim_t concat_copy_size(const StorageView& x, dim_t axis) {
+    static dim_t compute_copy_size(const StorageView& x, dim_t axis) {
       dim_t s = 1;
       for (dim_t i = axis; i < x.rank(); ++i)
         s *= x.dim(i);
       return s;
     }
 
-    static dim_t concat_iter_size(const StorageView& x, dim_t axis) {
+    static dim_t compute_iter_size(const StorageView& x, dim_t axis) {
       dim_t s = 1;
       for (dim_t i = 0; i < axis; ++i)
         s *= x.dim(i);
@@ -55,10 +55,10 @@ namespace ctranslate2 {
 
       for (const StorageView* inp : inputs) {
         const StorageView& x = *inp;
-        const dim_t copy_size = concat_copy_size(x, axis);
+        const dim_t copy_size = compute_copy_size(x, axis);
         if (copy_size == 0)
           continue;
-        const dim_t iter_size = concat_iter_size(x, axis);
+        const dim_t iter_size = compute_iter_size(x, axis);
         const T* x_data = x.data<T>();
         for (dim_t i = 0; i < iter_size; ++i)
           std::memcpy(output_data + i * step_size,
@@ -91,10 +91,10 @@ namespace ctranslate2 {
 
       for (StorageView* out : outputs) {
         StorageView& x = *out;
-        const dim_t copy_size = concat_copy_size(x, axis);
+        const dim_t copy_size = compute_copy_size(x, axis);
         if (copy_size == 0)
           continue;
-        const dim_t iter_size = concat_iter_size(x, axis);
+        const dim_t iter_size = compute_iter_size(x, axis);
         T* x_data = x.data<T>();
         for (dim_t i = 0; i < iter_size; ++i)
           std::memcpy(x_data     + i * copy_size,
@@ -129,10 +129,10 @@ namespace ctranslate2 {
       const T* input_data = input.data<T>() + index * stride_axis;
       T* x_data = output.data<T>();
 
-      const dim_t copy_size = concat_copy_size(output, axis);
+      const dim_t copy_size = compute_copy_size(output, axis);
       if (copy_size == 0)
         return;
-      const dim_t iter_size = concat_iter_size(output, axis);
+      const dim_t iter_size = compute_iter_size(output, axis);
 
       for (dim_t i = 0; i < iter_size; ++i)
         std::memcpy(x_data    + i * copy_size,

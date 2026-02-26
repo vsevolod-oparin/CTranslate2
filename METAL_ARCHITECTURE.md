@@ -1,6 +1,6 @@
 # Metal Backend Architecture
 
-**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M8.1 complete
+**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M8.2 complete
 
 ---
 
@@ -252,3 +252,4 @@ Only `float`, `float16_t`, `bfloat16_t` are dispatched by `DEVICE_AND_FLOAT_DISP
 | M6.4 | ALiBi: `metal::alibi_add_metal` GPU kernel, `AlibiAdd::compute<METAL>` |
 | M7 | CPU-fallback ops: Concat, Split, Slide, Tile, TopK, TopPMask, GumbelMax, Multinomial, Mean, MedianFilter |
 | M8.1 | Integration validation: full encoder layer pipeline, 11/11 pass, errors ~1e-7 |
+| M8.2 | Integration validation: full decoder layer (cross-attn sq≠sk, KV-cache decode), 11/11 pass |

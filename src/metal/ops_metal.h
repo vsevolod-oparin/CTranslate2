@@ -1,13 +1,15 @@
 // src/metal/ops_metal.h
 //
 // Declarations for Metal dispatch functions used by high-level ops
-// (LayerNorm, RMSNorm, SoftMax, Gather, SDPA, Conv1D).  Implemented in
-// src/metal/ops_norm_gather.mm, src/metal/ops_sdpa.mm, src/metal/ops_conv1d.mm.
+// (LayerNorm, RMSNorm, SoftMax, Gather, SDPA, Conv1D, Quantize/Dequantize).
+// Implemented in src/metal/ops_norm_gather.mm, src/metal/ops_sdpa.mm,
+// src/metal/ops_conv1d.mm, src/metal/ops_quantize.mm.
 //
 // Include only from .mm files compiled with Metal support (CT2_WITH_METAL).
 // Part of M5.2 — Metal op specializations.
 // Part of M6.1 — Scaled dot-product attention.
 // Part of M8.3 — Conv1D via im2col + GEMM.
+// Part of M9.1 — INT8 Quantize / Dequantize.
 
 #pragma once
 
@@ -92,6 +94,40 @@ namespace ctranslate2 {
                       dim_t B,    dim_t C_in, dim_t T_in,
                       dim_t C_out, dim_t K,   dim_t T_out,
                       dim_t stride, dim_t padding, dim_t dilation);
+
+    // quantize_int8_metal: per-row INT8 quantization.
+    //   scale[row] = 127 / max(abs(input[row, :]))
+    //   output[row, i] = round(float(input[row, i]) * scale[row])  → int8
+    //   One threadgroup per row (256 threads); encode-only.
+    template <typename T>
+    void quantize_int8_metal(const T* input, int8_t* output, float* scales,
+                             dim_t batch_size, dim_t depth);
+
+    // dequantize_int8_metal: per-element INT8 dequantization.
+    //   output[row, i] = T(float(input[row, i]) / scales[row])
+    //   One thread per element; encode-only.
+    template <typename T>
+    void dequantize_int8_metal(const int8_t* input, const float* scales, T* output,
+                               dim_t batch_size, dim_t depth);
+
+    // dequantize_gemm_output_metal: rescale int32 GEMM output to floating point.
+    //   y[i,j] = c[i,j] / (a_scales[ta?j:i] * b_scales[tb?j:i])
+    //          + (has_bias ? bias[j] : 0)
+    //   then apply optional activation.
+    //
+    //   activation_type: -1 = none; otherwise static_cast<int>(ActivationType).
+    //   bias_ptr: T* if has_bias, else any valid Metal-registered pointer.
+    //   One thread per element; encode-only.
+    template <typename T>
+    void dequantize_gemm_output_metal(
+        const int32_t* c,
+        const float*   a_scales,
+        const float*   b_scales,
+        const void*    bias_ptr,
+        T*             y,
+        dim_t batch,       dim_t depth,
+        bool  transpose_a, bool  transpose_b,
+        bool  has_bias,    int   activation_type);
 
   }  // namespace metal
 }  // namespace ctranslate2

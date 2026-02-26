@@ -87,11 +87,12 @@ namespace ctranslate2 {
     std::copy(x, x + size, y);
   }
 
-  // compute_u8_compensation: not yet implemented for Metal.
+  // compute_u8_compensation: no-op on Metal.
+  // Metal does not use the u8s8s32 GEMM path that requires this pre-computation
+  // (INT8 weights are dequantized to FP16 before GEMM — see M9.2).
   template<>
   void primitives<Device::METAL>::compute_u8_compensation(
       const int8_t*, bool, dim_t, dim_t, float, int32_t*) {
-    METAL_STUB(compute_u8_compensation);
   }
 
   // -------------------------------------------------------------------------

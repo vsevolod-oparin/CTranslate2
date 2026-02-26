@@ -1,6 +1,6 @@
 # Metal Backend Architecture
 
-**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M8.3 complete
+**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M9.1 complete
 
 ---
 
@@ -52,6 +52,8 @@ src/metal/
 │                              #   (do not edit; run tools/gen_msl_strings.py to regenerate)
 │
 ├── ops_conv1d.mm              # metal::conv1d_metal (im2col + GEMM)
+├── ops_quantize.mm            # metal::quantize_int8_metal, dequantize_int8_metal,
+│                              #   dequantize_gemm_output_metal
 ├── primitives_memory.mm       # at, fill, copy, convert, cross_device_copy
 ├── primitives_elementwise.mm  # add/sub/mul/min/max (scalar+vec and vec+vec),
 │                              #   activations (relu/gelu/gelu_tanh/gelu_sigmoid/sigmoid/swish),
@@ -75,7 +77,8 @@ src/metal/
     ├── normalization.metal
     ├── gather.metal
     ├── sdpa.metal
-    └── conv1d.metal
+    ├── conv1d.metal
+    └── quantize.metal
 
 src/ops/                       # Op::compute<Device::METAL> specializations
 ├── normalization_metal.mm     # LayerNorm, RMSNorm, SoftMax → delegates to ops_norm_gather
@@ -92,7 +95,10 @@ src/ops/                       # Op::compute<Device::METAL> specializations
 ├── multinomial_metal.mm       # Multinomial (commit_and_wait + discrete_distribution)
 ├── mean_metal.mm              # Mean (commit_and_wait + 3-loop CPU)
 ├── median_filter_metal.mm     # MedianFilter (commit_and_wait + nth_element)
-└── conv1d_metal.mm            # Conv1D → delegates to metal::conv1d_metal
+├── conv1d_metal.mm            # Conv1D → delegates to metal::conv1d_metal
+├── quantize_metal.mm          # Quantize → delegates to metal::quantize_int8_metal
+└── dequantize_metal.mm        # Dequantize → delegates to metal::dequantize_int8_metal /
+                               #   dequantize_gemm_output_metal
 
 tools/
 └── gen_msl_strings.py         # Reads kernels/*.metal → msl_strings.h
@@ -158,6 +164,7 @@ corresponding `primitives_*.mm` or `ops_*.mm` file.
 | `kGatherMSL` | `gather.metal` | `gather_T` |
 | `kSdpaMSL` | `sdpa.metal` | `causal_mask_float/half/bfloat`, MPS-driven SDPA (no MSL matmul) |
 | `kConv1dMSL` | `conv1d.metal` | `im2col_float`, `im2col_half`, `im2col_bfloat` |
+| `kQuantizeMSL` | `quantize.metal` | `quantize_T`, `dequantize_T`, `dequantize_gemm_output_T` |
 | `kRotaryMSL` (inline) | `ops_rotary.mm` | `rotary_T` — not in gen_msl_strings.py |
 | `kAlibiMSL` (inline) | `ops_alibi.mm` | `alibi_add_T` — not in gen_msl_strings.py |
 
@@ -258,3 +265,6 @@ Only `float`, `float16_t`, `bfloat16_t` are dispatched by `DEVICE_AND_FLOAT_DISP
 | M8.1 | Integration validation: full encoder layer pipeline, 11/11 pass, errors ~1e-7 |
 | M8.2 | Integration validation: full decoder layer (cross-attn sq≠sk, KV-cache decode), 11/11 pass |
 | M8.3 | Conv1D: im2col MSL kernel + Metal GEMM; f32/f16/bf16; 7/7 pass, errors ~1e-7 |
+| M9.1 | INT8 Quantize/Dequantize: GPU kernels (quantize/dequantize/dequantize_gemm_output); 15/15 pass |
+| M9.3 | gemm_pack_b returns 0 (was already done in M4.4) |
+| M9.4 | compute_u8_compensation changed from METAL_STUB to no-op |

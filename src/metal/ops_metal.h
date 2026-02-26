@@ -45,6 +45,17 @@ namespace ctranslate2 {
                       dim_t copy_size, dim_t batch_stride,
                       dim_t num_indices_per_batch, dim_t total_elements);
 
+    // alibi_add_metal: add ALiBi positional bias to attention scores.
+    //   input/output: [batch_size, num_heads, query_length, key_length]
+    //   alibi:        [1, num_heads, 1, cached_key_length]
+    //   alibi_offset: start column within alibi (= cached_kl - key_length when
+    //                 use_positive_positions=false; = 0 otherwise).
+    template <typename T>
+    void alibi_add_metal(const T* input, const T* alibi, T* output,
+                         dim_t batch_size, dim_t num_heads,
+                         dim_t query_length, dim_t key_length,
+                         dim_t cached_key_length, dim_t alibi_offset);
+
     // rotary_metal: apply rotary position embeddings to a 2-D view of
     //   [total_vecs, depth].
     //   sin/cos: [max_time, ndims] tables.

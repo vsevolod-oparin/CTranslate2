@@ -685,9 +685,18 @@ Report: `agents/report/milestone-6.2-kv-cache.md`
   - CB overhead (~0.4 ms) dominates at small shapes; GPU wins at 2K+ tokens in prefill
 - Report: `agents/report/milestone-6.3-rotary.md`
 
-**6.4 ALiBi positional bias**
-- `src/ops/alibi_add_metal.mm`
-- **PASS:** Metal ALiBi matches CPU within 1e-5
+**6.4 ALiBi positional bias** ✅ DONE (2026-02-26)
+- `src/metal/ops_alibi.mm` — MSL kernel + `metal::alibi_add_metal<T>()` free function
+- `src/ops/alibi_add_metal.mm` — `AlibiAdd::compute<Device::METAL>` thin wrapper
+- MSL kernel: 2D grid `[total_rows, key_length]`; one thread per element; all arithmetic float32
+- `total_rows = batch * num_heads * query_length`; head index: `h = (vec / query_length) % num_heads`
+- Handles batch, multi-query (ql > 1), ALiBi offset (cached tokens), f32/f16/bf16
+- Tests: `tests/metal/alibi_test.mm` — 9/9 pass; f32 exact (0.000e+00), f16 <2.4e-3, bf16 <2.6e-2
+- Benchmark: `tests/metal/m64_bench.mm` — 21/21 accuracy pass
+  - ALiBi is a pure broadcast-add (minimal arithmetic intensity); CPU always wins standalone
+  - f32 [1,8,512,512]: GPU 1013 µs vs CPU 218 µs (0.22×); GPU CB overhead dominates
+  - In pipeline (CB amortized): encoding cost ~5 µs; GPU correct choice for large prefill
+- Report: `agents/report/milestone-6.4-alibi.md`
 
 *Flash Attention (fused SDPA kernel) is deferred to Phase 2 — requires custom Metal compute shaders for the fused kernel. Standard SDPA via MPS first.*
 

@@ -270,11 +270,13 @@ set(METAL_SOURCES
   src/metal/ops_norm_gather.mm
   src/metal/ops_sdpa.mm
   src/metal/ops_rotary.mm
+  src/metal/ops_alibi.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm
   src/ops/flash_attention_metal.mm
   src/ops/rotary_metal.mm
+  src/ops/alibi_add_metal.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}

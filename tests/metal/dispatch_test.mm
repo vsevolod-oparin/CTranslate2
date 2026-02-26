@@ -20,7 +20,7 @@
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
 //     src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm \
 //     src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm \
-//     src/metal/primitives_norm_gather.mm \
+//     src/metal/ops_norm_gather.mm \
 //     src/allocator.cc src/devices.cc src/cpu/allocator.cc \
 //     -framework Metal -framework Foundation \
 //     -framework MetalPerformanceShaders \

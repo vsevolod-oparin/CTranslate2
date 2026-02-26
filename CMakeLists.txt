@@ -267,8 +267,8 @@ set(METAL_SOURCES
   src/metal/primitives_gemm.mm
   src/metal/primitives_transpose.mm
   src/metal/primitives_beam_search.mm
-  src/metal/primitives_norm_gather.mm
-  src/metal/primitives_sdpa.mm
+  src/metal/ops_norm_gather.mm
+  src/metal/ops_sdpa.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm

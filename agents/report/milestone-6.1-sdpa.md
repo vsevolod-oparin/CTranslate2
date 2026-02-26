@@ -59,9 +59,9 @@ Row stride for K/V: `kv_lda = num_heads_k * head_dim`
 | `tools/gen_msl_strings.py` | Added `("sdpa", "kSdpaMSL")` to KERNELS list (9 total) |
 | `src/metal/msl_strings.h` | Regenerated — kSdpaMSL constant added |
 | `src/metal/ops_metal.h` | Added `metal::sdpa_metal<T>` declaration |
-| `src/metal/primitives_sdpa.mm` | New — full SDPA implementation |
+| `src/metal/ops_sdpa.mm` | New — full SDPA implementation |
 | `src/ops/flash_attention_metal.mm` | New — `FlashAttention::compute<Device::METAL>` wrapper |
-| `CMakeLists.txt` | Added primitives_sdpa.mm, flash_attention_metal.mm to METAL_SOURCES; added sdpa.metal to _MSL_METAL_SOURCES |
+| `CMakeLists.txt` | Added ops_sdpa.mm, flash_attention_metal.mm to METAL_SOURCES; added sdpa.metal to _MSL_METAL_SOURCES |
 | `tests/metal/sdpa_test.mm` | New — 8 correctness tests |
 
 ---

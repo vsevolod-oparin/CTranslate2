@@ -13,7 +13,7 @@ Files reviewed:
 |------|------|
 | `src/metal/kernels/normalization.metal` | MSL kernels: layer_norm, rms_norm, softmax |
 | `src/metal/kernels/gather.metal` | MSL kernel: gather |
-| `src/metal/primitives_norm_gather.mm` | Dispatch wrappers (M5.2) |
+| `src/metal/ops_norm_gather.mm` | Dispatch wrappers (M5.2) |
 | `src/metal/ops_metal.h` | Declarations used by op files |
 | `src/ops/normalization_metal.mm` | LayerNorm, RMSNorm, SoftMax specializations |
 | `src/ops/gather_metal.mm` | Gather specialization |
@@ -110,9 +110,9 @@ The header comment reads:
 ```
 
 After the M4 refactoring split, these functions are now implemented in
-`src/metal/primitives_norm_gather.mm`, not `primitives.mm` (which is now an empty stub).
+`src/metal/ops_norm_gather.mm`, not `primitives.mm` (which is now an empty stub).
 
-**Fix:** Update the comment to say `Implemented in primitives_norm_gather.mm`.
+**Fix:** Update the comment to say `Implemented in ops_norm_gather.mm`.
 
 ---
 
@@ -327,7 +327,7 @@ are covered here.
 | 1.1 | Bug | Low | ✅ Fixed (2026-02-25) | `bias_add_metal.mm` hardcodes `Device::METAL` instead of template param `D` |
 | 1.2 | Bug | Low | ✅ Fixed (2026-02-25) | LayerNorm guard comment/message clarified: `inner_size == 1` is the correct invariant |
 | 1.3 | Bug | Low | ✅ Fixed (2026-02-25) | Softmax `active_N == 0` log(0) path explained with inline comment in MSL kernel |
-| 2.1 | Quality | Low | ✅ Fixed (2026-02-25) | `ops_metal.h` comment updated to `Implemented in primitives_norm_gather.mm` |
+| 2.1 | Quality | Low | ✅ Fixed (2026-02-25) | `ops_metal.h` comment updated to `Implemented in ops_norm_gather.mm` |
 | 2.2 | Quality | Low | ✅ Fixed (2026-02-25) | `pso_warmup_test.mm` updated: "eight kernel groups", lists normalization/gather, updated build cmd |
 | 2.3 | Quality | Low | ✅ Fixed (2026-02-25) | Resolved by Bug 1.2 fix: `normalization_metal.mm` comment fully explains `inner_size == 1` invariant |
 | 2.4 | Quality | Low | ✅ Fixed (2026-02-25) | `rms_norm.h` constructor now has comment documenting Device::METAL limitation for `use_residual` |

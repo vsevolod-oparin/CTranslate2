@@ -3,7 +3,7 @@
 // M6.1 — FlashAttention::compute<Device::METAL>.
 //
 // Implements scaled dot-product attention on the Metal backend.
-// Calls metal::sdpa_metal<T> from src/metal/primitives_sdpa.mm.
+// Calls metal::sdpa_metal<T> from src/metal/ops_sdpa.mm.
 //
 // M6.1 scope: no KV cache (offset must be 0), no rotary embeddings,
 // no ALiBi, no sliding window, no attention weight output.

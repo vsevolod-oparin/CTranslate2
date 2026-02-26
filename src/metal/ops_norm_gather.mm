@@ -1,4 +1,4 @@
-// src/metal/primitives_norm_gather.mm
+// src/metal/ops_norm_gather.mm
 //
 // M5.2 — Normalization, softmax, and gather dispatch infrastructure.
 //

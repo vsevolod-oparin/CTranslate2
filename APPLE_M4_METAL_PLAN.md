@@ -620,7 +620,7 @@ Code review (`agents/report/milestone-5-review.md`) fully resolved:
 
 **6.1 Scaled dot-product attention** ✅ DONE (2026-02-25)
 
-Implementation: `metal::sdpa_metal<T>` in `src/metal/primitives_sdpa.mm` +
+Implementation: `metal::sdpa_metal<T>` in `src/metal/ops_sdpa.mm` +
 `FlashAttention::compute<Device::METAL>` in `src/ops/flash_attention_metal.mm`.
 
 Algorithm per (b, h):

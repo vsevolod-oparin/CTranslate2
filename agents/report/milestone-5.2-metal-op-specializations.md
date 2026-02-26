@@ -43,7 +43,7 @@ Ops that needed new `*_metal.mm` files: BiasAdd, LayerNorm, RMSNorm, SoftMax, Ga
 |------|--------|
 | `tools/gen_msl_strings.py` | Added normalization + gather to KERNELS list (8 total) |
 | `src/metal/msl_strings.h` | Regenerated (now has kNormalizationMSL + kGatherMSL) |
-| `src/metal/primitives_norm_gather.mm` | Dispatch functions + ctranslate2::metal wrapper templates (split from primitives.mm) |
+| `src/metal/ops_norm_gather.mm` | Dispatch functions + ctranslate2::metal wrapper templates (split from primitives.mm) |
 | `CMakeLists.txt` | Added 3 .mm files to METAL_SOURCES; 2 .metal files to _MSL_METAL_SOURCES |
 | `include/ctranslate2/ops/rms_norm.h` | Added comment: `use_residual=true` unsupported on Device::METAL (code review 2.4) |
 | `tests/metal/pso_warmup_test.mm` | Extended to 17 tests (8 libraries; added normalization + gather warmup) |
@@ -128,7 +128,7 @@ clang++ -std=c++17 -O0 \
     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
     src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm \
     src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm \
-    src/metal/primitives_norm_gather.mm \
+    src/metal/ops_norm_gather.mm \
     src/allocator.cc src/devices.cc src/cpu/allocator.cc \
     -framework Metal -framework Foundation \
     -framework MetalPerformanceShaders \

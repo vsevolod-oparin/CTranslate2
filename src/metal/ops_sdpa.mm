@@ -1,4 +1,4 @@
-// src/metal/primitives_sdpa.mm
+// src/metal/ops_sdpa.mm
 //
 // M6.1 — Scaled Dot-Product Attention for Device::METAL.
 //

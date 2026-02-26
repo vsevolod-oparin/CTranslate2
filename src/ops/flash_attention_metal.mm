@@ -85,11 +85,14 @@ namespace ctranslate2 {
                                 dim_t depth,
                                 bool interleave) {
       const dim_t half = ndims / 2;
-      // Stack buffer for non-interleave in-place computation.
-      std::vector<float> tmp(static_cast<size_t>(ndims));
 
       if (!interleave) {
         // Non-interleave: load ndims elements, compute, write back.
+        // Stack buffer — avoids heap alloc; ndims ≤ head_dim ≤ 256 in practice.
+        // Write back only 2*half elements: for odd ndims, the last unpaired
+        // element (index 2*half = ndims-1) is left unchanged rather than
+        // silently zeroed (Bug 1.1 fix — matches rotary_cpu.cc behaviour).
+        float tmp[512];  // generous bound: head_dim never exceeds 512
         for (dim_t d = 0; d < half; ++d) {
           const float xd  = float(x[d]);
           const float xp  = float(x[d + half]);
@@ -98,7 +101,7 @@ namespace ctranslate2 {
           tmp[d]        = xd * cd - xp * sd;
           tmp[d + half] = xp * cd + xd * sd;
         }
-        for (dim_t d = 0; d < ndims; ++d) x[d] = T(tmp[d]);
+        for (dim_t d = 0; d < 2 * half; ++d) x[d] = T(tmp[d]);
       } else {
         // Interleave: pairs (2i, 2i+1) → can update in-place without temp.
         for (dim_t i = 0; i < half; ++i) {
@@ -129,8 +132,12 @@ namespace ctranslate2 {
                                   dim_t offset) const {
       // Guards for features not yet supported.
       if (alibi) {
+        // ALiBi is applied as a standalone AlibiAdd::compute<METAL> op (M6.4).
+        // The layer code (src/layers/flash_attention.cc) always passes nullptr
+        // here — this guard is a defensive check only.
         throw std::invalid_argument(
-            "Metal FlashAttention: ALiBi is not supported (M6.3 scope)");
+            "Metal FlashAttention: ALiBi via FlashAttention is not supported; "
+            "use AlibiAdd::compute<METAL> (M6.4)");
       }
       if (_sliding_window > 0) {
         throw std::invalid_argument(
@@ -170,7 +177,7 @@ namespace ctranslate2 {
 
         const dim_t seqlen_new   = keys.dim(1);
         const dim_t total_cache  = cached_keys->dim(1);
-        const dim_t row_elements = static_cast<dim_t>(num_heads_k) * head_dim;
+        const dim_t row_elements = num_heads_k * head_dim;
         const dim_t seqlen_k_eff = offset + seqlen_new;
 
         TYPE_DISPATCH(queries.dtype(), {

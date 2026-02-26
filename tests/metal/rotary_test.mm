@@ -267,6 +267,22 @@ static void test_interleave_std_layout() {
     1e-5f, 1, 8, 4, 64, 0, true, true);
 }
 
+// Fix 4.4: interleave + partial rotation (ndims < depth).
+// Documents that GPU and CPU agree when both rotate only the first ndims
+// dimensions and pass through the rest.
+static void test_interleave_partial_fa2() {
+  // ndims=32, depth=64: first 32 dims interleave-rotate, last 32 passthrough.
+  run_rotary_test<float>(
+    "f32 interleave partial ndims=32 hd=64 is_transposed=false",
+    1e-5f, 1, 8, 4, 64, 32, true, false);
+}
+
+static void test_interleave_partial_std() {
+  run_rotary_test<float>(
+    "f32 interleave partial ndims=32 hd=64 is_transposed=true",
+    1e-5f, 1, 8, 4, 64, 32, true, true);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -283,6 +299,8 @@ int main() {
   test_longer_sequence();
   test_gqa_shape();
   test_interleave_std_layout();
+  test_interleave_partial_fa2();
+  test_interleave_partial_std();
 
   std::printf("\n=== Summary: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail > 0 ? 1 : 0;

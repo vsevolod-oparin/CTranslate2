@@ -118,9 +118,9 @@ static void dispatch_causal_mask(T* scores,
 // ---------------------------------------------------------------------------
 
 template <typename T> struct SdpaMPSDtype;
-template<> struct SdpaMPSDtype<float>
+template <> struct SdpaMPSDtype<float>
 { static const MPSDataType v = MPSDataTypeFloat32; };
-template<> struct SdpaMPSDtype<ctranslate2::float16_t>
+template <> struct SdpaMPSDtype<ctranslate2::float16_t>
 { static const MPSDataType v = MPSDataTypeFloat16; };
 
 template <typename T>
@@ -144,9 +144,9 @@ static void sdpa_mps_gemm(bool trans_b,
   const NSUInteger cols_b = trans_b ? (NSUInteger)k : (NSUInteger)n;
   const NSUInteger rows_c = (NSUInteger)m, cols_c = (NSUInteger)n;
 
-  const NSUInteger nat_rb_a = (NSUInteger)lda * elem;
-  const NSUInteger nat_rb_b = (NSUInteger)ldb * elem;
-  const NSUInteger nat_rb_c = (NSUInteger)ldc * elem;
+  const NSUInteger nat_rb_a = static_cast<NSUInteger>(ct2_u32(lda)) * elem;
+  const NSUInteger nat_rb_b = static_cast<NSUInteger>(ct2_u32(ldb)) * elem;
+  const NSUInteger nat_rb_c = static_cast<NSUInteger>(ct2_u32(ldc)) * elem;
 
   NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
   @autoreleasepool {

@@ -31,6 +31,8 @@ typedef ctranslate2::bfloat16_t ct2_bf16;
 // MSL source — embedded raw string
 // ---------------------------------------------------------------------------
 
+// NOTE: MSL is embedded inline here (not in a .metal file) and is therefore
+// NOT tracked by tools/gen_msl_strings.py / check_msl_sync.
 static constexpr const char* kAlibiMSL = R"msl(
 #include <metal_stdlib>
 using namespace metal;

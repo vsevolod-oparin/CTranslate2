@@ -15,6 +15,13 @@
 //   7.  bfloat16, non-causal: batch=1, sq=4, sk=4, heads=1, head_dim=8
 //   8.  bfloat16, causal:     batch=1, sq=4, sk=4, heads=1, head_dim=8
 //
+// Additional tests (M6 review items 4.2 / 4.3):
+//   9.  float32, cross-attention: batch=1, sq=4, sk=16, heads=4, nhk=4, hd=64,
+//       is_causal=false  — sq != sk, exercises encoder-decoder (Whisper/NLLB) path
+//   10. float32, decode sq=1:  batch=1, sq=1, sk=16, heads=4, nhk=4, hd=64
+//   11. float16, decode sq=1:  batch=1, sq=1, sk=16, heads=4, nhk=4, hd=64
+//   12. bfloat16, decode sq=1: batch=1, sq=1, sk=16, heads=4, nhk=4, hd=64
+//
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
@@ -321,6 +328,65 @@ static void test_bfloat16() {
 }
 
 // ---------------------------------------------------------------------------
+// Additional tests: cross-attention (sq != sk) and decode (sq == 1).
+//
+// These address M6 review items 4.2 and 4.3:
+//   4.2 — no test for is_causal=false with sq != sk (encoder-decoder attention)
+//   4.3 — dedicated sdpa_test.mm (this file)
+// ---------------------------------------------------------------------------
+
+static void test_cross_attention_and_decode() {
+  std::printf("\n--- cross-attention (sq!=sk) and decode (sq=1) ---\n");
+
+  // Generate shared float32 data for a larger shape.
+  // Q: [1, sq=4, nh=4, hd=64],  K/V: [1, sk=16, nhk=4, hd=64]
+  const int B=1, SQ=4, SK=16, NH=4, NHK=4, HD=64;
+  const float scale = 1.f / std::sqrt(float(HD));
+  const int q_n  = B*SQ*NH*HD;
+  const int kv_n = B*SK*NHK*HD;
+  std::vector<float> qf(q_n), kf(kv_n), vf(kv_n);
+  for (int i = 0; i < q_n;  ++i) qf[i] = std::sin(float(i+1) * 0.17f);
+  for (int i = 0; i < kv_n; ++i) kf[i] = std::cos(float(i+1) * 0.13f);
+  for (int i = 0; i < kv_n; ++i) vf[i] = std::sin(float(i+1) * 0.09f);
+
+  // Test 9: cross-attention sq=4, sk=16, is_causal=false.
+  // All sk=16 key positions are visible to all sq=4 query positions.
+  // This tests that dispatch_causal_mask is NOT applied when is_causal=false,
+  // and that sq != sk does not corrupt index arithmetic.
+  {
+    float err = run_sdpa<float>(qf.data(), kf.data(), vf.data(),
+                                 B, SQ, SK, NH, NHK, HD, scale, /*causal=*/false);
+    std::printf("  max abs err = %.2e\n", err);
+    CHECK("float32 cross-attention sq=4 sk=16 nh=4 hd=64 is_causal=false: err < 1e-4",
+          err < 1e-4f);
+  }
+
+  // Tests 10-12: decode (sq=1, is_causal=false) — mirrors KV-cache decode path.
+  // Q: [1, sq=1, nh=4, hd=64],  K/V: [1, sk=16, nhk=4, hd=64]
+  {
+    const int SQ1=1;
+    const int q1  = B*SQ1*NH*HD;
+    std::vector<float> q1f(q1);
+    for (int i = 0; i < q1; ++i) q1f[i] = std::cos(float(i+1) * 0.21f);
+
+    float err = run_sdpa<float>(q1f.data(), kf.data(), vf.data(),
+                                 B, SQ1, SK, NH, NHK, HD, scale, /*causal=*/false);
+    std::printf("  max abs err = %.2e\n", err);
+    CHECK("float32 decode sq=1 sk=16 nh=4 hd=64 is_causal=false: err < 1e-4", err < 1e-4f);
+
+    err = run_sdpa<ct2_f16>(q1f.data(), kf.data(), vf.data(),
+                              B, SQ1, SK, NH, NHK, HD, scale, /*causal=*/false);
+    std::printf("  max abs err = %.2e\n", err);
+    CHECK("float16 decode sq=1 sk=16 nh=4 hd=64 is_causal=false: err < 0.05", err < 0.05f);
+
+    err = run_sdpa<ct2_bf16>(q1f.data(), kf.data(), vf.data(),
+                               B, SQ1, SK, NH, NHK, HD, scale, /*causal=*/false);
+    std::printf("  max abs err = %.2e\n", err);
+    CHECK("bfloat16 decode sq=1 sk=16 nh=4 hd=64 is_causal=false: err < 0.1", err < 0.1f);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -330,6 +396,7 @@ int main() {
     test_float32();
     test_float16();
     test_bfloat16();
+    test_cross_attention_and_decode();
   } catch (const std::exception& e) {
     std::printf("EXCEPTION: %s\n", e.what());
     return 1;

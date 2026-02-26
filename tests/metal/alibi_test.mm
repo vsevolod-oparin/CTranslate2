@@ -236,6 +236,21 @@ static void test_f32_offset_multiquery() {
     1e-5f, 1, 4, 4, 8, 10, 2);
 }
 
+// Fix 4.5: large key_length stresses the 2D dispatch threadgroup-y clamping.
+static void test_f32_large_kl_decode() {
+  // key_length=512: forces tg_kl = min(512, maxTotalThreadsPerThreadgroup).
+  run_alibi_test<float>(
+    "f32 [1,8,1,512]  offset=0  (large kl decode)",
+    1e-5f, 1, 8, 1, 512, 512, 0);
+}
+
+static void test_f32_large_kl_prefill() {
+  // key_length=1024 with query_length=8: stresses rows*kl = 8*8*1024 = 65536 threads.
+  run_alibi_test<float>(
+    "f32 [1,8,8,1024] offset=0  (large kl prefill)",
+    1e-5f, 1, 8, 8, 1024, 1024, 0);
+}
+
 // ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
@@ -252,6 +267,8 @@ int main() {
   test_f32_many_heads();
   test_f32_large_prefill();
   test_f32_offset_multiquery();
+  test_f32_large_kl_decode();
+  test_f32_large_kl_prefill();
 
   std::printf("\n=== Summary: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail > 0 ? 1 : 0;

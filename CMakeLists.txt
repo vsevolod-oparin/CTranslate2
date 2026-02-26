@@ -271,6 +271,7 @@ set(METAL_SOURCES
   src/metal/ops_sdpa.mm
   src/metal/ops_rotary.mm
   src/metal/ops_alibi.mm
+  src/metal/ops_conv1d.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm
@@ -285,6 +286,7 @@ set(METAL_SOURCES
   src/ops/multinomial_metal.mm
   src/ops/mean_metal.mm
   src/ops/median_filter_metal.mm
+  src/ops/conv1d_metal.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}
@@ -551,6 +553,7 @@ if(WITH_METAL)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/normalization.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/gather.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/sdpa.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/conv1d.metal
     )
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp

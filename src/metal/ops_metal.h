@@ -1,12 +1,13 @@
 // src/metal/ops_metal.h
 //
 // Declarations for Metal dispatch functions used by high-level ops
-// (LayerNorm, RMSNorm, SoftMax, Gather, SDPA).  Implemented in
-// src/metal/ops_norm_gather.mm and src/metal/ops_sdpa.mm.
+// (LayerNorm, RMSNorm, SoftMax, Gather, SDPA, Conv1D).  Implemented in
+// src/metal/ops_norm_gather.mm, src/metal/ops_sdpa.mm, src/metal/ops_conv1d.mm.
 //
 // Include only from .mm files compiled with Metal support (CT2_WITH_METAL).
 // Part of M5.2 — Metal op specializations.
 // Part of M6.1 — Scaled dot-product attention.
+// Part of M8.3 — Conv1D via im2col + GEMM.
 
 #pragma once
 
@@ -79,6 +80,18 @@ namespace ctranslate2 {
                     dim_t batch_size, dim_t seqlen_q, dim_t seqlen_k,
                     dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
                     float scale, bool is_causal);
+
+    // conv1d_metal: 1-D convolution via im2col + GEMM (groups == 1 only).
+    //   input:  [B, C_in, T_in]    — NCT layout
+    //   weight: [C_out, C_in, K]
+    //   output: [B, C_out, T_out]  — pre-allocated by the caller
+    //   T_out must equal (T_in + 2*padding - dilation*(K-1) - 1) / stride + 1
+    //   dilation must be >= 1.
+    template <typename T>
+    void conv1d_metal(const T* input, const T* weight, T* output,
+                      dim_t B,    dim_t C_in, dim_t T_in,
+                      dim_t C_out, dim_t K,   dim_t T_out,
+                      dim_t stride, dim_t padding, dim_t dilation);
 
   }  // namespace metal
 }  // namespace ctranslate2

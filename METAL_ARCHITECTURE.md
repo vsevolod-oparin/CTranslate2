@@ -1,6 +1,6 @@
 # Metal Backend Architecture
 
-**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M8.2 complete
+**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M8.3 complete
 
 ---
 
@@ -51,6 +51,7 @@ src/metal/
 ├── msl_strings.h              # AUTO-GENERATED — all MSL kernels as C++ string constants
 │                              #   (do not edit; run tools/gen_msl_strings.py to regenerate)
 │
+├── ops_conv1d.mm              # metal::conv1d_metal (im2col + GEMM)
 ├── primitives_memory.mm       # at, fill, copy, convert, cross_device_copy
 ├── primitives_elementwise.mm  # add/sub/mul/min/max (scalar+vec and vec+vec),
 │                              #   activations (relu/gelu/gelu_tanh/gelu_sigmoid/sigmoid/swish),
@@ -73,7 +74,8 @@ src/metal/
     ├── reduction.metal
     ├── normalization.metal
     ├── gather.metal
-    └── sdpa.metal
+    ├── sdpa.metal
+    └── conv1d.metal
 
 src/ops/                       # Op::compute<Device::METAL> specializations
 ├── normalization_metal.mm     # LayerNorm, RMSNorm, SoftMax → delegates to ops_norm_gather
@@ -89,7 +91,8 @@ src/ops/                       # Op::compute<Device::METAL> specializations
 ├── gumbel_max_metal.mm        # GumbelMax (commit_and_wait + CPU RNG)
 ├── multinomial_metal.mm       # Multinomial (commit_and_wait + discrete_distribution)
 ├── mean_metal.mm              # Mean (commit_and_wait + 3-loop CPU)
-└── median_filter_metal.mm     # MedianFilter (commit_and_wait + nth_element)
+├── median_filter_metal.mm     # MedianFilter (commit_and_wait + nth_element)
+└── conv1d_metal.mm            # Conv1D → delegates to metal::conv1d_metal
 
 tools/
 └── gen_msl_strings.py         # Reads kernels/*.metal → msl_strings.h
@@ -154,6 +157,7 @@ corresponding `primitives_*.mm` or `ops_*.mm` file.
 | `kNormalizationMSL` | `normalization.metal` | `layer_norm_T`, `rms_norm_T`, `softmax_T` |
 | `kGatherMSL` | `gather.metal` | `gather_T` |
 | `kSdpaMSL` | `sdpa.metal` | `causal_mask_float/half/bfloat`, MPS-driven SDPA (no MSL matmul) |
+| `kConv1dMSL` | `conv1d.metal` | `im2col_float`, `im2col_half`, `im2col_bfloat` |
 | `kRotaryMSL` (inline) | `ops_rotary.mm` | `rotary_T` — not in gen_msl_strings.py |
 | `kAlibiMSL` (inline) | `ops_alibi.mm` | `alibi_add_T` — not in gen_msl_strings.py |
 
@@ -253,3 +257,4 @@ Only `float`, `float16_t`, `bfloat16_t` are dispatched by `DEVICE_AND_FLOAT_DISP
 | M7 | CPU-fallback ops: Concat, Split, Slide, Tile, TopK, TopPMask, GumbelMax, Multinomial, Mean, MedianFilter |
 | M8.1 | Integration validation: full encoder layer pipeline, 11/11 pass, errors ~1e-7 |
 | M8.2 | Integration validation: full decoder layer (cross-attn sq≠sk, KV-cache decode), 11/11 pass |
+| M8.3 | Conv1D: im2col MSL kernel + Metal GEMM; f32/f16/bf16; 7/7 pass, errors ~1e-7 |

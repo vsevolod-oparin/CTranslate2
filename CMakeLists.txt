@@ -277,6 +277,14 @@ set(METAL_SOURCES
   src/ops/flash_attention_metal.mm
   src/ops/rotary_metal.mm
   src/ops/alibi_add_metal.mm
+  src/ops/concat_split_slide_metal.mm
+  src/ops/tile_metal.mm
+  src/ops/topk_metal.mm
+  src/ops/topp_mask_metal.mm
+  src/ops/gumbel_max_metal.mm
+  src/ops/multinomial_metal.mm
+  src/ops/mean_metal.mm
+  src/ops/median_filter_metal.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}

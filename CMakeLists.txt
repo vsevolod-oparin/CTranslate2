@@ -290,6 +290,8 @@ set(METAL_SOURCES
   src/ops/conv1d_metal.mm
   src/ops/quantize_metal.mm
   src/ops/dequantize_metal.mm
+  src/ops/awq_metal.mm
+  src/ops/nccl_metal.mm
 )
 set(LIBRARIES
   ${CMAKE_THREAD_LIBS_INIT}

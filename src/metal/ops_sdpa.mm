@@ -512,14 +512,17 @@ namespace ctranslate2 {
           const T* v_row0 = v      + (b * seqlen_k * num_heads_k + hk) * head_dim;
           T*     out_row0 = output + (b * seqlen_q * num_heads   + h ) * head_dim;
 
-          if constexpr (!std::is_same_v<T, bfloat16_t>) {
+          if constexpr (std::is_same_v<T, float> || std::is_same_v<T, float16_t>) {
             sdpa_head_mps<T>(q_row0, k_row0, v_row0, out_row0,
                               q_lda, kv_lda, seqlen_q, seqlen_k, head_dim,
                               scale, is_causal);
-          } else {
+          } else if constexpr (std::is_same_v<T, bfloat16_t>) {
             sdpa_head_bf16(q_row0, k_row0, v_row0, out_row0,
                             q_lda, kv_lda, seqlen_q, seqlen_k, head_dim,
                             scale, is_causal);
+          } else {
+            // Integer types will never reach SDPA at runtime; throw if they somehow do.
+            throw std::runtime_error("sdpa_metal: integer types are not supported");
           }
         }
       }
@@ -535,6 +538,17 @@ namespace ctranslate2 {
         dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool);
     template void sdpa_metal<bfloat16_t>(
         const bfloat16_t*, const bfloat16_t*, const bfloat16_t*, bfloat16_t*,
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool);
+    // TYPE_DISPATCH in flash_attention_metal.mm generates branches for all types;
+    // instantiate the int branches so the linker finds them (they throw at runtime).
+    template void sdpa_metal<int8_t>(
+        const int8_t*, const int8_t*, const int8_t*, int8_t*,
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool);
+    template void sdpa_metal<int16_t>(
+        const int16_t*, const int16_t*, const int16_t*, int16_t*,
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool);
+    template void sdpa_metal<int32_t>(
+        const int32_t*, const int32_t*, const int32_t*, int32_t*,
         dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool);
 
   }  // namespace metal

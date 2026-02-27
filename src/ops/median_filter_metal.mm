@@ -64,6 +64,8 @@ namespace ctranslate2 {
                                              StorageView& output) const;
 
     DECLARE_IMPL(float)
+    DECLARE_IMPL(ctranslate2::float16_t)
+    DECLARE_IMPL(ctranslate2::bfloat16_t)
 #undef DECLARE_IMPL
 
   }  // namespace ops

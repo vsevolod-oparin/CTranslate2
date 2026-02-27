@@ -151,6 +151,18 @@ static id<MTLComputePipelineState> get_gather_pso(const char* name) {
 //   0: src, 1: dst, 2: indices
 //   3: copy_size (uint), 4: batch_stride (uint), 5: num_indices_per_batch (uint)
 //   grid: total_elements threads (one per output element)
+//
+// M10.1 fix: commit_and_wait() at the end makes gather synchronous.
+//
+// The in-place Gather::operator()(data, input) pattern:
+//   StorageView clone(std::move(data));     // clone = temporary source
+//   operator()(clone, input, data);         // encode gather: reads clone, writes data
+//   // clone is freed here                  // src buffer returned to allocator pool
+//
+// If the gather were encode-only (deferred), the GPU would run after the
+// clone's MTLBuffer has been returned to the pool and potentially reused for
+// another allocation, causing the GPU to read wrong (stale / overwritten) data.
+// Making gather synchronous eliminates this use-after-clone hazard.
 static void dispatch_gather(const char* kname,
                              const void* src, void* dst, const void* indices,
                              ctranslate2::dim_t copy_size,
@@ -179,6 +191,8 @@ static void dispatch_gather(const char* kname,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(total_elements), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  // Flush immediately so the GPU reads src before the caller can free it.
+  ctranslate2::metal::commit_and_wait();
 }
 
 }  // anonymous namespace

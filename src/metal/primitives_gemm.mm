@@ -89,6 +89,15 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
   //
   // Coherency note (2.6): CPU memcpy to freshly-allocated Shared buffers is
   // immediately visible to the GPU on Apple Silicon unified memory.
+  //
+  // Padding hazard: when pad_a or pad_b is true the CPU must memcpy from A/B,
+  // which may have been written by a previous GPU kernel (e.g. layernorm,
+  // transpose).  On unified memory the CPU only sees the GPU's writes after
+  // the command buffer has been committed and completed.  Flush before reading.
+  // (pad_c reads C only when beta≠0, same reasoning.)
+  if (pad_a || pad_b || (pad_c && beta != 0.0f))
+    ctranslate2::metal::commit_and_wait();
+
   id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;

@@ -152,19 +152,16 @@ namespace ctranslate2 {
       // Step 1: encode im2col.
       dispatch_im2col(input, p, B, C_in, T_in, T_out, K, stride, padding, dilation);
 
-      // Step 2: per-batch GEMM.
-      for (dim_t b = 0; b < B; ++b) {
-        primitives<Device::METAL>::template gemm<T, T>(
-            false, false,                // a_is_packed, b_is_packed
-            false, true,                 // trans_a=false, trans_b=true
-            C_out, T_out, CK,            // m, n, k
-            1.0f,
-            weight,                CK,   // A = weight [C_out, CK], lda=CK
-            p + b * T_out * CK,    CK,   // B = im2col[b, T_out, CK], ldb=CK
-            0.0f,
-            output + b * C_out * T_out, T_out  // C = out[b, C_out, T_out]
-        );
-      }
+      // Step 2: batched GEMM (stride_a=0: weight is shared across all batches).
+      primitives<Device::METAL>::template gemm_batch_strided<T, T>(
+          false, true,                   // trans_a=false, trans_b=true
+          C_out, T_out, CK,              // m, n, k
+          1.0f,
+          weight, CK, 0,                 // A = weight [C_out, CK], shared (stride=0)
+          p, CK, T_out * CK,             // B = im2col [B, T_out, CK], per-batch
+          0.0f,
+          output, T_out, C_out * T_out,  // C = output [B, C_out, T_out], per-batch
+          B);
     }
 
     // Explicit instantiations.

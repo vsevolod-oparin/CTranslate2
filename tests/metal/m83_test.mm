@@ -411,6 +411,68 @@ static void test7_bf16() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8: Conv1D + bias + GELU activation (Whisper Conv1D pipeline)
+//
+// Whisper encoder uses Conv1D with bias and GELU activation.
+// Tests the full pipeline: conv1d_metal → add_block_broadcast (bias) → gelu.
+//
+// Conv1D output layout: [B, C_out, T_out]
+// Bias: [C_out], broadcast along C_out axis (block_size = T_out).
+// ---------------------------------------------------------------------------
+
+static float ref_gelu(float x) {
+  return x * 0.5f * (1.f + std::erf(x * 0.7071067811865476f));
+}
+
+static void test8_f32_bias_gelu() {
+  std::printf("\nTest 8: f32 conv1d + bias + GELU\n");
+
+  const dim_t B=2, C_in=4, T_in=8, C_out=8, K=3;
+  const dim_t stride=1, padding=1, dilation=1;
+  const dim_t T_out = (T_in + 2*padding - (dilation*(K-1)+1)) / stride + 1;
+  const size_t N_out = (size_t)(B * C_out * T_out);
+
+  auto x_h    = rand_vec((size_t)(B*C_in*T_in),  100);
+  auto w_h    = rand_vec((size_t)(C_out*C_in*K),  101);
+  auto bias_h = rand_vec((size_t)(C_out),          102, 0.5f);
+
+  // CPU reference: conv1d + bias + GELU
+  std::vector<float> ref(N_out);
+  ref_conv1d_f32(x_h.data(), B, C_in, T_in, w_h.data(), C_out, K,
+                 ref.data(), T_out, stride, padding, dilation);
+  // Apply bias: output[b, c, t] += bias[c]
+  for (dim_t b = 0; b < B; ++b)
+    for (dim_t c = 0; c < C_out; ++c)
+      for (dim_t t = 0; t < T_out; ++t)
+        ref[(size_t)(b * C_out * T_out + c * T_out + t)] += bias_h[(size_t)c];
+  // Apply GELU
+  for (auto& v : ref) v = ref_gelu(v);
+
+  // Metal: conv1d → bias broadcast → GELU
+  float* x_m    = make_f32_buf(x_h);
+  float* w_m    = make_f32_buf(w_h);
+  float* bias_m = make_f32_buf(bias_h);
+  float* y_m    = alloc_f32_buf(N_out);
+
+  metal::conv1d_metal<float>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
+                              stride, padding, dilation);
+
+  // Bias: [C_out] broadcast over [B*C_out, T_out] where bias repeats every C_out rows.
+  // add_block_broadcast(bias, y, block=T_out, bias_size=C_out, y_size=B*C_out*T_out)
+  primitives<Device::METAL>::add_block_broadcast<float>(
+      bias_m, y_m, static_cast<dim_t>(T_out),
+      static_cast<dim_t>(C_out), static_cast<dim_t>(N_out));
+
+  // GELU activation
+  primitives<Device::METAL>::gelu<float>(y_m, y_m, static_cast<dim_t>(N_out));
+
+  auto got = read_f32(y_m, N_out);
+  CHECK_CLOSE("f32 conv1d + bias + GELU", got, ref, 1e-5f);
+
+  free_buf(x_m); free_buf(w_m); free_buf(bias_m); free_buf(y_m);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -425,6 +487,7 @@ int main() {
     test5_f32_whisper();
     test6_f16();
     test7_bf16();
+    test8_f32_bias_gelu();
   }
 
   std::printf("\n=== Results: %d pass, %d fail ===\n", g_pass, g_fail);

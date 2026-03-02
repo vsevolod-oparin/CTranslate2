@@ -76,12 +76,16 @@ namespace ctranslate2 {
     //   output layout: same shape as q.
     //   scale: multiplied into Q * K^T before softmax.
     //   is_causal: apply causal mask (scores[col > row] = large_neg).
-    //   M6.1 scope: offset == 0 only (no KV cache).
+    //   kv_batch_stride: number of elements between consecutive batches in K/V.
+    //     When 0 (default), uses seqlen_k * num_heads_k * head_dim.
+    //     Set to total_cache * num_heads_k * head_dim for KV-cache decode
+    //     where the cache is pre-allocated larger than seqlen_k_eff.
     template <typename T>
     void sdpa_metal(const T* q, const T* k, const T* v, T* output,
                     dim_t batch_size, dim_t seqlen_q, dim_t seqlen_k,
                     dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
-                    float scale, bool is_causal);
+                    float scale, bool is_causal,
+                    dim_t kv_batch_stride = 0);
 
     // conv1d_metal: 1-D convolution via im2col + GEMM (groups == 1 only).
     //   input:  [B, C_in, T_in]    — NCT layout

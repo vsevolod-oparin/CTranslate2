@@ -233,7 +233,8 @@ namespace ctranslate2 {
               q_ptr, k_cache, v_cache, output.data<T>(),
               batch_size, seqlen_q, seqlen_k_eff,
               num_heads, num_heads_k, head_dim,
-              _queries_scale, eff_causal);
+              _queries_scale, eff_causal,
+              total_cache * num_heads_k * head_dim);
         });
 
       } else {

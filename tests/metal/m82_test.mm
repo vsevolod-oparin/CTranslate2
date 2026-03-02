@@ -834,6 +834,120 @@ static void test_full_decoder_decode() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 5 — KV-cache decode with batch > 1 (B=4)
+//
+// Validates the kv_batch_stride fix for sdpa_metal: when K/V come from a
+// pre-allocated cache [B, MAX_CACHE, NK, HD] and seqlen_k_eff < MAX_CACHE,
+// batches b >= 1 must use the physical cache stride (total_cache * NK * HD)
+// rather than the logical stride (seqlen_k_eff * NK * HD).
+//
+// Parameters: B=4, offset=3, sq=1, sk_eff=4, MAX_CACHE=8, NH=2, NK=2, HD=8
+// ---------------------------------------------------------------------------
+static void test_kvcache_decode_batch_gt1() {
+  std::printf("\n--- Test 5: KV-cache decode batch>1 (B=4, offset=3, sq=1, sk=4) Metal vs CPU ---\n");
+
+  const dim_t B = 4, OFFSET = 3, NK = 2, HD = 8, MAX_CACHE = 8;
+  const dim_t NH = 2;
+  const dim_t row_elems = NK * HD;
+  const float scale = 1.f / std::sqrt(static_cast<float>(HD));
+  const dim_t sk_eff = OFFSET + 1;  // 4 total tokens in cache
+
+  // Pre-fill: OFFSET slots of K/V per batch item (each batch gets different data).
+  auto k_prefill_h = rand_vec(static_cast<std::size_t>(B * OFFSET * row_elems));
+  auto v_prefill_h = rand_vec(static_cast<std::size_t>(B * OFFSET * row_elems));
+
+  // Allocate cache [B, MAX_CACHE, NK, HD] in Metal Shared memory.
+  float* k_cache = metal_alloc<float>(B * MAX_CACHE * NK * HD);
+  float* v_cache = metal_alloc<float>(B * MAX_CACHE * NK * HD);
+
+  // Zero the whole cache to make stale slots deterministic.
+  std::memset(k_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(float));
+  std::memset(v_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(float));
+
+  // Write prefill rows into each batch's cache slice.
+  for (dim_t b = 0; b < B; ++b) {
+    float* kd = k_cache + b * MAX_CACHE * row_elems;
+    float* vd = v_cache + b * MAX_CACHE * row_elems;
+    const float* ks = k_prefill_h.data() + b * OFFSET * row_elems;
+    const float* vs = v_prefill_h.data() + b * OFFSET * row_elems;
+    std::memcpy(kd, ks, static_cast<std::size_t>(OFFSET * row_elems) * sizeof(float));
+    std::memcpy(vd, vs, static_cast<std::size_t>(OFFSET * row_elems) * sizeof(float));
+  }
+
+  // New token at position OFFSET: Q [B, 1, NH, HD], K/V new [B, 1, NK, HD].
+  auto q_new_h = rand_vec(static_cast<std::size_t>(B * 1 * NH * HD));
+  auto k_new_h = rand_vec(static_cast<std::size_t>(B * 1 * NK * HD));
+  auto v_new_h = rand_vec(static_cast<std::size_t>(B * 1 * NK * HD));
+
+  float* q_m   = metal_from<float>(q_new_h);
+  float* out_m = metal_alloc<float>(B * 1 * NH * HD);
+
+  // Metal decode path: flush GPU then CPU-write new K/V into cache at OFFSET.
+  metal::commit_and_wait();
+  for (dim_t b = 0; b < B; ++b) {
+    float* kd = k_cache + (b * MAX_CACHE + OFFSET) * row_elems;
+    float* vd = v_cache + (b * MAX_CACHE + OFFSET) * row_elems;
+    std::memcpy(kd, k_new_h.data() + b * row_elems,
+                static_cast<std::size_t>(row_elems) * sizeof(float));
+    std::memcpy(vd, v_new_h.data() + b * row_elems,
+                static_cast<std::size_t>(row_elems) * sizeof(float));
+  }
+
+  // SDPA over cache with explicit kv_batch_stride.
+  const dim_t kv_bstride = MAX_CACHE * NK * HD;
+  metal::sdpa_metal<float>(q_m, k_cache, v_cache, out_m,
+                            B, 1, sk_eff, NH, NK, HD, scale, false,
+                            kv_bstride);
+  auto metal_out = metal_to_host(out_m, B * 1 * NH * HD);
+
+  // CPU reference: build K_all/V_all [B, sk_eff, NK, HD] (tightly packed).
+  std::vector<float> k_all(static_cast<std::size_t>(B * sk_eff * row_elems));
+  std::vector<float> v_all(static_cast<std::size_t>(B * sk_eff * row_elems));
+  for (dim_t b = 0; b < B; ++b) {
+    std::size_t dst_base = static_cast<std::size_t>(b * sk_eff * row_elems);
+    // Prefill slots [0..OFFSET-1]
+    std::copy(k_prefill_h.begin() + b * OFFSET * row_elems,
+              k_prefill_h.begin() + (b + 1) * OFFSET * row_elems,
+              k_all.begin() + dst_base);
+    std::copy(v_prefill_h.begin() + b * OFFSET * row_elems,
+              v_prefill_h.begin() + (b + 1) * OFFSET * row_elems,
+              v_all.begin() + dst_base);
+    // New slot at [OFFSET]
+    std::size_t new_off = dst_base + static_cast<std::size_t>(OFFSET * row_elems);
+    std::copy(k_new_h.begin() + b * row_elems,
+              k_new_h.begin() + (b + 1) * row_elems,
+              k_all.begin() + new_off);
+    std::copy(v_new_h.begin() + b * row_elems,
+              v_new_h.begin() + (b + 1) * row_elems,
+              v_all.begin() + new_off);
+  }
+
+  auto cpu = ref_sdpa_cross(q_new_h, k_all, v_all,
+                             B, 1, sk_eff, NH, NK, HD, scale, false);
+
+  float err = max_abs_diff(cpu, metal_out);
+  std::printf("  max_abs_diff = %.2e\n", static_cast<double>(err));
+  CHECK("kv-cache decode B=4 [offset=3, sq=1, sk=4]: max_abs_diff < 1e-4", err < 1e-4f);
+
+  // Also verify per-batch: check that each batch produces independently correct output.
+  for (dim_t b = 0; b < B; ++b) {
+    float batch_err = 0.f;
+    for (dim_t i = 0; i < NH * HD; ++i) {
+      std::size_t idx = static_cast<std::size_t>(b * NH * HD + i);
+      batch_err = std::max(batch_err, std::abs(cpu[idx] - metal_out[idx]));
+    }
+    char label[128];
+    std::snprintf(label, sizeof(label),
+                  "kv-cache decode B=4: batch %lld max_abs_diff < 1e-4",
+                  static_cast<long long>(b));
+    CHECK(label, batch_err < 1e-4f);
+  }
+
+  metal_free(k_cache); metal_free(v_cache);
+  metal_free(q_m); metal_free(out_m);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -844,6 +958,7 @@ int main() {
   test_kvcache_decode();
   test_full_decoder_prefill();
   test_full_decoder_decode();
+  test_kvcache_decode_batch_gt1();
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

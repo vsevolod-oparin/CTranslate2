@@ -44,6 +44,7 @@
 
 #include "ctranslate2/types.h"
 #include "ctranslate2/primitives.h"
+#include "ctranslate2/allocator.h"
 #include "metal/utils.h"
 #include "type_dispatch.h"
 #include "metal/msl_strings.h"
@@ -146,6 +147,37 @@ static inline id<MTLBuffer> alloc_temp_buffer(NSUInteger bytes) {
     throw std::runtime_error("Metal: failed to allocate temporary buffer");
   return buf;
 }
+
+// ---------------------------------------------------------------------------
+// RAII allocator-registered temporary buffer.
+//
+// Buffers allocated via get_allocator<Device::METAL>() are tracked in
+// MetalAllocator::_live, so metal_buffer_for_ptr() can find them.
+// Use this (instead of alloc_temp_buffer) when GEMM or other ops need to
+// locate the backing MTLBuffer via metal_buffer_for_ptr().
+// ---------------------------------------------------------------------------
+
+struct MetalTempBuf {
+  void* ptr = nullptr;
+
+  MetalTempBuf() = default;
+
+  explicit MetalTempBuf(size_t n_bytes) {
+    ptr = ctranslate2::get_allocator<ctranslate2::Device::METAL>().allocate(n_bytes, 0);
+  }
+
+  ~MetalTempBuf() {
+    if (ptr) {
+      ctranslate2::get_allocator<ctranslate2::Device::METAL>().free(ptr, 0);
+    }
+  }
+
+  MetalTempBuf(const MetalTempBuf&) = delete;
+  MetalTempBuf& operator=(const MetalTempBuf&) = delete;
+
+  template <typename T>
+  T* as() { return static_cast<T*>(ptr); }
+};
 
 // ---------------------------------------------------------------------------
 // MetalTypeName<T> — maps C++ scalar type to its MSL type name string

@@ -948,6 +948,336 @@ static void test_kvcache_decode_batch_gt1() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 6/7 — Full decoder layer decode step in fp16 / bf16
+//
+// Same decode-step pipeline as Test 4 but in reduced precision.
+// CPU reference stays float32; tolerances relaxed.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static void test_decoder_decode_typed(const char* type_name, float tol) {
+  std::printf("\n--- Test: Decoder decode step (%s) Metal vs CPU ---\n", type_name);
+
+  const dim_t B = 1, DEC_T = 4, ENC_T = 6, D = 16, NH = 2, HD = 8, FFN = 32;
+  const dim_t NK = NH;
+  const dim_t MAX_CACHE = 8;
+  const dim_t row_elems = NK * HD;
+  const float scale = 1.f / std::sqrt(static_cast<float>(HD));
+  const float eps   = 1e-5f;
+
+  // Weights (small range to limit reduced-precision error accumulation).
+  auto gamma1_h = rand_vec(static_cast<std::size_t>(D), 0.5f, 1.5f);
+  auto beta1_h  = rand_vec(static_cast<std::size_t>(D), -0.1f, 0.1f);
+  auto W_Qs_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_Ks_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_Vs_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_os_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto gamma2_h = rand_vec(static_cast<std::size_t>(D), 0.5f, 1.5f);
+  auto beta2_h  = rand_vec(static_cast<std::size_t>(D), -0.1f, 0.1f);
+  auto W_Qc_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_Kc_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_Vc_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto W_oc_h   = rand_vec(static_cast<std::size_t>(D * D), -0.3f, 0.3f);
+  auto gamma3_h = rand_vec(static_cast<std::size_t>(D), 0.5f, 1.5f);
+  auto beta3_h  = rand_vec(static_cast<std::size_t>(D), -0.1f, 0.1f);
+  auto W1_h     = rand_vec(static_cast<std::size_t>(FFN * D), -0.3f, 0.3f);
+  auto W2_h     = rand_vec(static_cast<std::size_t>(D * FFN), -0.3f, 0.3f);
+
+  auto x_new_h   = rand_vec(static_cast<std::size_t>(B * 1 * D), -0.5f, 0.5f);
+  auto enc_ctx_h = rand_vec(static_cast<std::size_t>(B * ENC_T * D), -0.5f, 0.5f);
+  auto k_cache_init_h = rand_vec(static_cast<std::size_t>(DEC_T * row_elems), -0.5f, 0.5f);
+  auto v_cache_init_h = rand_vec(static_cast<std::size_t>(DEC_T * row_elems), -0.5f, 0.5f);
+
+  // CPU float32 reference (identical to Test 4).
+  auto norm1_new = ref_layer_norm(x_new_h, gamma1_h, beta1_h, 1, D, eps);
+  auto q_s_new   = ref_gemm_bt(norm1_new, 1, D, W_Qs_h, D);
+  auto k_s_new   = ref_gemm_bt(norm1_new, 1, D, W_Ks_h, D);
+  auto v_s_new   = ref_gemm_bt(norm1_new, 1, D, W_Vs_h, D);
+  const dim_t sk_eff = DEC_T + 1;
+  std::vector<float> k_all(static_cast<std::size_t>(sk_eff * row_elems));
+  std::vector<float> v_all(static_cast<std::size_t>(sk_eff * row_elems));
+  std::copy(k_cache_init_h.begin(), k_cache_init_h.end(), k_all.begin());
+  std::copy(v_cache_init_h.begin(), v_cache_init_h.end(), v_all.begin());
+  std::copy(k_s_new.begin(), k_s_new.end(),
+            k_all.begin() + static_cast<std::size_t>(DEC_T * row_elems));
+  std::copy(v_s_new.begin(), v_s_new.end(),
+            v_all.begin() + static_cast<std::size_t>(DEC_T * row_elems));
+  auto self_new   = ref_sdpa_cross(q_s_new, k_all, v_all,
+                                    B, 1, sk_eff, NH, NK, HD, scale, false);
+  auto proj_s_new = ref_gemm_bt(self_new, 1, D, W_os_h, D);
+  auto h1_new     = ref_add(x_new_h, proj_s_new);
+  auto norm2_new  = ref_layer_norm(h1_new, gamma2_h, beta2_h, 1, D, eps);
+  auto q_c_new    = ref_gemm_bt(norm2_new, 1, D, W_Qc_h, D);
+  auto K_c_enc    = ref_gemm_bt(enc_ctx_h, ENC_T, D, W_Kc_h, D);
+  auto V_c_enc    = ref_gemm_bt(enc_ctx_h, ENC_T, D, W_Vc_h, D);
+  auto cross_new  = ref_sdpa_cross(q_c_new, K_c_enc, V_c_enc,
+                                    B, 1, ENC_T, NH, NK, HD, scale, false);
+  auto proj_c_new = ref_gemm_bt(cross_new, 1, D, W_oc_h, D);
+  auto h2_new     = ref_add(h1_new, proj_c_new);
+  auto norm3_new  = ref_layer_norm(h2_new, gamma3_h, beta3_h, 1, D, eps);
+  auto ffn1_new   = ref_gemm_bt(norm3_new, 1, D, W1_h, FFN);
+  auto ffn1a_new  = ref_relu(ffn1_new);
+  auto ffn2_new   = ref_gemm_bt(ffn1a_new, 1, FFN, W2_h, D);
+  auto out_cpu    = ref_add(h2_new, ffn2_new);
+
+  // Metal decode step in type T.
+  T* k_cache = metal_alloc<T>(B * MAX_CACHE * NK * HD);
+  T* v_cache = metal_alloc<T>(B * MAX_CACHE * NK * HD);
+  std::memset(k_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(T));
+  std::memset(v_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(T));
+  for (dim_t i = 0; i < DEC_T * row_elems; ++i) {
+    k_cache[i] = T(k_cache_init_h[static_cast<std::size_t>(i)]);
+    v_cache[i] = T(v_cache_init_h[static_cast<std::size_t>(i)]);
+  }
+
+  T* gamma1_m = metal_from<T>(gamma1_h);  T* beta1_m  = metal_from<T>(beta1_h);
+  T* W_Qs_m   = metal_from<T>(W_Qs_h);    T* W_Ks_m   = metal_from<T>(W_Ks_h);
+  T* W_Vs_m   = metal_from<T>(W_Vs_h);    T* W_os_m   = metal_from<T>(W_os_h);
+  T* gamma2_m = metal_from<T>(gamma2_h);   T* beta2_m  = metal_from<T>(beta2_h);
+  T* W_Qc_m   = metal_from<T>(W_Qc_h);    T* W_Kc_m   = metal_from<T>(W_Kc_h);
+  T* W_Vc_m   = metal_from<T>(W_Vc_h);    T* W_oc_m   = metal_from<T>(W_oc_h);
+  T* gamma3_m = metal_from<T>(gamma3_h);   T* beta3_m  = metal_from<T>(beta3_h);
+  T* W1_m     = metal_from<T>(W1_h);       T* W2_m     = metal_from<T>(W2_h);
+  T* x_new_m  = metal_from<T>(x_new_h);    T* enc_m    = metal_from<T>(enc_ctx_h);
+
+  T* norm1_m  = metal_alloc<T>(1 * D);
+  T* Q_s_m    = metal_alloc<T>(B * 1 * NH * HD);
+  T* K_s_m    = metal_alloc<T>(B * 1 * NK * HD);
+  T* V_s_m    = metal_alloc<T>(B * 1 * NK * HD);
+  T* self_m   = metal_alloc<T>(B * 1 * NH * HD);
+  T* proj_s_m = metal_alloc<T>(1 * D);
+  T* h1_m     = metal_alloc<T>(1 * D);
+  T* norm2_m  = metal_alloc<T>(1 * D);
+  T* Q_c_m    = metal_alloc<T>(B * 1 * NH * HD);
+  T* K_c_m    = metal_alloc<T>(B * ENC_T * NH * HD);
+  T* V_c_m    = metal_alloc<T>(B * ENC_T * NH * HD);
+  T* cross_m  = metal_alloc<T>(B * 1 * NH * HD);
+  T* proj_c_m = metal_alloc<T>(1 * D);
+  T* h2_m     = metal_alloc<T>(1 * D);
+  T* norm3_m  = metal_alloc<T>(1 * D);
+  T* ffn1_m   = metal_alloc<T>(1 * FFN);
+  T* ffn1a_m  = metal_alloc<T>(1 * FFN);
+  T* ffn2_m   = metal_alloc<T>(1 * D);
+  T* out_m    = metal_alloc<T>(1 * D);
+
+  // Self-attention
+  metal::layer_norm_metal<T>(x_new_m, gamma1_m, beta1_m, norm1_m, 1, D, eps);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Qs_m, D, 0.f, Q_s_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Ks_m, D, 0.f, K_s_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Vs_m, D, 0.f, V_s_m, D);
+
+  // KV-cache update
+  metal::commit_and_wait();
+  for (dim_t b = 0; b < B; ++b) {
+    T* kd = k_cache + (b * MAX_CACHE + DEC_T) * row_elems;
+    T* vd = v_cache + (b * MAX_CACHE + DEC_T) * row_elems;
+    std::memcpy(kd, K_s_m + b * row_elems, static_cast<std::size_t>(row_elems) * sizeof(T));
+    std::memcpy(vd, V_s_m + b * row_elems, static_cast<std::size_t>(row_elems) * sizeof(T));
+  }
+
+  const dim_t kv_bstride = MAX_CACHE * NK * HD;
+  metal::sdpa_metal<T>(Q_s_m, k_cache, v_cache, self_m,
+                        B, 1, sk_eff, NH, NK, HD, scale, false, kv_bstride);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, self_m, D, W_os_m, D, 0.f, proj_s_m, D);
+  primitives<Device::METAL>::add<T>(x_new_m, proj_s_m, h1_m, 1 * D);
+
+  // Cross-attention
+  metal::layer_norm_metal<T>(h1_m, gamma2_m, beta2_m, norm2_m, 1, D, eps);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, norm2_m, D, W_Qc_m, D, 0.f, Q_c_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, ENC_T, D, D, 1.f, enc_m, D, W_Kc_m, D, 0.f, K_c_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, ENC_T, D, D, 1.f, enc_m, D, W_Vc_m, D, 0.f, V_c_m, D);
+  metal::sdpa_metal<T>(Q_c_m, K_c_m, V_c_m, cross_m,
+                        B, 1, ENC_T, NH, NK, HD, scale, false);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, D, 1.f, cross_m, D, W_oc_m, D, 0.f, proj_c_m, D);
+  primitives<Device::METAL>::add<T>(h1_m, proj_c_m, h2_m, 1 * D);
+
+  // FFN
+  metal::layer_norm_metal<T>(h2_m, gamma3_m, beta3_m, norm3_m, 1, D, eps);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, FFN, D, 1.f, norm3_m, D, W1_m, D, 0.f, ffn1_m, FFN);
+  primitives<Device::METAL>::relu<T>(ffn1_m, ffn1a_m, 1 * FFN);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, 1, D, FFN, 1.f, ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
+  primitives<Device::METAL>::add<T>(h2_m, ffn2_m, out_m, 1 * D);
+
+  auto out_metal = metal_to_host(out_m, 1 * D);
+  float err = max_abs_diff(out_cpu, out_metal);
+  std::printf("  max_abs_diff = %.2e  (tol = %.2e)\n",
+              static_cast<double>(err), static_cast<double>(tol));
+
+  char label[128];
+  std::snprintf(label, sizeof(label),
+                "decoder decode (%s) Metal vs CPU: max_abs_diff < %.0e",
+                type_name, static_cast<double>(tol));
+  CHECK(label, err < tol);
+
+  metal_free(k_cache); metal_free(v_cache);
+  metal_free(gamma1_m); metal_free(beta1_m);
+  metal_free(W_Qs_m); metal_free(W_Ks_m); metal_free(W_Vs_m); metal_free(W_os_m);
+  metal_free(gamma2_m); metal_free(beta2_m);
+  metal_free(W_Qc_m); metal_free(W_Kc_m); metal_free(W_Vc_m); metal_free(W_oc_m);
+  metal_free(gamma3_m); metal_free(beta3_m); metal_free(W1_m); metal_free(W2_m);
+  metal_free(x_new_m); metal_free(enc_m);
+  metal_free(norm1_m); metal_free(Q_s_m); metal_free(K_s_m); metal_free(V_s_m);
+  metal_free(self_m); metal_free(proj_s_m); metal_free(h1_m);
+  metal_free(norm2_m); metal_free(Q_c_m); metal_free(K_c_m); metal_free(V_c_m);
+  metal_free(cross_m); metal_free(proj_c_m); metal_free(h2_m);
+  metal_free(norm3_m); metal_free(ffn1_m); metal_free(ffn1a_m);
+  metal_free(ffn2_m); metal_free(out_m);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8 — Multi-step decode sequence (offset=0 prefill, then 3 decode steps)
+//
+// Validates that the KV cache grows correctly across multiple decode steps.
+// Each decode step writes new K/V at the next position and attends over
+// all accumulated tokens.
+//
+// Pipeline (self-attention only, no cross-attn, no FFN — isolates cache logic):
+//   For step s (offset = PREFILL_T + s):
+//     1. LN + Q/K/V projection on new token.
+//     2. commit_and_wait + memcpy K/V into cache at position `offset`.
+//     3. sdpa_metal(sq=1, sk=offset+1, is_causal=false) over cache.
+//     4. output projection + residual.
+//   Compare Metal output with CPU reference at each step.
+// ---------------------------------------------------------------------------
+static void test_multistep_decode_sequence() {
+  std::printf("\n--- Test 8: Multi-step decode sequence (prefill=2, 3 steps) Metal vs CPU ---\n");
+
+  const dim_t B = 1, PREFILL_T = 2, NUM_STEPS = 3;
+  const dim_t D = 16, NH = 2, HD = 8, NK = NH;
+  const dim_t MAX_CACHE = 16;
+  const dim_t row_elems = NK * HD;
+  const float scale = 1.f / std::sqrt(static_cast<float>(HD));
+  const float eps   = 1e-5f;
+
+  // Weights
+  auto gamma_h  = rand_vec(static_cast<std::size_t>(D), 0.5f, 1.5f);
+  auto beta_h   = rand_vec(static_cast<std::size_t>(D), -0.1f, 0.1f);
+  auto W_Q_h    = rand_vec(static_cast<std::size_t>(D * D), -0.5f, 0.5f);
+  auto W_K_h    = rand_vec(static_cast<std::size_t>(D * D), -0.5f, 0.5f);
+  auto W_V_h    = rand_vec(static_cast<std::size_t>(D * D), -0.5f, 0.5f);
+  auto W_o_h    = rand_vec(static_cast<std::size_t>(D * D), -0.5f, 0.5f);
+
+  // Pre-fill KV cache with PREFILL_T rows.
+  auto k_prefill_h = rand_vec(static_cast<std::size_t>(PREFILL_T * row_elems));
+  auto v_prefill_h = rand_vec(static_cast<std::size_t>(PREFILL_T * row_elems));
+
+  // CPU running cache (tightly packed, grows each step).
+  std::vector<float> k_cpu_cache(k_prefill_h);
+  std::vector<float> v_cpu_cache(v_prefill_h);
+
+  // Metal cache [B, MAX_CACHE, NK, HD].
+  float* k_cache = metal_alloc<float>(B * MAX_CACHE * NK * HD);
+  float* v_cache = metal_alloc<float>(B * MAX_CACHE * NK * HD);
+  std::memset(k_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(float));
+  std::memset(v_cache, 0, static_cast<std::size_t>(B * MAX_CACHE * row_elems) * sizeof(float));
+  std::memcpy(k_cache, k_prefill_h.data(),
+              static_cast<std::size_t>(PREFILL_T * row_elems) * sizeof(float));
+  std::memcpy(v_cache, v_prefill_h.data(),
+              static_cast<std::size_t>(PREFILL_T * row_elems) * sizeof(float));
+
+  // Metal weights
+  float* gamma_m = metal_from<float>(gamma_h);
+  float* beta_m  = metal_from<float>(beta_h);
+  float* W_Q_m   = metal_from<float>(W_Q_h);
+  float* W_K_m   = metal_from<float>(W_K_h);
+  float* W_V_m   = metal_from<float>(W_V_h);
+  float* W_o_m   = metal_from<float>(W_o_h);
+
+  // Reusable intermediate buffers (sq=1).
+  float* norm_m   = metal_alloc<float>(1 * D);
+  float* Q_m      = metal_alloc<float>(B * 1 * NH * HD);
+  float* K_new_m  = metal_alloc<float>(B * 1 * NK * HD);
+  float* V_new_m  = metal_alloc<float>(B * 1 * NK * HD);
+  float* attn_m   = metal_alloc<float>(B * 1 * NH * HD);
+  float* proj_m   = metal_alloc<float>(1 * D);
+  float* out_m    = metal_alloc<float>(1 * D);
+
+  const dim_t kv_bstride = MAX_CACHE * NK * HD;
+
+  bool all_ok = true;
+  for (dim_t step = 0; step < NUM_STEPS; ++step) {
+    const dim_t offset = PREFILL_T + step;
+    const dim_t sk_eff = offset + 1;
+
+    // New token for this step.
+    auto x_h = rand_vec(static_cast<std::size_t>(B * 1 * D));
+    float* x_m = metal_from<float>(x_h);
+
+    // --- CPU reference ---
+    auto norm_cpu = ref_layer_norm(x_h, gamma_h, beta_h, 1, D, eps);
+    auto q_cpu    = ref_gemm_bt(norm_cpu, 1, D, W_Q_h, D);
+    auto k_new    = ref_gemm_bt(norm_cpu, 1, D, W_K_h, D);
+    auto v_new    = ref_gemm_bt(norm_cpu, 1, D, W_V_h, D);
+
+    // Append to CPU cache.
+    k_cpu_cache.insert(k_cpu_cache.end(), k_new.begin(), k_new.end());
+    v_cpu_cache.insert(v_cpu_cache.end(), v_new.begin(), v_new.end());
+
+    auto sdpa_cpu = ref_sdpa_cross(q_cpu, k_cpu_cache, v_cpu_cache,
+                                    B, 1, sk_eff, NH, NK, HD, scale, false);
+    auto proj_cpu = ref_gemm_bt(sdpa_cpu, 1, D, W_o_h, D);
+    auto out_cpu  = ref_add(x_h, proj_cpu);
+
+    // --- Metal ---
+    metal::layer_norm_metal<float>(x_m, gamma_m, beta_m, norm_m, 1, D, eps);
+    primitives<Device::METAL>::gemm<float, float>(
+        false, false, false, true, 1, D, D, 1.f, norm_m, D, W_Q_m, D, 0.f, Q_m, D);
+    primitives<Device::METAL>::gemm<float, float>(
+        false, false, false, true, 1, D, D, 1.f, norm_m, D, W_K_m, D, 0.f, K_new_m, D);
+    primitives<Device::METAL>::gemm<float, float>(
+        false, false, false, true, 1, D, D, 1.f, norm_m, D, W_V_m, D, 0.f, V_new_m, D);
+
+    metal::commit_and_wait();
+    std::memcpy(k_cache + offset * row_elems, K_new_m,
+                static_cast<std::size_t>(row_elems) * sizeof(float));
+    std::memcpy(v_cache + offset * row_elems, V_new_m,
+                static_cast<std::size_t>(row_elems) * sizeof(float));
+
+    metal::sdpa_metal<float>(Q_m, k_cache, v_cache, attn_m,
+                              B, 1, sk_eff, NH, NK, HD, scale, false, kv_bstride);
+    primitives<Device::METAL>::gemm<float, float>(
+        false, false, false, true, 1, D, D, 1.f, attn_m, D, W_o_m, D, 0.f, proj_m, D);
+    primitives<Device::METAL>::add<float>(x_m, proj_m, out_m, 1 * D);
+
+    auto out_metal = metal_to_host(out_m, 1 * D);
+    float err = max_abs_diff(out_cpu, out_metal);
+    std::printf("  step %lld (offset=%lld, sk=%lld): max_abs_diff = %.2e\n",
+                static_cast<long long>(step),
+                static_cast<long long>(offset),
+                static_cast<long long>(sk_eff),
+                static_cast<double>(err));
+
+    char label[128];
+    std::snprintf(label, sizeof(label),
+                  "multi-step decode step %lld (offset=%lld, sk=%lld) < 1e-4",
+                  static_cast<long long>(step),
+                  static_cast<long long>(offset),
+                  static_cast<long long>(sk_eff));
+    bool ok = err < 1e-4f;
+    CHECK(label, ok);
+    if (!ok) all_ok = false;
+
+    metal_free(x_m);
+  }
+
+  metal_free(k_cache); metal_free(v_cache);
+  metal_free(gamma_m); metal_free(beta_m);
+  metal_free(W_Q_m); metal_free(W_K_m); metal_free(W_V_m); metal_free(W_o_m);
+  metal_free(norm_m); metal_free(Q_m); metal_free(K_new_m); metal_free(V_new_m);
+  metal_free(attn_m); metal_free(proj_m); metal_free(out_m);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -959,6 +1289,9 @@ int main() {
   test_full_decoder_prefill();
   test_full_decoder_decode();
   test_kvcache_decode_batch_gt1();
+  test_decoder_decode_typed<ctranslate2::float16_t>("f16", 5e-2f);
+  test_decoder_decode_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
+  test_multistep_decode_sequence();
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

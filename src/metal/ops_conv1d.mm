@@ -24,34 +24,8 @@
 
 #include "metal/primitives_infra.h"
 #include "metal/ops_metal.h"
-#include "ctranslate2/allocator.h"
 
 namespace {
-
-// ---------------------------------------------------------------------------
-// RAII allocator-registered temporary buffer (same pattern as ops_sdpa.mm).
-//
-// Buffers allocated via get_allocator<Device::METAL>() are tracked in
-// MetalAllocator::_live so metal_buffer_for_ptr() can find them.
-// ---------------------------------------------------------------------------
-
-struct MetalTempBuf {
-  void* ptr = nullptr;
-
-  MetalTempBuf() = default;
-
-  explicit MetalTempBuf(size_t n_bytes) {
-    ptr = ctranslate2::get_allocator<ctranslate2::Device::METAL>().allocate(n_bytes, 0);
-  }
-
-  ~MetalTempBuf() {
-    if (ptr)
-      ctranslate2::get_allocator<ctranslate2::Device::METAL>().free(ptr, 0);
-  }
-
-  MetalTempBuf(const MetalTempBuf&) = delete;
-  MetalTempBuf& operator=(const MetalTempBuf&) = delete;
-};
 
 // ---------------------------------------------------------------------------
 // im2col PSO infrastructure

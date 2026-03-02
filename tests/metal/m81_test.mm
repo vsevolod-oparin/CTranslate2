@@ -557,6 +557,123 @@ static void test_full_encoder_layer() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 7/8 — Full Encoder Layer in fp16 / bf16
+//
+// Templated version: all weights/intermediates are stored in T; CPU reference
+// is still float32.  Tolerances are relaxed for reduced precision.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static void test_encoder_layer_typed(const char* type_name, float tol) {
+  std::printf("\n--- Test: Full Encoder Layer (%s) Metal vs CPU ---\n", type_name);
+
+  const dim_t B = 1, TT = 4, D = 16, NH = 2, HD = 8, FFN = 32;
+  const dim_t N_in = B * TT * D;
+  const dim_t N_qkv = B * TT * NH * HD;
+  const float scale = 1.f / std::sqrt(static_cast<float>(HD));
+  const float eps = 1e-5f;
+
+  // Random weights (host float).
+  auto gamma1_h = rand_vec(static_cast<std::size_t>(D),   0.5f, 1.5f);
+  auto beta1_h  = rand_vec(static_cast<std::size_t>(D),  -0.1f, 0.1f);
+  auto W_q_h    = rand_vec(static_cast<std::size_t>(D*D), -0.3f, 0.3f);
+  auto W_k_h    = rand_vec(static_cast<std::size_t>(D*D), -0.3f, 0.3f);
+  auto W_v_h    = rand_vec(static_cast<std::size_t>(D*D), -0.3f, 0.3f);
+  auto W_o_h    = rand_vec(static_cast<std::size_t>(D*D), -0.3f, 0.3f);
+  auto gamma2_h = rand_vec(static_cast<std::size_t>(D),   0.5f, 1.5f);
+  auto beta2_h  = rand_vec(static_cast<std::size_t>(D),  -0.1f, 0.1f);
+  auto W1_h     = rand_vec(static_cast<std::size_t>(FFN*D), -0.3f, 0.3f);
+  auto W2_h     = rand_vec(static_cast<std::size_t>(D*FFN), -0.3f, 0.3f);
+  auto x_h      = rand_vec(static_cast<std::size_t>(N_in), -0.5f, 0.5f);
+
+  // CPU float32 reference.
+  auto norm1    = ref_layer_norm(x_h, gamma1_h, beta1_h, TT, D, eps);
+  auto Q_cpu    = ref_gemm_bt(norm1, TT, D, W_q_h, D);
+  auto K_cpu    = ref_gemm_bt(norm1, TT, D, W_k_h, D);
+  auto V_cpu    = ref_gemm_bt(norm1, TT, D, W_v_h, D);
+  auto attn_cpu = ref_sdpa(Q_cpu, K_cpu, V_cpu, B, TT, NH, HD, scale);
+  auto proj_cpu = ref_gemm_bt(attn_cpu, TT, D, W_o_h, D);
+  auto h1_cpu   = ref_add(x_h, proj_cpu);
+  auto norm2    = ref_layer_norm(h1_cpu, gamma2_h, beta2_h, TT, D, eps);
+  auto ffn1_cpu = ref_gemm_bt(norm2, TT, D, W1_h, FFN);
+  auto ffn1_act = ref_relu(ffn1_cpu);
+  auto ffn2_cpu = ref_gemm_bt(ffn1_act, TT, FFN, W2_h, D);
+  auto out_cpu  = ref_add(h1_cpu, ffn2_cpu);
+
+  // Metal forward pass in type T.
+  T* x_m      = metal_from<T>(x_h);
+  T* gamma1_m = metal_from<T>(gamma1_h);
+  T* beta1_m  = metal_from<T>(beta1_h);
+  T* W_q_m    = metal_from<T>(W_q_h);
+  T* W_k_m    = metal_from<T>(W_k_h);
+  T* W_v_m    = metal_from<T>(W_v_h);
+  T* W_o_m    = metal_from<T>(W_o_h);
+  T* gamma2_m = metal_from<T>(gamma2_h);
+  T* beta2_m  = metal_from<T>(beta2_h);
+  T* W1_m     = metal_from<T>(W1_h);
+  T* W2_m     = metal_from<T>(W2_h);
+
+  T* norm1_m  = metal_alloc<T>(TT * D);
+  T* Q_m      = metal_alloc<T>(N_qkv);
+  T* K_m      = metal_alloc<T>(N_qkv);
+  T* V_m      = metal_alloc<T>(N_qkv);
+  T* attn_m   = metal_alloc<T>(N_qkv);
+  T* proj_m   = metal_alloc<T>(TT * D);
+  T* h1_m     = metal_alloc<T>(TT * D);
+  T* norm2_m  = metal_alloc<T>(TT * D);
+  T* ffn1_m   = metal_alloc<T>(TT * FFN);
+  T* ffn1a_m  = metal_alloc<T>(TT * FFN);
+  T* ffn2_m   = metal_alloc<T>(TT * D);
+  T* out_m    = metal_alloc<T>(TT * D);
+
+  metal::layer_norm_metal<T>(x_m, gamma1_m, beta1_m, norm1_m, TT, D, eps);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, D, D, 1.f,
+      norm1_m, D, W_q_m, D, 0.f, Q_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, D, D, 1.f,
+      norm1_m, D, W_k_m, D, 0.f, K_m, D);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, D, D, 1.f,
+      norm1_m, D, W_v_m, D, 0.f, V_m, D);
+  metal::sdpa_metal<T>(Q_m, K_m, V_m, attn_m,
+                        B, TT, TT, NH, NH, HD, scale, false);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, D, D, 1.f,
+      attn_m, D, W_o_m, D, 0.f, proj_m, D);
+  primitives<Device::METAL>::add<T>(x_m, proj_m, h1_m, TT * D);
+  metal::layer_norm_metal<T>(h1_m, gamma2_m, beta2_m, norm2_m, TT, D, eps);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, FFN, D, 1.f,
+      norm2_m, D, W1_m, D, 0.f, ffn1_m, FFN);
+  primitives<Device::METAL>::relu<T>(ffn1_m, ffn1a_m, TT * FFN);
+  primitives<Device::METAL>::gemm<T, T>(
+      false, false, false, true, TT, D, FFN, 1.f,
+      ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
+  primitives<Device::METAL>::add<T>(h1_m, ffn2_m, out_m, TT * D);
+
+  auto out_metal = metal_to_host(out_m, TT * D);
+  float err = max_abs_diff(out_cpu, out_metal);
+  std::printf("  max_abs_diff = %.2e  (tol = %.2e)\n",
+              static_cast<double>(err), static_cast<double>(tol));
+
+  char label[128];
+  std::snprintf(label, sizeof(label),
+                "full encoder layer (%s) Metal vs CPU: max_abs_diff < %.0e",
+                type_name, static_cast<double>(tol));
+  CHECK(label, err < tol);
+
+  metal_free(x_m);      metal_free(gamma1_m); metal_free(beta1_m);
+  metal_free(W_q_m);    metal_free(W_k_m);    metal_free(W_v_m);
+  metal_free(W_o_m);    metal_free(gamma2_m); metal_free(beta2_m);
+  metal_free(W1_m);     metal_free(W2_m);
+  metal_free(norm1_m);  metal_free(Q_m);      metal_free(K_m);
+  metal_free(V_m);      metal_free(attn_m);   metal_free(proj_m);
+  metal_free(h1_m);     metal_free(norm2_m);  metal_free(ffn1_m);
+  metal_free(ffn1a_m);  metal_free(ffn2_m);   metal_free(out_m);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -569,6 +686,8 @@ int main() {
   test_residual_add();
   test_sdpa();
   test_full_encoder_layer();
+  test_encoder_layer_typed<ctranslate2::float16_t>("f16", 5e-2f);
+  test_encoder_layer_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

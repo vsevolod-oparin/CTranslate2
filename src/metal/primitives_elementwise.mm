@@ -91,14 +91,17 @@ static void dispatch_unary(const char* kernel_name,
                             ctranslate2::dim_t size) {
   if (size == 0) return;
   (void)ct2_u32(size);
+
   id<MTLComputePipelineState> pso = get_activation_pso(kernel_name);
   id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
       [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
   [enc setComputePipelineState:pso];
   NSUInteger off_x = 0, off_y = 0;
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x) offset:off_x atIndex:0];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(y, &off_y) offset:off_y atIndex:1];
+  id<MTLBuffer> mtl_x = ctranslate2::metal_buffer_for_ptr(x, &off_x);
+  id<MTLBuffer> mtl_y = ctranslate2::metal_buffer_for_ptr(y, &off_y);
+  [enc setBuffer:mtl_x offset:off_x atIndex:0];
+  [enc setBuffer:mtl_y offset:off_y atIndex:1];
   NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
                                        static_cast<NSUInteger>(size));
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
@@ -136,15 +139,19 @@ static void dispatch_broadcast1(const char* kernel_name,
       [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
   [enc setComputePipelineState:pso];
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+  id<MTLBuffer> mtl_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> mtl_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  id<MTLBuffer> mtl_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+  [enc setBuffer:mtl_a offset:off_a atIndex:0];
+  [enc setBuffer:mtl_b offset:off_b atIndex:1];
+  [enc setBuffer:mtl_c offset:off_c atIndex:2];
   [enc setBytes:&param0 length:sizeof(uint32_t) atIndex:3];
   NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
                                        static_cast<NSUInteger>(size));
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+
 }
 
 // 3 data buffers + 2 uint32 constants.

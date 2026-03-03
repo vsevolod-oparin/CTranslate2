@@ -308,7 +308,7 @@ namespace ctranslate2 {
 
         return;
       }
-      if (_self_attention)
+      if (_self_attention) {
         (*_self_attention)(input,
                       input,
                       input_length,
@@ -321,6 +321,7 @@ namespace ctranslate2 {
                       true,
                       position_bias,
                       offset);
+      }
 
       StorageView context(dtype, device);
       if (_encoder_attention) {
@@ -612,16 +613,18 @@ namespace ctranslate2 {
       _embeddings(ids, layer_in);
       if (_start_from_zero_embedding)
         zero_first_timestep(layer_in, step);
-      if (_embeddings_scale && (!_start_from_zero_embedding || step != 0))
+      if (_embeddings_scale && (!_start_from_zero_embedding || step != 0)) {
         ops::Mul()(layer_in, *_embeddings_scale, layer_in);
+      }
       if (_project_in) {
         (*_project_in)(layer_in, layer_out);
         layer_in = std::move(layer_out);
       }
       if (layer_in.rank() == 2)
         layer_in.expand_dims(1);
-      if (_position_encoder)
+      if (_position_encoder) {
         (*_position_encoder)(layer_in, std::max(step, dim_t(0)));
+      }
       if (_layernorm_embedding)
         (*_layernorm_embedding)(layer_in, layer_in);
 

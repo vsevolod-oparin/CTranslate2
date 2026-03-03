@@ -51,6 +51,13 @@ static float ct2_erf(float x) {
   return sign * (1.f - poly * exp(-ax * ax));
 }
 
+// Metal's tanh() computes (exp(2x)-1)/(exp(2x)+1) which produces NaN when
+// |x| > ~44 because exp(2x) overflows float32 to inf, giving inf/inf = NaN.
+// Clamp to [-10, 10] where tanh is already ±1 to 15+ decimal places.
+static float ct2_safe_tanh(float x) {
+  return tanh(clamp(x, -10.f, 10.f));
+}
+
 // y[gid] = (T)(expr)  where expr is a float32 computation in variable v = (float)x[gid].
 #define DEFINE_UNARY(name, T, expr)                     \
 kernel void name##_##T(                                 \
@@ -65,12 +72,12 @@ kernel void name##_##T(                                 \
   DEFINE_UNARY(log,          T, log(v))                                                  \
   DEFINE_UNARY(cos,          T, cos(v))                                                  \
   DEFINE_UNARY(sin,          T, sin(v))                                                  \
-  DEFINE_UNARY(tanh,         T, tanh(v))                                                 \
+  DEFINE_UNARY(tanh,         T, ct2_safe_tanh(v))                                        \
   DEFINE_UNARY(relu,         T, fmax(v, 0.f))                                            \
   DEFINE_UNARY(sigmoid,      T, 1.f / (1.f + exp(-v)))                                  \
   DEFINE_UNARY(swish,        T, v / (1.f + exp(-v)))                                    \
   DEFINE_UNARY(gelu,         T, 0.5f * v * (1.f + ct2_erf(v * 0.7071067811865475f)))   \
-  DEFINE_UNARY(gelu_tanh,    T, 0.5f * v * (1.f + tanh(0.7978845608028654f *            \
+  DEFINE_UNARY(gelu_tanh,    T, 0.5f * v * (1.f + ct2_safe_tanh(0.7978845608028654f *   \
                                 (v + 0.044715f * v * v * v))))                           \
   DEFINE_UNARY(gelu_sigmoid, T, v / (1.f + exp(-1.702f * v)))
 

@@ -820,9 +820,16 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Test: `tests/metal/e2e/test_seq2seq_e2e.py` (4/4 pass)
 - Report: `agents/report/milestone-10.2-seq2seq-e2e.md`
 
-**10.3 Language model (GPT-style) end-to-end**
-- Test decoder-only generation on Metal
-- **PASS:** Generated text matches CPU output for greedy decoding (same tokens, deterministic)
+**10.3 Language model (GPT-style) end-to-end** ✅
+- GPT-2 decoder-only model (pre-norm, PositionEmbedding, GELU_TANH activation)
+- **Bug found & fixed:** Metal `tanh()` produces NaN for |arg| > ~44 due to `exp(2x)` overflow
+  - Root cause: MSL `tanh()` internally computes `(exp(2x)-1)/(exp(2x)+1)`; for large x, `exp(2x)` → inf → NaN
+  - Fix: `ct2_safe_tanh()` clamps argument to [-10, 10] (tanh is ±1 to 15+ decimal places there)
+  - Applied to: `activation.metal` (tanh + gelu_tanh), `quantize.metal` (dequantize_gemm_output)
+- 12/12 tests pass: greedy (4 prompts), beam2/beam4 (2 prompts each), batch=4
+- All tokens match CPU exactly (deterministic greedy + beam search)
+- Test: `tests/metal/e2e/test_generator.py` (12/12 pass)
+- Report: `agents/report/milestone-10.3-lm-e2e.md`
 
 **10.4 Whisper end-to-end**
 - Load `whisper-tiny` or `whisper-base`; transcribe a 10-second audio clip

@@ -27,6 +27,13 @@ static inline float ct2_erf(float x) {
 }
 
 // ---------------------------------------------------------------------------
+// ct2_safe_tanh — clamped tanh to avoid NaN from exp(2x) overflow in Metal
+// ---------------------------------------------------------------------------
+static inline float ct2_safe_tanh(float x) {
+    return tanh(clamp(x, -10.f, 10.f));
+}
+
+// ---------------------------------------------------------------------------
 // quantize_T — per-row INT8 quantization
 //
 // Algorithm:
@@ -163,7 +170,7 @@ kernel void dequantize_gemm_output_##T(                                        \
         v = max(v, 0.f);                                                       \
     } else if (act_type == 2u) {   /* gelu_tanh */                             \
         float t = v * (1.f + 0.044715f * v * v) * 0.7978845608028654f;        \
-        v = v * 0.5f * (1.f + tanh(t));                                        \
+        v = v * 0.5f * (1.f + ct2_safe_tanh(t));                              \
     } else if (act_type == 3u) {   /* swish */                                 \
         v = v * (1.f / (1.f + exp(-v)));                                       \
     } else if (act_type == 4u) {   /* gelu */                                  \
@@ -171,7 +178,7 @@ kernel void dequantize_gemm_output_##T(                                        \
     } else if (act_type == 5u) {   /* gelu_sigmoid */                          \
         v = v * (1.f / (1.f + exp(-1.702f * v)));                             \
     } else if (act_type == 6u) {   /* tanh */                                  \
-        v = tanh(v);                                                            \
+        v = ct2_safe_tanh(v);                                                   \
     } else if (act_type == 7u) {   /* sigmoid */                               \
         v = 1.f / (1.f + exp(-v));                                             \
     }                                                                          \

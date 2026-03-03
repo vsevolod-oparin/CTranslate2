@@ -536,13 +536,90 @@ namespace ctranslate2 {
                             b + i * strideb, ldb,
                             c + i * stridec, ldc);
     } else if constexpr (std::is_same_v<In, int8_t> && std::is_same_v<Out, int32_t>) {
-      for (dim_t i = 0; i < batch_size; ++i)
+      if (batch_size == 0 || m == 0 || n == 0 || k == 0) return;
+      if (beta != 0.0f)
+        throw std::runtime_error("Metal INT8 GEMM: only beta=0 is supported");
+      if (batch_size == 1) {
         dispatch_int8_gemm(transpose_a, transpose_b, m, n, k,
-                           alpha,
-                           a + i * stridea, lda,
-                           b + i * strideb, ldb,
-                           beta,
-                           c + i * stridec, ldc);
+                           alpha, a, lda, b, ldb, beta, c, ldc);
+      } else {
+        // Amortized path: 2 syncs total instead of 2*B.
+        // Phase 1: flush pending GPU work so CPU can read int8 inputs.
+        metal::commit_and_wait();
+
+        const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
+        const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
+        const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
+        const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
+
+        NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
+        @autoreleasepool {
+          mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a
+                                                    dataType:MPSDataTypeFloat32];
+          mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b
+                                                    dataType:MPSDataTypeFloat32];
+          mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n
+                                                    dataType:MPSDataTypeFloat32];
+        }
+        const NSUInteger rb_a = std::max((NSUInteger)lda * sizeof(float), mps_rb_a);
+        const NSUInteger rb_b = std::max((NSUInteger)ldb * sizeof(float), mps_rb_b);
+        const NSUInteger rb_c = std::max((NSUInteger)n   * sizeof(float), mps_rb_c);
+
+        const NSUInteger bytes_a = rows_a * rb_a;
+        const NSUInteger bytes_b = rows_b * rb_b;
+        const NSUInteger bytes_c = (NSUInteger)m * rb_c;
+
+        // Allocate temp buffers for all batches.
+        id<MTLBuffer> tmp_a = alloc_temp_buffer(bytes_a * (NSUInteger)batch_size);
+        id<MTLBuffer> tmp_b = alloc_temp_buffer(bytes_b * (NSUInteger)batch_size);
+        id<MTLBuffer> tmp_c = alloc_temp_buffer(bytes_c * (NSUInteger)batch_size);
+        std::memset([tmp_c contents], 0, bytes_c * (NSUInteger)batch_size);
+
+        // Phase 2: CPU convert all batches int8→float32.
+        for (dim_t bi = 0; bi < batch_size; ++bi) {
+          const int8_t* src_a = a + bi * stridea;
+          const int8_t* src_b = b + bi * strideb;
+          for (NSUInteger r = 0; r < rows_a; ++r) {
+            float* dst = reinterpret_cast<float*>(
+                static_cast<uint8_t*>([tmp_a contents]) + bi * bytes_a + r * rb_a);
+            const int8_t* s = src_a + r * (NSUInteger)lda;
+            for (NSUInteger ci = 0; ci < cols_a; ++ci)
+              dst[ci] = static_cast<float>(s[ci]);
+          }
+          for (NSUInteger r = 0; r < rows_b; ++r) {
+            float* dst = reinterpret_cast<float*>(
+                static_cast<uint8_t*>([tmp_b contents]) + bi * bytes_b + r * rb_b);
+            const int8_t* s = src_b + r * (NSUInteger)ldb;
+            for (NSUInteger ci = 0; ci < cols_b; ++ci)
+              dst[ci] = static_cast<float>(s[ci]);
+          }
+        }
+
+        // Phase 3: Encode all B MPS GEMMs (encode-only, no sync).
+        for (dim_t bi = 0; bi < batch_size; ++bi) {
+          dispatch_mps_gemm_buf(
+              transpose_a, transpose_b, m, n, k, alpha,
+              tmp_a, bi * bytes_a, rb_a, rows_a, cols_a,
+              tmp_b, bi * bytes_b, rb_b, rows_b, cols_b,
+              tmp_c, bi * bytes_c, rb_c, MPSDataTypeFloat32);
+        }
+
+        // Phase 4: Wait for all GPU GEMMs.
+        metal::commit_and_wait();
+
+        // Phase 5: CPU round all batches float32→int32.
+        for (dim_t bi = 0; bi < batch_size; ++bi) {
+          int32_t* dst_c = c + bi * stridec;
+          for (dim_t row = 0; row < m; ++row) {
+            const float* src = reinterpret_cast<const float*>(
+                static_cast<const uint8_t*>([tmp_c contents])
+                + bi * bytes_c + (NSUInteger)row * rb_c);
+            int32_t* dst = dst_c + row * ldc;
+            for (dim_t col = 0; col < n; ++col)
+              dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
+          }
+        }
+      }
     } else {
       METAL_STUB(gemm_batch_strided);
     }

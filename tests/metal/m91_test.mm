@@ -507,6 +507,96 @@ static void test_dequantize_gemm_output_relu() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 8b–8g: dequantize_gemm_output — all 7 activation types
+//
+// Activation encoding in kernel: act_type = ActivationType_enum_value + 1
+//   1=ReLU (already tested in Test 8), 2=GELUTanh, 3=Swish,
+//   4=GELU, 5=GELUSigmoid, 6=Tanh, 7=Sigmoid
+// ---------------------------------------------------------------------------
+
+// CPU reference activation functions
+static float cpu_gelu_tanh(float v) {
+  float t = v * (1.f + 0.044715f * v * v) * 0.7978845608028654f;
+  return v * 0.5f * (1.f + std::tanh(t));
+}
+static float cpu_swish(float v) {
+  return v / (1.f + std::exp(-v));
+}
+static float cpu_gelu(float v) {
+  return v * 0.5f * (1.f + std::erf(v * 0.7071067811865476f));
+}
+static float cpu_gelu_sigmoid(float v) {
+  return v / (1.f + std::exp(-1.702f * v));
+}
+static float cpu_tanh_act(float v) {
+  return std::tanh(v);
+}
+static float cpu_sigmoid(float v) {
+  return 1.f / (1.f + std::exp(-v));
+}
+
+static void test_activation(const char* name, int act_type,
+                            float (*cpu_fn)(float)) {
+  std::printf("Test %s: dequantize_gemm_output (act_type=%d)\n", name, act_type);
+
+  const int B = 4, D = 8;
+  const size_t n = (size_t)B * D;
+
+  // Values in a moderate range so activations produce non-trivial outputs.
+  // Use scale > 1 to map int32 values to small floats (range approx ±3).
+  std::vector<int32_t> host_c(n);
+  std::vector<float>   host_as(B), host_bs(B);
+  for (int i = 0; i < (int)n; ++i)  host_c[i]  = i * 3 - (int)(n / 2);
+  const float scale_val = 10.f;  // dequant = c / (a_s * b_s) = c / 100
+  for (int i = 0; i < B; ++i)       host_as[i] = scale_val;
+  for (int i = 0; i < B; ++i)       host_bs[i] = scale_val;
+
+  int32_t* d_c  = static_cast<int32_t*>(alloc_metal(n * sizeof(int32_t)));
+  float*   d_as = static_cast<float*>(alloc_metal(B * sizeof(float)));
+  float*   d_bs = static_cast<float*>(alloc_metal(B * sizeof(float)));
+  float*   d_y  = static_cast<float*>(alloc_metal(n * sizeof(float)));
+
+  std::memcpy(d_c,  host_c.data(),  n * sizeof(int32_t));
+  std::memcpy(d_as, host_as.data(), B * sizeof(float));
+  std::memcpy(d_bs, host_bs.data(), B * sizeof(float));
+  metal::dequantize_gemm_output_metal<float>(
+      d_c, d_as, d_bs,
+      static_cast<const void*>(d_c),  // dummy bias
+      d_y,
+      B, D,
+      false, false,
+      /*has_bias=*/false, /*activation_type=*/act_type);
+  metal::commit_and_wait();
+
+  float max_err = 0.f;
+  int worst_idx = -1;
+  for (int i = 0; i < (int)n; ++i) {
+    int row = i / D;
+    float deq = (float)host_c[i] / (host_as[row] * host_bs[row]);
+    float ref = cpu_fn(deq);
+    float err = std::abs(d_y[i] - ref);
+    if (err > max_err) { max_err = err; worst_idx = i; }
+  }
+
+  std::printf("  max_abs_err=%.2e  %s\n", max_err,
+              max_err < 1e-4f ? "PASS" : "FAIL");
+  CHECK(max_err < 1e-4f, name);
+
+  free_metal(d_c); free_metal(d_as); free_metal(d_bs); free_metal(d_y);
+}
+
+static void test_all_activations() {
+  // act_type encoding: ActivationType enum value + 1
+  // ReLU (act=0) already tested in Test 8
+  test_activation("8b_gelu_tanh",    1, cpu_gelu_tanh);    // GELUTanh=1 → act_type=1
+  test_activation("8c_swish",        2, cpu_swish);         // Swish=2 → act_type=2
+  test_activation("8d_gelu",         3, cpu_gelu);          // GELU=3 → act_type=3
+  test_activation("8e_gelu_sigmoid", 4, cpu_gelu_sigmoid);  // GELUSigmoid=4 → act_type=4
+  test_activation("8f_tanh",         5, cpu_tanh_act);      // Tanh=5 → act_type=5
+  test_activation("8g_sigmoid",      6, cpu_sigmoid);       // Sigmoid=6 → act_type=6
+}
+
+// ---------------------------------------------------------------------------
 // Test 9: gemm_pack_b returns 0 (9.3)
 // ---------------------------------------------------------------------------
 static void test_gemm_pack_b_zero() {
@@ -560,6 +650,7 @@ int main() {
     test_dequantize_gemm_output_basic();
     test_dequantize_gemm_output_bias();
     test_dequantize_gemm_output_relu();
+    test_all_activations();
     test_gemm_pack_b_zero();
     test_compute_u8_compensation_noop();
   }

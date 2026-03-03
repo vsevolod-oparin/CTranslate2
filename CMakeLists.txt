@@ -884,6 +884,7 @@ if(WITH_METAL)
     "-framework Foundation"
     "-framework MetalPerformanceShaders"
     "-framework MetalPerformanceShadersGraph"
+    "-framework Accelerate"
   )
 endif()
 target_include_directories(${PROJECT_NAME} BEFORE

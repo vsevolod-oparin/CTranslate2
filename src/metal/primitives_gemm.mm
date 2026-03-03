@@ -24,7 +24,16 @@
 
 #include "metal/primitives_infra.h"
 
+#include <Accelerate/Accelerate.h>
+
 namespace {
+
+// ---------------------------------------------------------------------------
+// Vectorized int8 → float32 conversion using vDSP (Accelerate framework)
+// ---------------------------------------------------------------------------
+static inline void int8_to_float32(float* dst, const int8_t* src, NSUInteger count) {
+  vDSP_vflt8(reinterpret_cast<const char*>(src), 1, dst, 1, (vDSP_Length)count);
+}
 
 // ---------------------------------------------------------------------------
 // MPS data type mapping (FP32 and FP16 only — BF16 uses MPSGraph)
@@ -431,15 +440,13 @@ static void dispatch_int8_gemm(
     float*        dst = reinterpret_cast<float*>(
                       static_cast<uint8_t*>([tmp_a contents]) + r * rb_a);
     const int8_t* src = a + r * (NSUInteger)lda;
-    for (NSUInteger ci = 0; ci < cols_a; ++ci)
-      dst[ci] = static_cast<float>(src[ci]);
+    int8_to_float32(dst, src, cols_a);
   }
   for (NSUInteger r = 0; r < rows_b; ++r) {
     float*        dst = reinterpret_cast<float*>(
                       static_cast<uint8_t*>([tmp_b contents]) + r * rb_b);
     const int8_t* src = b + r * (NSUInteger)ldb;
-    for (NSUInteger ci = 0; ci < cols_b; ++ci)
-      dst[ci] = static_cast<float>(src[ci]);
+    int8_to_float32(dst, src, cols_b);
   }
   std::memset([tmp_c contents], 0, (NSUInteger)m * rb_c);
 
@@ -575,23 +582,19 @@ namespace ctranslate2 {
         id<MTLBuffer> tmp_c = alloc_temp_buffer(bytes_c * (NSUInteger)batch_size);
         std::memset([tmp_c contents], 0, bytes_c * (NSUInteger)batch_size);
 
-        // Phase 2: CPU convert all batches int8→float32.
+        // Phase 2: CPU convert all batches int8→float32 (vectorized via vDSP).
         for (dim_t bi = 0; bi < batch_size; ++bi) {
           const int8_t* src_a = a + bi * stridea;
           const int8_t* src_b = b + bi * strideb;
           for (NSUInteger r = 0; r < rows_a; ++r) {
             float* dst = reinterpret_cast<float*>(
                 static_cast<uint8_t*>([tmp_a contents]) + bi * bytes_a + r * rb_a);
-            const int8_t* s = src_a + r * (NSUInteger)lda;
-            for (NSUInteger ci = 0; ci < cols_a; ++ci)
-              dst[ci] = static_cast<float>(s[ci]);
+            int8_to_float32(dst, src_a + r * (NSUInteger)lda, cols_a);
           }
           for (NSUInteger r = 0; r < rows_b; ++r) {
             float* dst = reinterpret_cast<float*>(
                 static_cast<uint8_t*>([tmp_b contents]) + bi * bytes_b + r * rb_b);
-            const int8_t* s = src_b + r * (NSUInteger)ldb;
-            for (NSUInteger ci = 0; ci < cols_b; ++ci)
-              dst[ci] = static_cast<float>(s[ci]);
+            int8_to_float32(dst, src_b + r * (NSUInteger)ldb, cols_b);
           }
         }
 

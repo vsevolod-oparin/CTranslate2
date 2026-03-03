@@ -506,7 +506,95 @@ static void test_int8_gemm_batch_strided() {
 }
 
 // ---------------------------------------------------------------------------
-// Test 8: gemm_pack_b returns 0 for int8_t
+// Test 8b: INT8 GEMM with trans_a=true
+// ---------------------------------------------------------------------------
+static void test_int8_gemm_transa() {
+  std::printf("Test 8b: INT8 GEMM trans_a=true (m=4, n=8, k=16)\n");
+
+  const int m = 4, n = 8, k = 16;
+  // A stored as [k, m] (trans_a=true → lda=m)
+  // B stored as [k, n] (trans_b=false → ldb=n)
+  const int lda = m, ldb = n, ldc = n;
+
+  std::vector<int8_t> ha(k * m), hb(k * n);
+  for (int i = 0; i < k * m; ++i) ha[i] = static_cast<int8_t>((i % 9) - 4);
+  for (int i = 0; i < k * n; ++i) hb[i] = static_cast<int8_t>((i % 7) - 3);
+
+  // CPU reference (trans_a=true).
+  std::vector<int32_t> ref_c(m * n, 0);
+  ref_int8_gemm(true, false, m, n, k,
+                ha.data(), lda, hb.data(), ldb, ref_c.data(), ldc);
+
+  int8_t*  d_a = static_cast<int8_t*>(alloc_metal(k * m));
+  int8_t*  d_b = static_cast<int8_t*>(alloc_metal(k * n));
+  int32_t* d_c = static_cast<int32_t*>(alloc_metal(m * n * sizeof(int32_t)));
+
+  std::memcpy(d_a, ha.data(), k * m);
+  std::memcpy(d_b, hb.data(), k * n);
+  std::memset(d_c, 0, m * n * sizeof(int32_t));
+
+  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+      false, false, true, false, m, n, k,
+      1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
+
+  bool all_ok = true;
+  for (int i = 0; i < m * n; ++i) {
+    if (d_c[i] != ref_c[i]) {
+      all_ok = false;
+      std::fprintf(stderr, "  mismatch at [%d]: got %d, ref %d\n",
+                   i, d_c[i], ref_c[i]);
+    }
+  }
+  CHECK(all_ok, "INT8 GEMM trans_a: output matches CPU reference");
+
+  free_metal(d_a); free_metal(d_b); free_metal(d_c);
+}
+
+// ---------------------------------------------------------------------------
+// Test 8c: INT8 GEMM with trans_a=true and trans_b=true
+// ---------------------------------------------------------------------------
+static void test_int8_gemm_transa_transb() {
+  std::printf("Test 8c: INT8 GEMM trans_a=true, trans_b=true (m=4, n=8, k=16)\n");
+
+  const int m = 4, n = 8, k = 16;
+  // A stored as [k, m] → lda=m; B stored as [n, k] → ldb=k
+  const int lda = m, ldb = k, ldc = n;
+
+  std::vector<int8_t> ha(k * m), hb(n * k);
+  for (int i = 0; i < k * m; ++i) ha[i] = static_cast<int8_t>((i % 11) - 5);
+  for (int i = 0; i < n * k; ++i) hb[i] = static_cast<int8_t>((i % 6) - 2);
+
+  std::vector<int32_t> ref_c(m * n, 0);
+  ref_int8_gemm(true, true, m, n, k,
+                ha.data(), lda, hb.data(), ldb, ref_c.data(), ldc);
+
+  int8_t*  d_a = static_cast<int8_t*>(alloc_metal(k * m));
+  int8_t*  d_b = static_cast<int8_t*>(alloc_metal(n * k));
+  int32_t* d_c = static_cast<int32_t*>(alloc_metal(m * n * sizeof(int32_t)));
+
+  std::memcpy(d_a, ha.data(), k * m);
+  std::memcpy(d_b, hb.data(), n * k);
+  std::memset(d_c, 0, m * n * sizeof(int32_t));
+
+  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+      false, false, true, true, m, n, k,
+      1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
+
+  bool all_ok = true;
+  for (int i = 0; i < m * n; ++i) {
+    if (d_c[i] != ref_c[i]) {
+      all_ok = false;
+      std::fprintf(stderr, "  mismatch at [%d]: got %d, ref %d\n",
+                   i, d_c[i], ref_c[i]);
+    }
+  }
+  CHECK(all_ok, "INT8 GEMM trans_a+trans_b: output matches CPU reference");
+
+  free_metal(d_a); free_metal(d_b); free_metal(d_c);
+}
+
+// ---------------------------------------------------------------------------
+// Test 9: gemm_pack_b returns 0 for int8_t
 // ---------------------------------------------------------------------------
 static void test_gemm_pack_b_int8() {
   std::printf("Test 8: gemm_pack_b<int8_t> returns 0\n");
@@ -530,6 +618,8 @@ int main() {
   test_int8_gemm_zero();
   test_int8_pipeline();
   test_int8_gemm_batch_strided();
+  test_int8_gemm_transa();
+  test_int8_gemm_transa_transb();
   test_gemm_pack_b_int8();
 
   std::printf("\n=== Results: %d/%d pass, %d fail ===\n",

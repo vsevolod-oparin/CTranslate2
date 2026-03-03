@@ -597,6 +597,117 @@ static void test_all_activations() {
 }
 
 // ---------------------------------------------------------------------------
+// Test T6: dequantize_gemm_output with trans_b=true
+//
+// Production INT8 layout: B is stored transposed, so b_scales is [n] and
+// indexed by column j. This tests the trans[1]=1 kernel path.
+// ---------------------------------------------------------------------------
+static void test_dequantize_gemm_output_transb() {
+  std::printf("Test T6: dequantize_gemm_output f32 (trans_b=true)\n");
+
+  // Use B != D to expose any row/col indexing confusion.
+  const int B = 3, D = 7;
+  const size_t n = (size_t)B * D;
+
+  std::vector<int32_t> host_c(n);
+  std::vector<float>   host_as(B), host_bs(D);  // bs sized to D (indexed by j)
+  for (int i = 0; i < (int)n; ++i)  host_c[i]  = i * 5 - 20;
+  for (int i = 0; i < B; ++i)       host_as[i] = 2.f + (float)i * 0.5f;
+  for (int j = 0; j < D; ++j)       host_bs[j] = 1.f + (float)j * 0.3f;
+
+  int32_t* d_c  = static_cast<int32_t*>(alloc_metal(n * sizeof(int32_t)));
+  float*   d_as = static_cast<float*>(alloc_metal(B * sizeof(float)));
+  float*   d_bs = static_cast<float*>(alloc_metal(D * sizeof(float)));
+  float*   d_y  = static_cast<float*>(alloc_metal(n * sizeof(float)));
+
+  std::memcpy(d_c,  host_c.data(),  n * sizeof(int32_t));
+  std::memcpy(d_as, host_as.data(), B * sizeof(float));
+  std::memcpy(d_bs, host_bs.data(), D * sizeof(float));
+
+  metal::dequantize_gemm_output_metal<float>(
+      d_c, d_as, d_bs,
+      static_cast<const void*>(d_c),  // dummy bias
+      d_y,
+      B, D,
+      /*transpose_a=*/false, /*transpose_b=*/true,
+      /*has_bias=*/false, /*activation_type=*/-1);
+  metal::commit_and_wait();
+
+  // CPU reference: with trans_b=true, b_scales indexed by j (column).
+  float max_err = 0.f;
+  for (int i = 0; i < B; ++i)
+    for (int j = 0; j < D; ++j) {
+      float ref = (float)host_c[i*D+j] / (host_as[i] * host_bs[j]);
+      max_err = std::max(max_err, std::abs(d_y[i*D+j] - ref));
+    }
+
+  std::printf("  max_abs_err=%.2e  %s\n", max_err,
+              max_err < 1e-4f ? "PASS" : "FAIL");
+  CHECK(max_err < 1e-4f, "dequantize_gemm_output trans_b=true");
+
+  free_metal(d_c); free_metal(d_as); free_metal(d_bs); free_metal(d_y);
+}
+
+// ---------------------------------------------------------------------------
+// Test T4: dequantize_gemm_output in fp16 and bf16
+//
+// Kernel does all arithmetic in float32, then casts to T at the end (line 178
+// of quantize.metal). Verify cast-to-T step for half and bfloat.
+// ---------------------------------------------------------------------------
+template <typename T>
+static void test_dequantize_gemm_output_typed(const char* label, float tol) {
+  std::printf("Test T4_%s: dequantize_gemm_output (with bias)\n", label);
+
+  const int B = 4, D = 8;
+  const size_t n = (size_t)B * D;
+
+  std::vector<int32_t> host_c(n);
+  std::vector<float>   host_as(B), host_bs(B), host_bias(D);
+  for (int i = 0; i < (int)n; ++i)  host_c[i]  = i * 3 - (int)(n / 2);
+  for (int i = 0; i < B; ++i)       host_as[i] = 5.f;
+  for (int i = 0; i < B; ++i)       host_bs[i] = 5.f;
+  for (int j = 0; j < D; ++j)       host_bias[j] = (float)j * 0.1f;
+
+  int32_t* d_c    = static_cast<int32_t*>(alloc_metal(n * sizeof(int32_t)));
+  float*   d_as   = static_cast<float*>(alloc_metal(B * sizeof(float)));
+  float*   d_bs   = static_cast<float*>(alloc_metal(B * sizeof(float)));
+  T*       d_bias = static_cast<T*>(alloc_metal(D * sizeof(T)));
+  T*       d_y    = static_cast<T*>(alloc_metal(n * sizeof(T)));
+
+  std::memcpy(d_c,  host_c.data(),  n * sizeof(int32_t));
+  std::memcpy(d_as, host_as.data(), B * sizeof(float));
+  std::memcpy(d_bs, host_bs.data(), B * sizeof(float));
+  // Convert bias to T on device.
+  for (int j = 0; j < D; ++j)
+    d_bias[j] = static_cast<T>(host_bias[j]);
+
+  metal::dequantize_gemm_output_metal<T>(
+      d_c, d_as, d_bs,
+      static_cast<const void*>(d_bias),
+      d_y,
+      B, D,
+      false, false,
+      /*has_bias=*/true, /*activation_type=*/-1);
+  metal::commit_and_wait();
+
+  float max_err = 0.f;
+  for (int i = 0; i < B; ++i)
+    for (int j = 0; j < D; ++j) {
+      float ref = (float)host_c[i*D+j] / (host_as[i] * host_bs[i])
+                + host_bias[j];
+      float got = static_cast<float>(d_y[i*D+j]);
+      max_err = std::max(max_err, std::abs(got - ref));
+    }
+
+  std::printf("  max_abs_err=%.2e  %s\n", max_err,
+              max_err < tol ? "PASS" : "FAIL");
+  CHECK(max_err < tol, label);
+
+  free_metal(d_c); free_metal(d_as); free_metal(d_bs);
+  free_metal(d_bias); free_metal(d_y);
+}
+
+// ---------------------------------------------------------------------------
 // Test 9: gemm_pack_b returns 0 (9.3)
 // ---------------------------------------------------------------------------
 static void test_gemm_pack_b_zero() {
@@ -651,6 +762,9 @@ int main() {
     test_dequantize_gemm_output_bias();
     test_dequantize_gemm_output_relu();
     test_all_activations();
+    test_dequantize_gemm_output_transb();
+    test_dequantize_gemm_output_typed<ctranslate2::float16_t>("T4_f16", 5e-3f);
+    test_dequantize_gemm_output_typed<ctranslate2::bfloat16_t>("T4_bf16", 5e-2f);
     test_gemm_pack_b_zero();
     test_compute_u8_compensation_noop();
   }

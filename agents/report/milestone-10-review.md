@@ -254,22 +254,78 @@ The `if (pad_a || pad_b || (pad_c && beta != 0.0f))` guard ensures the common no
 
 ---
 
+## P1 Resolution Log
+
+### B1: Gather `commit_and_wait` placement — INVESTIGATED, kept as-is
+
+**Date:** 2026-03-04
+
+**Investigation:** Attempted to move `commit_and_wait()` from `dispatch_gather` (unconditional)
+to the in-place caller in `gather.cc` (conditional on `clone.device()`).
+
+**Result:** Causes deterministic failures. For example, beam=4 translation of "a b c" on
+opus-mt-en-de produces "Anhang V" instead of "a b c". The failure is deterministic (not a race).
+
+**Root cause:** The original analysis (B1) was incomplete. There are TWO hazards, not just one:
+
+1. **In-place clone hazard** (correctly identified): The clone's MTLBuffer is freed before GPU reads it.
+2. **Out-of-place CPU-read hazard** (missed in original review): Several call sites read the
+   gather output from CPU immediately after the call (e.g., KV-cache update via `commit_and_wait()`
+   + `memcpy`, alignment head extraction). Without a sync after gather, the CPU reads stale data.
+
+**Resolution:** Updated the comment in `dispatch_gather` to document both hazards. The
+unconditional synchronous gather is the correct design. Performance optimization is deferred
+to M11 (command buffer batching will amortize the overhead).
+
+**Files changed:** `src/metal/ops_norm_gather.mm` (comment only — updated to document both hazards)
+
+### T4: INT8 model end-to-end test — DONE, critical bug discovered
+
+**Date:** 2026-03-04
+
+**Test added:** `tests/metal/e2e/test_int8_translation.py` (11/11 pass)
+
+**Critical discovery:** The Metal INT8 GEMM pipeline (M9.2) does NOT work end-to-end. When
+`mayiuse_int8()` is enabled for Metal (returning `true`), INT8 models produce garbage:
+- Greedy: empty output `[]`
+- Beam=4: infinite repetition of "in" (256 tokens of `▁in`)
+
+This was previously hidden because `mayiuse_int8()` returned `false` for `Device::METAL`,
+causing INT8 models to auto-fallback to float32 (which works correctly).
+
+The M9.2 standalone INT8 GEMM tests (9/9 pass) verify that the quantize/dequantize kernels
+and MPS GEMM work in isolation, but the end-to-end pipeline through `Dense::forward()` →
+`Quantize` → `Gemm<int8>` → `Dequantize` → `BiasAdd` has a bug. Likely cause: the
+`dispatch_int8_gemm` issues 2 `commit_and_wait` calls per GEMM (one before CPU dequant, one
+after GPU GEMM), creating synchronization issues when interleaved with the rest of the
+decoder pipeline.
+
+**Current test validates:** INT8 models load on Metal, auto-fallback to float32, and produce
+correct output (exact match with CPU float32). This covers the production path users hit today.
+
+**New P0 item:** Fix INT8 e2e pipeline on Metal + enable `mayiuse_int8` for Metal. This
+should be addressed before M11 (performance optimization) since INT8 is the most common
+production compute type.
+
+---
+
 ## Summary of Recommended Actions
 
-| Priority | ID | Action | Effort |
-|----------|----|--------|--------|
-| **P1** | B1 | Move gather `commit_and_wait` to in-place caller only | Small |
-| **P1** | T4 | Add INT8 model end-to-end test | Medium |
-| **P2** | Q1 | Extract shared `ct2_erf`/`ct2_safe_tanh` into metal_math.metalh | Small |
-| **P2** | T5 | Add float16 model end-to-end test | Medium |
-| **P2** | Q3 | Wrap test_translation.py and test_beam_search.py in main() | Small |
-| **P2** | T3 | Add long-form generation test (100+ tokens) | Small |
-| **P2** | P2 | Combine correctness and timing passes in test_seq2seq_e2e.py | Small |
-| **P3** | Q2 | Add more AWQ stub instantiations | Trivial |
-| **P3** | B2 | Use `fabs()` consistently in quantize.metal ct2_erf | Trivial |
-| **P3** | Q5 | Fix language token or document English-mode choice in test_whisper.py | Trivial |
-| **P3** | P3 | Add warmup to test_whisper.py timing | Trivial |
-| **P3** | T2 | Add beam_size=8 test | Small |
-| **P3** | T6 | Add Whisper-with-timestamps test | Small |
-| **P3** | T7 | Add batched Whisper test | Small |
+| Priority | ID | Action | Effort | Status |
+|----------|----|--------|--------|--------|
+| **P0** | T4-bug | Fix INT8 e2e pipeline on Metal (garbage output) | Medium | **NEW** |
+| ~~P1~~ | B1 | ~~Move gather `commit_and_wait`~~ — kept as-is (both hazards need sync) | — | **RESOLVED** |
+| ~~P1~~ | T4 | ~~Add INT8 model e2e test~~ — added (11/11 pass, tests fallback path) | — | **RESOLVED** |
+| **P2** | Q1 | Extract shared `ct2_erf`/`ct2_safe_tanh` into metal_math.metalh | Small | |
+| **P2** | T5 | Add float16 model end-to-end test | Medium | |
+| **P2** | Q3 | Wrap test_translation.py and test_beam_search.py in main() | Small | |
+| **P2** | T3 | Add long-form generation test (100+ tokens) | Small | |
+| **P2** | P2 | Combine correctness and timing passes in test_seq2seq_e2e.py | Small | |
+| **P3** | Q2 | Add more AWQ stub instantiations | Trivial | |
+| **P3** | B2 | Use `fabs()` consistently in quantize.metal ct2_erf | Trivial | |
+| **P3** | Q5 | Fix language token or document English-mode choice in test_whisper.py | Trivial | |
+| **P3** | P3 | Add warmup to test_whisper.py timing | Trivial | |
+| **P3** | T2 | Add beam_size=8 test | Small | |
+| **P3** | T6 | Add Whisper-with-timestamps test | Small | |
+| **P3** | T7 | Add batched Whisper test | Small | |
 | **P3** | T8 | Add AWQ negative test | Trivial |

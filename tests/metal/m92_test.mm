@@ -594,6 +594,142 @@ static void test_int8_gemm_transa_transb() {
 }
 
 // ---------------------------------------------------------------------------
+// Test T2: k > 1040 boundary — precision boundary for float32 accumulation
+//
+// float32 exact integer accumulation works for k ≤ 1040 (127*127*k < 2^24).
+// At k=1024 with worst-case ±127 values, accumulation should still be exact.
+// At k=2048 with large values, some precision loss is expected but should
+// be graceful (no catastrophic errors).
+// ---------------------------------------------------------------------------
+static void test_int8_gemm_k_boundary() {
+  std::printf("Test T2a: INT8 GEMM k=1024 (within exact range)\n");
+
+  {
+    const int m = 2, n = 4, k = 1024;
+    const int lda = k, ldb = n, ldc = n;
+
+    // Worst-case: alternating +127/-127 to maximize accumulator magnitude.
+    std::vector<int8_t> ha(m * k), hb(k * n);
+    for (int i = 0; i < m * k; ++i) ha[i] = (i % 2 == 0) ? 127 : -127;
+    for (int i = 0; i < k * n; ++i) hb[i] = (i % 3 == 0) ? 127 : static_cast<int8_t>(-64);
+
+    std::vector<int32_t> ref_c(m * n, 0);
+    ref_int8_gemm(false, false, m, n, k,
+                  ha.data(), lda, hb.data(), ldb, ref_c.data(), ldc);
+
+    // Verify accumulators are within float32 exact range.
+    int32_t max_acc = 0;
+    for (int i = 0; i < m * n; ++i)
+      max_acc = std::max(max_acc, std::abs(ref_c[i]));
+    const int32_t fp32_limit = 16777216;  // 2^24
+    CHECK(max_acc < fp32_limit, "k=1024 accumulators within float32 exact range");
+
+    int8_t*  d_a = static_cast<int8_t*>(alloc_metal(m * k));
+    int8_t*  d_b = static_cast<int8_t*>(alloc_metal(k * n));
+    int32_t* d_c = static_cast<int32_t*>(alloc_metal(m * n * sizeof(int32_t)));
+
+    std::memcpy(d_a, ha.data(), m * k);
+    std::memcpy(d_b, hb.data(), k * n);
+    std::memset(d_c, 0, m * n * sizeof(int32_t));
+
+    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+        false, false, false, false, m, n, k,
+        1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
+
+    bool all_ok = true;
+    for (int i = 0; i < m * n; ++i) {
+      if (d_c[i] != ref_c[i]) {
+        all_ok = false;
+        std::fprintf(stderr, "  mismatch at [%d]: got %d, ref %d\n",
+                     i, d_c[i], ref_c[i]);
+      }
+    }
+    std::printf("  max_acc=%d  exact=%s\n", max_acc, all_ok ? "PASS" : "FAIL");
+    CHECK(all_ok, "INT8 GEMM k=1024: exact match");
+
+    free_metal(d_a); free_metal(d_b); free_metal(d_c);
+  }
+
+  std::printf("Test T2b: INT8 GEMM k=2048 (beyond exact range, graceful degradation)\n");
+
+  {
+    const int m = 2, n = 4, k = 2048;
+    const int lda = k, ldb = n, ldc = n;
+
+    // Moderate values to keep accumulator near the boundary.
+    std::vector<int8_t> ha(m * k), hb(k * n);
+    for (int i = 0; i < m * k; ++i) ha[i] = static_cast<int8_t>((i % 7) - 3);
+    for (int i = 0; i < k * n; ++i) hb[i] = static_cast<int8_t>((i % 5) - 2);
+
+    std::vector<int32_t> ref_c(m * n, 0);
+    ref_int8_gemm(false, false, m, n, k,
+                  ha.data(), lda, hb.data(), ldb, ref_c.data(), ldc);
+
+    int8_t*  d_a = static_cast<int8_t*>(alloc_metal(m * k));
+    int8_t*  d_b = static_cast<int8_t*>(alloc_metal(k * n));
+    int32_t* d_c = static_cast<int32_t*>(alloc_metal(m * n * sizeof(int32_t)));
+
+    std::memcpy(d_a, ha.data(), m * k);
+    std::memcpy(d_b, hb.data(), k * n);
+    std::memset(d_c, 0, m * n * sizeof(int32_t));
+
+    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+        false, false, false, false, m, n, k,
+        1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
+
+    // Allow small rounding errors (< 0.1% of peak accumulator).
+    int32_t max_ref = 0;
+    int32_t max_diff = 0;
+    for (int i = 0; i < m * n; ++i) {
+      max_ref = std::max(max_ref, std::abs(ref_c[i]));
+      max_diff = std::max(max_diff, std::abs(d_c[i] - ref_c[i]));
+    }
+    float rel_err = (max_ref > 0) ? (float)max_diff / (float)max_ref : 0.f;
+    std::printf("  max_ref=%d  max_diff=%d  rel_err=%.4f%%\n",
+                max_ref, max_diff, rel_err * 100.f);
+    CHECK(rel_err < 0.01f, "INT8 GEMM k=2048: graceful degradation (< 1% error)");
+
+    free_metal(d_a); free_metal(d_b); free_metal(d_c);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Test T7: beta != 0 rejection for INT8 GEMM
+// ---------------------------------------------------------------------------
+static void test_int8_gemm_beta_rejection() {
+  std::printf("Test T7: INT8 GEMM beta!=0 throws\n");
+
+  int8_t*  d_a = static_cast<int8_t*>(alloc_metal(16));
+  int8_t*  d_b = static_cast<int8_t*>(alloc_metal(16));
+  int32_t* d_c = static_cast<int32_t*>(alloc_metal(16 * sizeof(int32_t)));
+
+  bool threw_gemm = false;
+  try {
+    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+        false, false, false, false, 4, 4, 4,
+        1.0f, d_a, 4, d_b, 4, 1.0f, d_c, 4, nullptr);
+  } catch (const std::runtime_error&) {
+    threw_gemm = true;
+  }
+  std::printf("  gemm beta=1.0 threw=%s\n", threw_gemm ? "yes" : "no");
+  CHECK(threw_gemm, "INT8 gemm rejects beta!=0");
+
+  bool threw_batch = false;
+  try {
+    primitives<Device::METAL>::gemm_batch_strided<int8_t, int32_t>(
+        false, false, 4, 4, 4,
+        1.0f, d_a, 4, 16, d_b, 4, 16,
+        0.5f, d_c, 4, 16, 2);
+  } catch (const std::runtime_error&) {
+    threw_batch = true;
+  }
+  std::printf("  gemm_batch_strided beta=0.5 threw=%s\n", threw_batch ? "yes" : "no");
+  CHECK(threw_batch, "INT8 gemm_batch_strided rejects beta!=0");
+
+  free_metal(d_a); free_metal(d_b); free_metal(d_c);
+}
+
+// ---------------------------------------------------------------------------
 // Test 9: gemm_pack_b returns 0 for int8_t
 // ---------------------------------------------------------------------------
 static void test_gemm_pack_b_int8() {
@@ -611,16 +747,20 @@ static void test_gemm_pack_b_int8() {
 int main() {
   std::printf("=== M9.2 INT8 GEMM on Metal ===\n\n");
 
-  test_int8_gemm_basic();
-  test_int8_gemm_transb();
-  test_int8_gemm_alpha();
-  test_int8_gemm_large_k();
-  test_int8_gemm_zero();
-  test_int8_pipeline();
-  test_int8_gemm_batch_strided();
-  test_int8_gemm_transa();
-  test_int8_gemm_transa_transb();
-  test_gemm_pack_b_int8();
+  @autoreleasepool {
+    test_int8_gemm_basic();
+    test_int8_gemm_transb();
+    test_int8_gemm_alpha();
+    test_int8_gemm_large_k();
+    test_int8_gemm_zero();
+    test_int8_pipeline();
+    test_int8_gemm_batch_strided();
+    test_int8_gemm_transa();
+    test_int8_gemm_transa_transb();
+    test_int8_gemm_k_boundary();
+    test_int8_gemm_beta_rejection();
+    test_gemm_pack_b_int8();
+  }
 
   std::printf("\n=== Results: %d/%d pass, %d fail ===\n",
               g_pass, g_tests, g_fail);

@@ -27,9 +27,8 @@ that propagate through subsequent decoder steps.
 clone's buffer while it is still valid, before the clone is freed.
 
 **Tests:**
-- `ptest/batch_compare_test.py`: all OK (beam_size=2, both hypotheses match CPU)
-- `ptest/beam_step_test.py`: ALL PASS (beam=2 and beam=4, max_decoding_length=1..11)
-- `ptest/beam_toks_test.py`: ALL PASS (beam=1,2,4; max_len=1,2,3,5,10)
+- `tests/metal/e2e/test_beam_search.py`: 28/28 PASS (beam sweep + batch consistency)
+- `tests/metal/e2e/test_translation.py`: 90/90 PASS (CPU vs Metal, 5 sentences × 3 beams × 6 max_len)
 
 ---
 
@@ -198,145 +197,33 @@ Building the Python wheel exposed missing explicit instantiations:
 
 ## Building and Testing from Scratch
 
-Assumes: repo checked out, `ptest/opus-mt-en-de/` model already present,
-Xcode command-line tools installed.  Run all commands from the repo root.
+See `agents/report/e2e-testing.md` for full build and test instructions.
 
-### 1 — Create the conda environment
-
-```bash
-conda create -n ct2 python=3.14 -y
-conda run -n ct2 pip install \
-    "pybind11==2.11.1" setuptools wheel \
-    numpy "pyyaml>=5.3,<7" \
-    transformers sacremoses sentencepiece
-```
-
-### 2 — Configure CMake
+Quick summary from the repo root:
 
 ```bash
-cmake -S . -B build \
-    -DWITH_METAL=ON \
-    -DWITH_ACCELERATE=ON \
-    -DWITH_MKL=OFF
-```
+# Build C++ library
+cmake --build build -j$(sysctl -n hw.logicalcpu)
 
-`WITH_ACCELERATE=ON` picks up Apple's Accelerate framework for CPU BLAS.
-`WITH_MKL=OFF` is required on Apple Silicon (no MKL).
-
-### 3 — Build the C++ library
-
-```bash
-cmake --build build --target ctranslate2 -j$(sysctl -n hw.logicalcpu)
-# Produces: build/libctranslate2.4.dylib (and versioned + unversioned symlinks)
-```
-
-### 4 — Install the library into the conda env
-
-The Python extension links against `@rpath/libctranslate2.4.dylib`.
-Its rpath list is (in order):
-1. `/opt/anaconda3/envs/ct2/lib`  ← checked first
-2. `/usr/local/lib`
-
-Copy the built library into the conda env so the install is self-contained
-and does not pollute the system library path:
-
-```bash
-CT2_ENV_LIB=$(conda run -n ct2 python -c "import sys; print(sys.prefix)")/lib
-
+# Copy into conda env (no sudo, no /usr/local)
+CT2_ENV_LIB="$(python -c 'import sys; print(sys.prefix)')/lib"
 cp build/libctranslate2.4.7.1.dylib "$CT2_ENV_LIB/"
-ln -sf libctranslate2.4.7.1.dylib "$CT2_ENV_LIB/libctranslate2.4.dylib"
-ln -sf libctranslate2.4.dylib      "$CT2_ENV_LIB/libctranslate2.dylib"
+
+# Run e2e tests
+export CT2_TEST_DATA=/path/to/data
+python tests/metal/e2e/test_translation.py
+python tests/metal/e2e/test_beam_search.py
+python tests/metal/e2e/test_whisper.py
 ```
-
-After a library rebuild (step 3), only the `cp` line needs to be repeated —
-the symlinks stay valid as long as the version number does not change.
-
-### 5 — Build and install the Python extension (editable)
-
-```bash
-cd python
-CTRANSLATE2_ROOT=../build \
-CMAKE_BUILD_PARALLEL_LEVEL=$(sysctl -n hw.logicalcpu) \
-    conda run -n ct2 pip install -e . --no-build-isolation
-cd ..
-```
-
-`--no-build-isolation` lets pip use the pybind11 already in the env instead
-of downloading a separate build-time copy.  The `-e` (editable) install
-builds `_ext.cpython-314-darwin.so` in-place inside `python/ctranslate2/`
-so re-running `pip install` after a library rebuild is all that is needed.
-
-### 6 — Run the end-to-end tests
-
-All scripts must be run from `ptest/` (model path `opus-mt-en-de` is relative):
-
-```bash
-cd ptest
-conda run -n ct2 python full_e2e_test.py      # 5 sentences × beam 1/2/4 — quickest overall check
-conda run -n ct2 python batch_compare_test.py  # beam_size=2 hypotheses vs CPU
-conda run -n ct2 python beam_step_test.py      # beam=2,4 × max_len=1..11
-conda run -n ct2 python beam_toks_test.py      # beam=1,2,4 × max_len=1,2,3,5,10
-```
-
-After a library-only change (no Python binding changes), only steps 3–4 are
-needed before re-running tests — skip steps 1, 2, and 5.
 
 ---
 
 ## Test Results (conda env `ct2`, Python 3.14, Apple M4)
 
-### ptest/batch_compare_test.py
-
 ```
-Input: ['▁The', '▁cat', '▁sat', '▁on', '▁the', '▁mat', '.', '</s>']
-
-=== beam_size=2 results ===
-  hyp[0]: OK  cpu=['▁Die', '▁Katze', '▁saß', '▁auf', '▁der', '▁Matt', 'e', '.']
-              metal=['▁Die', '▁Katze', '▁saß', '▁auf', '▁der', '▁Matt', 'e', '.']
-  hyp[1]: OK  cpu=['▁Die', '▁Katze', '▁saß', '▁auf', '▁dem', '▁Bett', '.']
-              metal=['▁Die', '▁Katze', '▁saß', '▁auf', '▁dem', '▁Bett', '.']
-
-=== Metal beam_size=1 vs beam_size=2 hypothesis[0] ===
-  beam1_hyp[0] vs beam2_hyp[0]: OK
-
-  cpu_beam1 vs metal_beam1: OK
-
-=== Two separate sentences vs batched ===
-  Batch 2 identical sentences: OK
-  Batch-of-2 result[0] vs single beam1: OK
-```
-
-### ptest/beam_step_test.py
-
-```
-=== beam_size=2 ===
-  max_len= 1: PASS  …  max_len=11: PASS   (all 11 lengths)
-
-=== beam_size=4 ===
-  max_len= 1: PASS  …  max_len=11: PASS   (all 11 lengths)
-```
-
-### ptest/full_e2e_test.py
-
-```
-beam | input                                    | CPU output                        | Metal output                      | match
-1    | The cat sat on the mat.                  | Die Katze saß auf der Matte.      | Die Katze saß auf der Matte.      | PASS
-2    | The cat sat on the mat.                  | Die Katze saß auf der Matte.      | Die Katze saß auf der Matte.      | PASS
-4    | The cat sat on the mat.                  | Die Katze saß auf der Matte.      | Die Katze saß auf der Matte.      | PASS
-1    | Hello world, this is a test.             | Hallo Welt, das ist ein Test.     | Hallo Welt, das ist ein Test.     | PASS
-2    | Hello world, this is a test.             | Hallo Welt, das ist ein Test.     | Hallo Welt, das ist ein Test.     | PASS
-4    | Hello world, this is a test.             | Hallo Welt, das ist ein Test.     | Hallo Welt, das ist ein Test.     | PASS
-1    | Machine translation is an interesting…   | Maschinelle Übersetzung ist…      | Maschinelle Übersetzung ist…      | PASS
-2    | Machine translation is an interesting…   | Maschinelle Übersetzung ist…      | Maschinelle Übersetzung ist…      | PASS
-4    | Machine translation is an interesting…   | Maschinelle Übersetzung ist…      | Maschinelle Übersetzung ist…      | PASS
-1    | a b c                                    | a b c                             | a b c                             | PASS
-2    | a b c                                    | a b c                             | a b c                             | PASS
-4    | a b c                                    | a b c                             | a b c                             | PASS
-1    | a b c d e f g                            | a b c d e f g                     | a b c d e f g                     | PASS
-2    | a b c d e f g                            | a b c d e f g                     | a b c d e f g                     | PASS
-4    | a b c d e f g                            | a b c d e f g                     | a b c d e f g                     | PASS
-
-ALL PASS
+tests/metal/e2e/test_translation.py:   90/90 passed — ALL PASS
+tests/metal/e2e/test_beam_search.py:   28/28 passed — ALL PASS
+tests/metal/e2e/test_whisper.py:        3/3  passed — ALL PASS
 ```
 
 ---

@@ -36,7 +36,11 @@ namespace ctranslate2 {
       const dim_t C_out = weight.dim(0);
       const dim_t K     = weight.dim(2);
       const dim_t T_out = output.dim(2);
-      const dim_t dil   = (_dilation > 0) ? _dilation : 1;
+      if (_dilation < 1)
+        throw std::invalid_argument(
+            "Metal Conv1D: dilation must be >= 1 (got " +
+            std::to_string(_dilation) + ")");
+      const dim_t dil = _dilation;
 
       metal::conv1d_metal<T>(input.data<T>(), weight.data<T>(), output.data<T>(),
                               B, C_in, T_in, C_out, K, T_out,

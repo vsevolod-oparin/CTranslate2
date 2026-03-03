@@ -175,6 +175,16 @@ struct MetalTempBuf {
   MetalTempBuf(const MetalTempBuf&) = delete;
   MetalTempBuf& operator=(const MetalTempBuf&) = delete;
 
+  MetalTempBuf(MetalTempBuf&& o) noexcept : ptr(o.ptr) { o.ptr = nullptr; }
+  MetalTempBuf& operator=(MetalTempBuf&& o) noexcept {
+    if (this != &o) {
+      if (ptr) ctranslate2::get_allocator<ctranslate2::Device::METAL>().free(ptr, 0);
+      ptr = o.ptr;
+      o.ptr = nullptr;
+    }
+    return *this;
+  }
+
   template <typename T>
   T* as() { return static_cast<T*>(ptr); }
 };

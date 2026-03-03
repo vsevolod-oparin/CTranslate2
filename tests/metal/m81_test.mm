@@ -680,14 +680,16 @@ static void test_encoder_layer_typed(const char* type_name, float tol) {
 int main() {
   std::printf("=== M8.1 Transformer Encoder Layer integration tests ===\n");
 
-  test_layer_norm();
-  test_gemm();
-  test_relu();
-  test_residual_add();
-  test_sdpa();
-  test_full_encoder_layer();
-  test_encoder_layer_typed<ctranslate2::float16_t>("f16", 5e-2f);
-  test_encoder_layer_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
+  @autoreleasepool {
+    test_layer_norm();
+    test_gemm();
+    test_relu();
+    test_residual_add();
+    test_sdpa();
+    test_full_encoder_layer();
+    test_encoder_layer_typed<ctranslate2::float16_t>("f16", 5e-2f);
+    test_encoder_layer_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
+  }
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

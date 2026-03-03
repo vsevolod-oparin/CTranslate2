@@ -45,6 +45,7 @@
 #include <cstdio>
 #include <cstring>
 #include <random>
+#include <type_traits>
 #include <vector>
 
 #include "ctranslate2/allocator.h"
@@ -348,7 +349,7 @@ static void test6_f16() {
   for (size_t i = 0; i < N_out; ++i)
     got[i] = static_cast<float>(y_m[i]);
 
-  // float16 accumulates ~C_in*K=24 terms; tolerance 2e-2
+  // float16 accumulates C_in*K=24 terms per output element; empirical error ~5e-4
   CHECK_CLOSE("f16 conv1d", got, ref, 2e-2f);
 
   free_buf(xf_m); free_buf(wf_m);
@@ -473,6 +474,172 @@ static void test8_f32_bias_gelu() {
 }
 
 // ---------------------------------------------------------------------------
+// Test 9: float32, padding=0 (no zero-padded positions in im2col)
+//
+// With pad=0 and K=3, T_out = T_in - 2 (all im2col positions are valid).
+// ---------------------------------------------------------------------------
+
+static void test9_f32_pad0() {
+  std::printf("\nTest 9: f32 conv1d padding=0\n");
+
+  const dim_t B=1, C_in=4, T_in=10, C_out=8, K=3;
+  const dim_t stride=1, padding=0, dilation=1;
+  const dim_t T_out = (T_in + 2*padding - (dilation*(K-1)+1)) / stride + 1;  // 8
+
+  auto x_h = rand_vec((size_t)(B*C_in*T_in),  110);
+  auto w_h = rand_vec((size_t)(C_out*C_in*K), 111);
+
+  std::vector<float> ref(B*C_out*T_out);
+  ref_conv1d_f32(x_h.data(), B, C_in, T_in, w_h.data(), C_out, K,
+                 ref.data(), T_out, stride, padding, dilation);
+
+  float* x_m = make_f32_buf(x_h);
+  float* w_m = make_f32_buf(w_h);
+  float* y_m = alloc_f32_buf((size_t)(B*C_out*T_out));
+
+  metal::conv1d_metal<float>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
+                              stride, padding, dilation);
+
+  auto got = read_f32(y_m, (size_t)(B*C_out*T_out));
+  CHECK_CLOSE("f32 padding=0", got, ref, 1e-5f);
+
+  free_buf(x_m); free_buf(w_m); free_buf(y_m);
+}
+
+// ---------------------------------------------------------------------------
+// Test 10: float32, K=1 (point convolution / 1x1 conv)
+//
+// Degenerate case where im2col is essentially a reshape.
+// T_out = T_in (stride=1, padding=0, dilation=1, K=1).
+// ---------------------------------------------------------------------------
+
+static void test10_f32_k1() {
+  std::printf("\nTest 10: f32 conv1d K=1 (point conv)\n");
+
+  const dim_t B=2, C_in=8, T_in=16, C_out=4, K=1;
+  const dim_t stride=1, padding=0, dilation=1;
+  const dim_t T_out = (T_in + 2*padding - (dilation*(K-1)+1)) / stride + 1;  // 16
+
+  auto x_h = rand_vec((size_t)(B*C_in*T_in),  120);
+  auto w_h = rand_vec((size_t)(C_out*C_in*K), 121);
+
+  std::vector<float> ref(B*C_out*T_out);
+  ref_conv1d_f32(x_h.data(), B, C_in, T_in, w_h.data(), C_out, K,
+                 ref.data(), T_out, stride, padding, dilation);
+
+  float* x_m = make_f32_buf(x_h);
+  float* w_m = make_f32_buf(w_h);
+  float* y_m = alloc_f32_buf((size_t)(B*C_out*T_out));
+
+  metal::conv1d_metal<float>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
+                              stride, padding, dilation);
+
+  auto got = read_f32(y_m, (size_t)(B*C_out*T_out));
+  CHECK_CLOSE("f32 K=1 point conv", got, ref, 1e-5f);
+
+  free_buf(x_m); free_buf(w_m); free_buf(y_m);
+}
+
+// ---------------------------------------------------------------------------
+// Test 11: Stress test at realistic Whisper shapes (f32 / f16 / bf16)
+//
+// Whisper encoder conv layers:
+//   conv1: C_in=80,  C_out=512, K=3, stride=1, pad=1  (T_in=3000 → T_out=3000)
+//   conv2: C_in=512, C_out=512, K=3, stride=2, pad=1  (T_in=3000 → T_out=1500)
+//
+// These test large accumulations: C_in*K = 80*3=240 (conv1), 512*3=1536 (conv2).
+// Float16 with 1536 accumulation terms is the critical stress test for precision.
+//
+// Use T_in=1500 (half the real Whisper length) to keep test time reasonable.
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static void test_stress_typed(const char* type_name, float tol,
+                               dim_t C_in, dim_t C_out, dim_t T_in,
+                               dim_t K, dim_t stride, dim_t padding,
+                               float data_scale, unsigned seed) {
+  const dim_t B = 1, dilation = 1;
+  const dim_t T_out = (T_in + 2*padding - (dilation*(K-1)+1)) / stride + 1;
+  const size_t N_in  = (size_t)(B*C_in*T_in);
+  const size_t N_w   = (size_t)(C_out*C_in*K);
+  const size_t N_out = (size_t)(B*C_out*T_out);
+
+  std::printf("\n  %s [B=%lld, Cin=%lld, Cout=%lld, T_in=%lld, K=%lld, s=%lld, p=%lld] → T_out=%lld  (CK=%lld accum terms)\n",
+              type_name,
+              (long long)B, (long long)C_in, (long long)C_out,
+              (long long)T_in, (long long)K, (long long)stride, (long long)padding,
+              (long long)T_out, (long long)(C_in*K));
+
+  auto x_f32 = rand_vec(N_in,  seed,     data_scale);
+  auto w_f32 = rand_vec(N_w,   seed + 1, data_scale);
+
+  // CPU float32 reference
+  std::vector<float> ref(N_out);
+  ref_conv1d_f32(x_f32.data(), B, C_in, T_in, w_f32.data(), C_out, K,
+                 ref.data(), T_out, stride, padding, dilation);
+
+  // Metal in type T
+  T* x_m; T* w_m;
+  T* y_m = static_cast<T*>(
+      get_allocator<Device::METAL>().allocate(N_out * sizeof(T), 0));
+
+  if constexpr (std::is_same_v<T, float>) {
+    x_m = make_f32_buf(x_f32);
+    w_m = make_f32_buf(w_f32);
+  } else {
+    float* xf_m = make_f32_buf(x_f32);
+    float* wf_m = make_f32_buf(w_f32);
+    x_m = static_cast<T*>(
+        get_allocator<Device::METAL>().allocate(N_in * sizeof(T), 0));
+    w_m = static_cast<T*>(
+        get_allocator<Device::METAL>().allocate(N_w * sizeof(T), 0));
+    primitives<Device::METAL>::convert(xf_m, x_m, (dim_t)N_in);
+    primitives<Device::METAL>::convert(wf_m, w_m, (dim_t)N_w);
+    metal::commit_and_wait();
+    free_buf(xf_m); free_buf(wf_m);
+  }
+
+  metal::conv1d_metal<T>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
+                          stride, padding, dilation);
+
+  metal::commit_and_wait();
+  std::vector<float> got(N_out);
+  for (size_t i = 0; i < N_out; ++i)
+    got[i] = static_cast<float>(y_m[i]);
+
+  char label[256];
+  std::snprintf(label, sizeof(label), "stress %s Cin=%lld Cout=%lld K=%lld s=%lld",
+                type_name, (long long)C_in, (long long)C_out, (long long)K, (long long)stride);
+  CHECK_CLOSE(label, got, ref, tol);
+
+  get_allocator<Device::METAL>().free(x_m, 0);
+  get_allocator<Device::METAL>().free(w_m, 0);
+  get_allocator<Device::METAL>().free(y_m, 0);
+}
+
+static void test11_stress() {
+  std::printf("\nTest 11: Stress test at realistic Whisper shapes\n");
+
+  // Conv1 shape: C_in=80, C_out=512, K=3, stride=1, pad=1, T_in=1500
+  // CK=240 accum terms
+  test_stress_typed<float>("f32 conv1", 1e-4f,
+                            80, 512, 1500, 3, 1, 1, 0.1f, 200);
+  test_stress_typed<ct2_f16>("f16 conv1", 5e-2f,
+                              80, 512, 1500, 3, 1, 1, 0.1f, 200);
+  test_stress_typed<ct2_bf16>("bf16 conv1", 1e-1f,
+                               80, 512, 1500, 3, 1, 1, 0.1f, 200);
+
+  // Conv2 shape: C_in=512, C_out=512, K=3, stride=2, pad=1, T_in=1500
+  // CK=1536 accum terms — this is the critical float16 stress test
+  test_stress_typed<float>("f32 conv2", 1e-3f,
+                            512, 512, 1500, 3, 2, 1, 0.02f, 210);
+  test_stress_typed<ct2_f16>("f16 conv2", 2e-1f,
+                              512, 512, 1500, 3, 2, 1, 0.02f, 210);
+  test_stress_typed<ct2_bf16>("bf16 conv2", 5e-1f,
+                               512, 512, 1500, 3, 2, 1, 0.02f, 210);
+}
+
+// ---------------------------------------------------------------------------
 // main
 // ---------------------------------------------------------------------------
 
@@ -488,6 +655,9 @@ int main() {
     test6_f16();
     test7_bf16();
     test8_f32_bias_gelu();
+    test9_f32_pad0();
+    test10_f32_k1();
+    test11_stress();
   }
 
   std::printf("\n=== Results: %d pass, %d fail ===\n", g_pass, g_fail);

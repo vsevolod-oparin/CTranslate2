@@ -1284,14 +1284,16 @@ static void test_multistep_decode_sequence() {
 int main() {
   std::printf("=== M8.2 Transformer Decoder Layer integration tests ===\n");
 
-  test_cross_attn_sdpa();
-  test_kvcache_decode();
-  test_full_decoder_prefill();
-  test_full_decoder_decode();
-  test_kvcache_decode_batch_gt1();
-  test_decoder_decode_typed<ctranslate2::float16_t>("f16", 5e-2f);
-  test_decoder_decode_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
-  test_multistep_decode_sequence();
+  @autoreleasepool {
+    test_cross_attn_sdpa();
+    test_kvcache_decode();
+    test_full_decoder_prefill();
+    test_full_decoder_decode();
+    test_kvcache_decode_batch_gt1();
+    test_decoder_decode_typed<ctranslate2::float16_t>("f16", 5e-2f);
+    test_decoder_decode_typed<ctranslate2::bfloat16_t>("bf16", 1e-1f);
+    test_multistep_decode_sequence();
+  }
 
   std::printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail == 0 ? 0 : 1;

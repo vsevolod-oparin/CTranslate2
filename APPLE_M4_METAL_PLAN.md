@@ -831,9 +831,17 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Test: `tests/metal/e2e/test_generator.py` (12/12 pass)
 - Report: `agents/report/milestone-10.3-lm-e2e.md`
 
-**10.4 Whisper end-to-end**
-- Load `whisper-tiny` or `whisper-base`; transcribe a 10-second audio clip
-- **PASS:** WER (word error rate) within 1% of CPU result
+**10.4 Whisper end-to-end** ✅
+- Load `whisper-base`; transcribe a 60-second audio clip (Russian podcast, sample.mp3)
+- Metal produces **exact transcript match** with CPU (WER = 0.00%)
+- **PASS (correctness):**
+  - 8/8 tests pass: non-empty, no error tokens, WER < 1%, exact match, sanity checks
+  - Metal-vs-CPU WER: 0.00% (well within 1% tolerance)
+- **Speed (informational, M11 will optimize):**
+  - CPU: 6.2s (RTF=0.103), Metal: 27.1s (RTF=0.451), Ratio: 0.23x
+  - Per-op commit overhead dominates; command buffer batching (M11) will address this
+- Test: `tests/metal/e2e/test_whisper.py` (8/8 pass)
+- Report: `agents/report/milestone-10.4-whisper-e2e.md`
 
 ---
 

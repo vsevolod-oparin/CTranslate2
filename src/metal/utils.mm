@@ -1,6 +1,8 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <atomic>
+
 #include "utils.h"
 
 namespace ctranslate2 {
@@ -76,6 +78,21 @@ namespace ctranslate2 {
 
     uint64_t commit_count() { return _commit_count; }
     void reset_commit_count() { _commit_count = 0; }
+
+    // M11.2: global PSO cache statistics (atomics for thread safety).
+    namespace {
+      std::atomic<uint64_t> _pso_hits{0};
+      std::atomic<uint64_t> _pso_misses{0};
+    }
+
+    uint64_t pso_hit_count() { return _pso_hits.load(std::memory_order_relaxed); }
+    uint64_t pso_miss_count() { return _pso_misses.load(std::memory_order_relaxed); }
+    void reset_pso_stats() {
+      _pso_hits.store(0, std::memory_order_relaxed);
+      _pso_misses.store(0, std::memory_order_relaxed);
+    }
+    void increment_pso_hits() { _pso_hits.fetch_add(1, std::memory_order_relaxed); }
+    void increment_pso_misses() { _pso_misses.fetch_add(1, std::memory_order_relaxed); }
 
   }  // namespace metal
 }  // namespace ctranslate2

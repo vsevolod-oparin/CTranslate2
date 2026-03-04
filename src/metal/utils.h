@@ -21,6 +21,14 @@ namespace ctranslate2 {
     uint64_t commit_count();
     void reset_commit_count();
 
+    // M11.2: Global PSO cache hit/miss counters.
+    // Incremented by PSOCache::get() in primitives_infra.h.
+    uint64_t pso_hit_count();
+    uint64_t pso_miss_count();
+    void reset_pso_stats();
+    void increment_pso_hits();
+    void increment_pso_misses();
+
   }  // namespace metal
 }  // namespace ctranslate2
 

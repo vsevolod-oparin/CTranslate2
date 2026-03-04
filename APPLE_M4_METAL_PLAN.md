@@ -850,16 +850,26 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 **Time:** 1–2 weeks
 **Depends on:** M10
 
-**11.1 Command buffer batching**
+**11.1 Command buffer batching** ✅
 - Profile: measure how many Metal command buffers are committed per token
 - Goal: ≤1 command buffer per decode step (all ops for one step in one buffer)
 - This may require collecting ops across a decode step before committing
 - **PASS:** `tools/benchmark/benchmark.py --device metal` shows ≥20% speedup vs per-op commit
+- Batched in-place Gather: 12 commit_and_wait() → 1 synchronize_stream() per decode step
+- Test: `tests/metal/e2e/test_cb_batching.py` (4/4 pass)
+- Report: `agents/report/milestone-11.1-cb-batching.md`
 
-**11.2 Metal pipeline state caching**
+**11.2 Metal pipeline state caching** ✅
 - Custom Metal shaders require `MTLComputePipelineState` objects (expensive to create)
 - Cache them globally keyed by (shader function name + type parameters)
 - **PASS:** Second inference call is not slower than first (pipeline states reused, no recompile)
+- Infrastructure: 13 static `PSOCache` instances across 9 Metal files; `compile_library_once` for MSL→library
+- Added global PSO hit/miss counters (`pso_hit_count()`, `pso_miss_count()` in `utils.h/utils.mm`)
+- Translation: 9 misses on first call → 0 misses on second (1274 hits, 100% cache reuse)
+- Whisper: 4 misses on first call → 0 misses on second (12097 hits, 100% cache reuse)
+- Latency ratio: 0.98x (later calls not slower — marginally faster)
+- Test: `tests/metal/e2e/test_pso_caching.py` (8/8 pass)
+- Report: `agents/report/milestone-11.2-pso-caching.md`
 
 **11.3 BF16 inference (M4 specific)**
 - Enable BF16 when `[device supportsFamily:MTLGPUFamilyApple9]` is true (M3+)

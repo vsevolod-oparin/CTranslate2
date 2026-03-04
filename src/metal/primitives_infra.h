@@ -113,7 +113,11 @@ struct PSOCache {
   id<MTLComputePipelineState> get(LibFn lib_fn, const char* name) {
     std::lock_guard<std::mutex> lock(mtx);
     auto it = cache.find(name);
-    if (it != cache.end()) return it->second;
+    if (it != cache.end()) {
+      ctranslate2::metal::increment_pso_hits();
+      return it->second;
+    }
+    ctranslate2::metal::increment_pso_misses();
     return cache[name] = make_pso(lib_fn(), name);
   }
 };

@@ -22,7 +22,7 @@ namespace ctranslate2 {
     void MedianFilter::compute(const StorageView& input,
                                const dim_t axis_size,
                                StorageView& output) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       const T* src = input.data<T>();
       T* dst = output.data<T>();

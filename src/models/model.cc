@@ -191,8 +191,12 @@ namespace ctranslate2 {
         DataType weight_dtype = DataType::FLOAT32;
         DataType float_dtype = DataType::FLOAT32;
         std::tie(weight_dtype, float_dtype) = compute_type_to_data_type(_effective_compute_type);
-        if (_use_flash_attention && (float_dtype != DataType::FLOAT16 && float_dtype != DataType::BFLOAT16))
-          throw std::runtime_error("FlashAttention only support fp16 and bf16 data type");
+        if (_use_flash_attention && (float_dtype != DataType::FLOAT16 && float_dtype != DataType::BFLOAT16)) {
+#ifdef CT2_WITH_METAL
+          if (device != Device::METAL)
+#endif
+            throw std::runtime_error("FlashAttention only support fp16 and bf16 data type");
+        }
 
         const auto variable_index = _variable_index;
         for (auto& variable_pair : variable_index) {

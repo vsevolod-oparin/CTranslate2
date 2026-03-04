@@ -22,7 +22,7 @@ namespace ctranslate2 {
 
     template <Device D, typename T>
     void GumbelMax::add_gumbel_noise(const StorageView& x, StorageView& y) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       auto& generator = get_random_generator();
       std::uniform_real_distribution<float> distribution(

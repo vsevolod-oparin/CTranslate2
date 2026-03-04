@@ -171,14 +171,17 @@ namespace ctranslate2 {
               "is not supported in M6.3");
         }
 
-        // Flush pending GPU writes (linear projections wrote keys/values via
-        // GPU kernels; CPU must see the results before the operations below).
-        metal::commit_and_wait();
-
         const dim_t seqlen_new   = keys.dim(1);
         const dim_t total_cache  = cached_keys->dim(1);
         const dim_t row_elements = num_heads_k * head_dim;
         const dim_t seqlen_k_eff = offset + seqlen_new;
+
+        const bool need_rope = (rotary_cos != nullptr && rotary_sin != nullptr);
+
+        if (need_rope) {
+          // RoPE requires CPU access to GPU-computed K/V — must sync.
+          CT2_COMMIT_AND_WAIT();
+        }
 
         TYPE_DISPATCH(queries.dtype(), {
           T*       q_ptr   = queries.data<T>();
@@ -188,16 +191,12 @@ namespace ctranslate2 {
           const T* v_new   = values.data<T>();
 
           // M6.3: Apply RoPE to Q and new K using the half-sized cos/sin tables.
-          //   rotary_cos shape: [total_positions, ndims/2]
-          //   rotary_sin shape: [total_positions, ndims/2]
-          //   The layer supplies these only for offset > 0 (decode path).
-          if (rotary_cos != nullptr && rotary_sin != nullptr) {
+          if (need_rope) {
             const dim_t half_dim = rotary_cos->dim(1);
             const dim_t ndims    = half_dim * 2;
             const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
             const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
 
-            // Apply to Q: layout [batch, sq=1, nh, hd] → nh vectors per batch.
             for (dim_t b = 0; b < batch_size; ++b) {
               for (dim_t h = 0; h < num_heads; ++h) {
                 T* xq = q_ptr + (b * num_heads + h) * head_dim;
@@ -205,7 +204,6 @@ namespace ctranslate2 {
                                 rotary_interleave);
               }
             }
-            // Apply to new K: layout [batch, seqlen_new=1, nhk, hd].
             for (dim_t b = 0; b < batch_size; ++b) {
               for (dim_t hk = 0; hk < num_heads_k; ++hk) {
                 T* xk = k_new + (b * num_heads_k + hk) * head_dim;
@@ -213,20 +211,31 @@ namespace ctranslate2 {
                                 rotary_interleave);
               }
             }
+
+            // After CPU RoPE, write to cache with CPU memcpy (data already on CPU).
+            for (dim_t b = 0; b < batch_size; ++b) {
+              T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
+              T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
+              const T* ks = k_new   +  b * seqlen_new * row_elements;
+              const T* vs = v_new   +  b * seqlen_new * row_elements;
+              std::memcpy(kd, ks, seqlen_new * row_elements * sizeof(T));
+              std::memcpy(vd, vs, seqlen_new * row_elements * sizeof(T));
+            }
+          } else {
+            // No RoPE — use GPU blit copy, no sync needed.
+            // The blit executes after prior compute kernels (GEMM for K/V)
+            // within the same command buffer.
+            const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
+            for (dim_t b = 0; b < batch_size; ++b) {
+              T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
+              T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
+              const T* ks = k_new   +  b * seqlen_new * row_elements;
+              const T* vs = v_new   +  b * seqlen_new * row_elements;
+              metal::blit_copy(ks, kd, row_bytes);
+              metal::blit_copy(vs, vd, row_bytes);
+            }
           }
 
-          // Write new K/V into cache at position `offset` (one batch at a time).
-          for (dim_t b = 0; b < batch_size; ++b) {
-            T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
-            T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
-            const T* ks = k_new   +  b * seqlen_new * row_elements;
-            const T* vs = v_new   +  b * seqlen_new * row_elements;
-            std::memcpy(kd, ks, seqlen_new * row_elements * sizeof(T));
-            std::memcpy(vd, vs, seqlen_new * row_elements * sizeof(T));
-          }
-
-          // Decode with sq==1: causal mask is irrelevant — all cached tokens
-          // are "in the past" of the current query.
           const bool eff_causal = _is_causal && (seqlen_q > 1);
 
           metal::sdpa_metal<T>(

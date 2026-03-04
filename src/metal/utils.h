@@ -17,6 +17,12 @@ namespace ctranslate2 {
     // No-op if no commands have been encoded since the last commit.
     void commit_and_wait();
 
+// Traced variant — records caller for debugging.
+#define CT2_STRINGIFY2(x) #x
+#define CT2_STRINGIFY(x) CT2_STRINGIFY2(x)
+#define CT2_COMMIT_AND_WAIT() \
+    ctranslate2::metal::commit_and_wait_impl(__FILE__ ":" CT2_STRINGIFY(__LINE__))
+
     // Profiling: thread-local count of commit_and_wait() calls.
     uint64_t commit_count();
     void reset_commit_count();
@@ -25,6 +31,12 @@ namespace ctranslate2 {
     // Accumulated GPU execution time (seconds) since last reset.
     double gpu_time_elapsed();
     void reset_gpu_time();
+
+    // Debug: commit tracing.
+    void commit_and_wait_impl(const char* caller);
+    void enable_commit_trace(bool on);
+    void dump_commit_trace();
+    void reset_commit_trace();
 
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
@@ -66,6 +78,11 @@ namespace ctranslate2 {
     // to call [buf waitUntilCompleted] on.
     // Only commit_and_wait() should call this directly.
     void commit_command_buffer();
+
+    // Encode a GPU-side buffer copy into the current command buffer.
+    // No commit — the copy executes when the CB is eventually committed.
+    // Both src and dst must be within MetalAllocator-managed buffers.
+    void blit_copy(const void* src, void* dst, size_t bytes);
 
   }  // namespace metal
 

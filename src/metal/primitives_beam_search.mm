@@ -86,7 +86,7 @@ namespace ctranslate2 {
   void primitives<Device::METAL>::prepare_length_mask(
       const int32_t* lengths, dim_t batch_size, dim_t num_heads,
       dim_t num_queries, bool mask_future, bool multi_query, int32_t* mask) {
-    metal::commit_and_wait();  // flush any pending GPU writes to lengths
+    CT2_COMMIT_AND_WAIT();  // flush any pending GPU writes to lengths
     for (dim_t b = 0; b < batch_size; ++b) {
       const auto length = lengths[b];
       auto* batch_mask = mask + b * num_heads * num_queries;

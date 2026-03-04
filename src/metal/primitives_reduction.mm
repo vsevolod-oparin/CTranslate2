@@ -53,7 +53,7 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const T* partials = static_cast<const T*>([out_buf contents]);
     return std::accumulate(partials, partials + num_groups, T(0));
   }
@@ -86,7 +86,7 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const float*    pv = static_cast<const float*>([vals_buf contents]);
     const uint32_t* pi = static_cast<const uint32_t*>([idxs_buf contents]);
     float    best_val = pv[0];
@@ -124,7 +124,7 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const T* partials = static_cast<const T*>([out_buf contents]);
     return *std::max_element(partials, partials + num_groups);
   }
@@ -154,7 +154,7 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const float* partials = static_cast<const float*>([out_buf contents]);
     float result = *std::max_element(partials, partials + num_groups);
     return T(result);
@@ -166,7 +166,7 @@ namespace ctranslate2 {
   template <typename T>
   float primitives<Device::METAL>::logsumexp(const T* x, dim_t size) {
     if (size == 0) return 0.f;
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     float maxval = (float)x[0];
     for (dim_t i = 1; i < size; ++i)
       maxval = std::max(maxval, (float)x[i]);

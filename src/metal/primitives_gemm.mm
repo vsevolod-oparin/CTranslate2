@@ -94,18 +94,72 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
   const bool pad_b = (nat_rb_b < mps_rb_b);
   const bool pad_c = (nat_rb_c < mps_rb_c);
 
-  // Prepare buffers — copy to row-padded temps when stride is too small.
-  //
-  // Coherency note (2.6): CPU memcpy to freshly-allocated Shared buffers is
-  // immediately visible to the GPU on Apple Silicon unified memory.
-  //
-  // Padding hazard: when pad_a or pad_b is true the CPU must memcpy from A/B,
-  // which may have been written by a previous GPU kernel (e.g. layernorm,
-  // transpose).  On unified memory the CPU only sees the GPU's writes after
-  // the command buffer has been committed and completed.  Flush before reading.
-  // (pad_c reads C only when beta≠0, same reasoning.)
+  // -----------------------------------------------------------------------
+  // CPU GEMM fast-path for tiny padded matrices (e.g. 3×3 attention scores).
+  // For these, cblas is faster than MPS kernel launch + sync overhead.
+  // -----------------------------------------------------------------------
+  constexpr NSUInteger kCpuGemmThresh = 4096;
+  if ((pad_a || pad_b || pad_c) && (rows_c * cols_c <= kCpuGemmThresh)) {
+    CT2_COMMIT_AND_WAIT();
+
+    if constexpr (std::is_same_v<T, float>) {
+      cblas_sgemm(CblasRowMajor,
+                  transpose_a ? CblasTrans : CblasNoTrans,
+                  transpose_b ? CblasTrans : CblasNoTrans,
+                  (int)m, (int)n, (int)k,
+                  alpha, a, (int)lda, b, (int)ldb,
+                  beta, c, (int)ldc);
+    } else {
+      // float16: widen to float32, cblas_sgemm, narrow back.
+      constexpr NSUInteger kStackThresh = 4096;
+      float sa[kStackThresh], sb[kStackThresh], sc[kStackThresh];
+      const NSUInteger elems_a = rows_a * cols_a;
+      const NSUInteger elems_b = rows_b * cols_b;
+      const NSUInteger elems_c = rows_c * cols_c;
+      float* fa = (elems_a <= kStackThresh) ? sa : new float[elems_a];
+      float* fb = (elems_b <= kStackThresh) ? sb : new float[elems_b];
+      float* fc = (elems_c <= kStackThresh) ? sc : new float[elems_c];
+
+      for (NSUInteger r = 0; r < rows_a; ++r)
+        for (NSUInteger ci = 0; ci < cols_a; ++ci)
+          fa[r * cols_a + ci] = float(a[r * (NSUInteger)lda + ci]);
+      for (NSUInteger r = 0; r < rows_b; ++r)
+        for (NSUInteger ci = 0; ci < cols_b; ++ci)
+          fb[r * cols_b + ci] = float(b[r * (NSUInteger)ldb + ci]);
+      if (beta != 0.0f) {
+        for (NSUInteger r = 0; r < rows_c; ++r)
+          for (NSUInteger ci = 0; ci < cols_c; ++ci)
+            fc[r * cols_c + ci] = float(c[r * (NSUInteger)ldc + ci]);
+      }
+
+      cblas_sgemm(CblasRowMajor,
+                  transpose_a ? CblasTrans : CblasNoTrans,
+                  transpose_b ? CblasTrans : CblasNoTrans,
+                  (int)m, (int)n, (int)k,
+                  alpha, fa, (int)cols_a, fb, (int)cols_b,
+                  beta, fc, (int)cols_c);
+
+      for (NSUInteger r = 0; r < rows_c; ++r)
+        for (NSUInteger ci = 0; ci < cols_c; ++ci)
+          c[r * (NSUInteger)ldc + ci] = T(fc[r * cols_c + ci]);
+
+      if (fa != sa) delete[] fa;
+      if (fb != sb) delete[] fb;
+      if (fc != sc) delete[] fc;
+    }
+    return;
+  }
+
+  // -----------------------------------------------------------------------
+  // MPS GEMM path — handles non-padded and large padded matrices.
+  // For large matrices with alignment padding (e.g. logits n=51865),
+  // MPS is faster than cblas. Uses temp buffers when row stride < MPS minimum.
+  // -----------------------------------------------------------------------
+
+  // Flush pending GPU work if we need to CPU-read A/B for padding,
+  // or C for beta != 0 padding.
   if (pad_a || pad_b || (pad_c && beta != 0.0f))
-    ctranslate2::metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
 
   id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
@@ -192,7 +246,7 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
 
   // If C was routed to a padded temp buffer, flush GPU and unpack back to c.
   if (pad_c) {
-    ctranslate2::metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const auto* src = static_cast<const uint8_t*>([tmp_c contents]);
     auto* dst = reinterpret_cast<uint8_t*>(c);
     for (NSUInteger r = 0; r < rows_c; ++r)
@@ -330,7 +384,7 @@ static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
         "Metal BF16 GEMM: only beta=0.0 is supported");
   if (m == 0 || n == 0 || k == 0) return;
   // MPSGraph uses its own queue; flush the deferred CB first.
-  ctranslate2::metal::commit_and_wait();
+  CT2_COMMIT_AND_WAIT();
   run_bf16_gemm_inner(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc);
   // Apply alpha scaling post-GEMM if needed.
   if (alpha != 1.0f) {
@@ -419,7 +473,7 @@ static void dispatch_int8_gemm(
   const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
 
   // Flush pending GPU work before CPU reads from a/b.
-  ctranslate2::metal::commit_and_wait();
+  CT2_COMMIT_AND_WAIT();
 
   // Query MPS minimum rowBytes for float32.
   NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
@@ -465,7 +519,7 @@ static void dispatch_int8_gemm(
       tmp_c, 0, rb_c, MPSDataTypeFloat32);
 
   // Wait for GPU, then round float32 → int32 (handles ldc stride).
-  ctranslate2::metal::commit_and_wait();
+  CT2_COMMIT_AND_WAIT();
   for (ctranslate2::dim_t row = 0; row < m; ++row) {
     const float* src = reinterpret_cast<const float*>(
         static_cast<const uint8_t*>([tmp_c contents]) + (NSUInteger)row * rb_c);
@@ -527,23 +581,102 @@ namespace ctranslate2 {
       float beta,
       Out* c, dim_t ldc, dim_t stridec,
       dim_t batch_size) {
+    // Check if batch elements need tiny-matrix CPU GEMM fallback.
+    // Only for truly tiny columns (≤4) where MPS overhead dominates.
+    // Alignment-only padding (large matrices) is handled inside dispatch_mps_gemm
+    // via GPU-side temp buffer + blit copy (zero syncs).
+    auto needs_padding = [&]() -> bool {
+      constexpr NSUInteger elem_sz = sizeof(In);
+      const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
+      const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
+      const NSUInteger cols_c = (NSUInteger)n;
+      NSUInteger mps_a, mps_b, mps_c;
+      MPSDataType dt = (elem_sz == 4) ? MPSDataTypeFloat32 : MPSDataTypeFloat16;
+      @autoreleasepool {
+        mps_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dt];
+        mps_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dt];
+        mps_c = [MPSMatrixDescriptor rowBytesForColumns:cols_c dataType:dt];
+      }
+      return ((NSUInteger)lda * elem_sz < mps_a) ||
+             ((NSUInteger)ldb * elem_sz < mps_b) ||
+             ((NSUInteger)ldc * elem_sz < mps_c);
+    };
+
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
-      for (dim_t i = 0; i < batch_size; ++i)
-        dispatch_mps_gemm<float>(transpose_a, transpose_b, m, n, k,
-                                 alpha, a + i * stridea, lda,
-                                        b + i * strideb, ldb,
-                                 beta,  c + i * stridec, ldc);
+      if (batch_size > 0 && needs_padding()) {
+        CT2_COMMIT_AND_WAIT();  // one sync for entire batch
+        for (dim_t i = 0; i < batch_size; ++i)
+          cblas_sgemm(CblasRowMajor,
+                      transpose_a ? CblasTrans : CblasNoTrans,
+                      transpose_b ? CblasTrans : CblasNoTrans,
+                      (int)m, (int)n, (int)k,
+                      alpha,
+                      a + i * stridea, (int)lda,
+                      b + i * strideb, (int)ldb,
+                      beta,
+                      c + i * stridec, (int)ldc);
+      } else {
+        for (dim_t i = 0; i < batch_size; ++i)
+          dispatch_mps_gemm<float>(transpose_a, transpose_b, m, n, k,
+                                   alpha, a + i * stridea, lda,
+                                          b + i * strideb, ldb,
+                                   beta,  c + i * stridec, ldc);
+      }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
-      for (dim_t i = 0; i < batch_size; ++i)
-        dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
+      if (batch_size > 0 && needs_padding()) {
+        CT2_COMMIT_AND_WAIT();  // one sync for entire batch
+        // float16: widen, cblas_sgemm, narrow for each batch element
+        const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
+        const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
+        const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
+        const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
+        const NSUInteger rows_c = (NSUInteger)m;
+        const NSUInteger cols_c = (NSUInteger)n;
+        constexpr NSUInteger kST = 4096;
+        float sa[kST], sb[kST], sc[kST];
+        const NSUInteger ea = rows_a*cols_a, eb = rows_b*cols_b, ec = rows_c*cols_c;
+        float* fa = (ea<=kST)?sa:new float[ea];
+        float* fb = (eb<=kST)?sb:new float[eb];
+        float* fc = (ec<=kST)?sc:new float[ec];
+        for (dim_t i = 0; i < batch_size; ++i) {
+          const In* ai = a + i * stridea;
+          const In* bi = b + i * strideb;
+          Out* ci = c + i * stridec;
+          for (NSUInteger r = 0; r < rows_a; ++r)
+            for (NSUInteger j = 0; j < cols_a; ++j)
+              fa[r*cols_a+j] = float(ai[r*(NSUInteger)lda+j]);
+          for (NSUInteger r = 0; r < rows_b; ++r)
+            for (NSUInteger j = 0; j < cols_b; ++j)
+              fb[r*cols_b+j] = float(bi[r*(NSUInteger)ldb+j]);
+          if (beta != 0.0f)
+            for (NSUInteger r = 0; r < rows_c; ++r)
+              for (NSUInteger j = 0; j < cols_c; ++j)
+                fc[r*cols_c+j] = float(ci[r*(NSUInteger)ldc+j]);
+          cblas_sgemm(CblasRowMajor,
+                      transpose_a ? CblasTrans : CblasNoTrans,
+                      transpose_b ? CblasTrans : CblasNoTrans,
+                      (int)m, (int)n, (int)k,
+                      alpha, fa, (int)cols_a, fb, (int)cols_b,
+                      beta, fc, (int)cols_c);
+          for (NSUInteger r = 0; r < rows_c; ++r)
+            for (NSUInteger j = 0; j < cols_c; ++j)
+              ci[r*(NSUInteger)ldc+j] = Out(fc[r*cols_c+j]);
+        }
+        if (fa!=sa) delete[] fa;
+        if (fb!=sb) delete[] fb;
+        if (fc!=sc) delete[] fc;
+      } else {
+        for (dim_t i = 0; i < batch_size; ++i)
+          dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
                                      alpha, a + i * stridea, lda,
                                             b + i * strideb, ldb,
                                      beta,  c + i * stridec, ldc);
+      }
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {
       if (beta != 0.0f)
         throw std::runtime_error(
             "Metal BF16 GEMM: only beta=0.0 is supported");
-      metal::commit_and_wait();  // flush once before the batch loop
+      CT2_COMMIT_AND_WAIT();  // flush once before the batch loop
       for (dim_t i = 0; i < batch_size; ++i)
         run_bf16_gemm_inner(transpose_a, transpose_b, m, n, k,
                             a + i * stridea, lda,
@@ -565,7 +698,7 @@ namespace ctranslate2 {
       } else {
         // Amortized path: 2 syncs total instead of 2*B.
         // Phase 1: flush pending GPU work so CPU can read int8 inputs.
-        metal::commit_and_wait();
+        CT2_COMMIT_AND_WAIT();
 
         const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
         const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
@@ -621,7 +754,7 @@ namespace ctranslate2 {
         }
 
         // Phase 4: Wait for all GPU GEMMs.
-        metal::commit_and_wait();
+        CT2_COMMIT_AND_WAIT();
 
         // Phase 5: CPU round all batches float32→int32.
         for (dim_t bi = 0; bi < batch_size; ++bi) {

@@ -28,7 +28,7 @@ namespace ctranslate2 {
     void TopK::compute(const StorageView& x,
                        StorageView& values,
                        StorageView& indices) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       const dim_t depth = x.dim(-1);
       const dim_t batch_size = x.size() / depth;

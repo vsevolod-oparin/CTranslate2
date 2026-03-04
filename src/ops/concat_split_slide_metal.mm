@@ -2,12 +2,9 @@
 //
 // M7 — Metal implementations of Concat, Split, and Slide.
 //
-// Strategy: commit_and_wait() to flush any pending GPU writes into shared
-// memory, then do sequential CPU-side memcpy.  Metal buffers use
-// MTLResourceStorageModeShared (unified memory), so the contents pointer
-// is simultaneously valid for both CPU and GPU.  After the memcpy the
-// written data is immediately visible to the next GPU op encoded into the
-// fresh command buffer.
+// Strategy: GPU-side blit copy via the deferred command buffer.
+// No commit_and_wait() needed — all copies are encoded as GPU blit
+// commands that execute in-order with preceding compute kernels.
 
 #include "ctranslate2/ops/concat.h"
 #include "ctranslate2/ops/split.h"
@@ -41,17 +38,16 @@ namespace ctranslate2 {
     }
 
     // -----------------------------------------------------------------------
-    // Concat
+    // Concat — GPU blit copy
     // -----------------------------------------------------------------------
 
     template <Device D, typename T>
     void Concat::compute(const std::vector<const StorageView*>& inputs,
                          StorageView& output) const {
-      metal::commit_and_wait();
-
       const dim_t axis = _axis < 0 ? output.rank() + _axis : _axis;
       const dim_t step_size = output.dim(axis) * output.stride(axis);
-      T* output_data = output.data<T>();
+      const T* output_base = output.data<T>();
+      dim_t output_offset_elems = 0;
 
       for (const StorageView* inp : inputs) {
         const StorageView& x = *inp;
@@ -60,11 +56,13 @@ namespace ctranslate2 {
           continue;
         const dim_t iter_size = compute_iter_size(x, axis);
         const T* x_data = x.data<T>();
-        for (dim_t i = 0; i < iter_size; ++i)
-          std::memcpy(output_data + i * step_size,
-                      x_data     + i * copy_size,
-                      copy_size * sizeof(T));
-        output_data += copy_size;
+        T* out_data = const_cast<T*>(output_base) + output_offset_elems;
+        for (dim_t i = 0; i < iter_size; ++i) {
+          metal::blit_copy(x_data   + i * copy_size,
+                           out_data + i * step_size,
+                           copy_size * sizeof(T));
+        }
+        output_offset_elems += copy_size;
       }
     }
 
@@ -77,17 +75,16 @@ namespace ctranslate2 {
 #undef DECLARE_IMPL
 
     // -----------------------------------------------------------------------
-    // Split
+    // Split — GPU blit copy
     // -----------------------------------------------------------------------
 
     template <Device D, typename T>
     void Split::compute(const StorageView& input,
                         std::vector<StorageView*>& outputs) const {
-      metal::commit_and_wait();
-
       const dim_t axis = _axis < 0 ? input.rank() + _axis : _axis;
       const dim_t step_size = input.dim(axis) * input.stride(axis);
-      const T* input_data = input.data<T>();
+      const T* input_base = input.data<T>();
+      dim_t input_offset_elems = 0;
 
       for (StorageView* out : outputs) {
         StorageView& x = *out;
@@ -96,11 +93,13 @@ namespace ctranslate2 {
           continue;
         const dim_t iter_size = compute_iter_size(x, axis);
         T* x_data = x.data<T>();
-        for (dim_t i = 0; i < iter_size; ++i)
-          std::memcpy(x_data     + i * copy_size,
-                      input_data + i * step_size,
-                      copy_size * sizeof(T));
-        input_data += copy_size;
+        const T* in_data = input_base + input_offset_elems;
+        for (dim_t i = 0; i < iter_size; ++i) {
+          metal::blit_copy(in_data + i * step_size,
+                           x_data  + i * copy_size,
+                           copy_size * sizeof(T));
+        }
+        input_offset_elems += copy_size;
       }
     }
 
@@ -113,15 +112,13 @@ namespace ctranslate2 {
 #undef DECLARE_IMPL
 
     // -----------------------------------------------------------------------
-    // Slide
+    // Slide — GPU blit copy
     // -----------------------------------------------------------------------
 
     template <Device D, typename T>
     void Slide::compute(const StorageView& input,
                         StorageView& output,
                         const dim_t& index) const {
-      metal::commit_and_wait();
-
       const dim_t axis = _axis < 0 ? input.rank() + _axis : _axis;
       const dim_t stride_axis = input.stride(axis) == 0 ? 1 : input.stride(axis);
       const dim_t step_size = input.dim(axis) * stride_axis;
@@ -134,10 +131,11 @@ namespace ctranslate2 {
         return;
       const dim_t iter_size = compute_iter_size(output, axis);
 
-      for (dim_t i = 0; i < iter_size; ++i)
-        std::memcpy(x_data    + i * copy_size,
-                    input_data + i * step_size,
-                    copy_size * sizeof(T));
+      for (dim_t i = 0; i < iter_size; ++i) {
+        metal::blit_copy(input_data + i * step_size,
+                         x_data     + i * copy_size,
+                         copy_size * sizeof(T));
+      }
     }
 
 #define DECLARE_IMPL(T)                                                         \

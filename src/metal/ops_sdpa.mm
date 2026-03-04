@@ -205,7 +205,7 @@ static void sdpa_mps_gemm(bool trans_b,
 
   // If C required padding: flush, then unpack the padded temp back to c.
   if (pad_c) {
-    ctranslate2::metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     const auto* src = static_cast<const uint8_t*>([tmp_c contents]);
     auto* dst = reinterpret_cast<uint8_t*>(c);
     for (NSUInteger r = 0; r < rows_c; ++r) {
@@ -267,7 +267,7 @@ static void sdpa_bf16_gemm(bool trans_b,
     return;
   }
   // Flush any pending GPU work (causal_mask, softmax) before MPSGraph runs.
-  ctranslate2::metal::commit_and_wait();
+  CT2_COMMIT_AND_WAIT();
 
   SdpaBf16Entry& entry = get_sdpa_bf16_entry(trans_b);
   id<MTLCommandQueue> queue = ctranslate2::metal::get_metal_command_queue();
@@ -364,7 +364,7 @@ static void sdpa_head_mps(const T* q_row0, const T* k_row0,
                                               dataType:SdpaMPSDtype<T>::v];
     }
     if ((NSUInteger)seqlen_k * sizeof(T) < mps_min) {
-      ctranslate2::metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
     }
   }
 
@@ -456,6 +456,94 @@ static void sdpa_head_bf16(const ctranslate2::bfloat16_t* q_row0,
   }
 }
 
+// ---------------------------------------------------------------------------
+// CPU fast-path for small SDPA.
+//
+// Handles any sq/sk. Per (batch, head, query_pos i):
+//   score[j] = scale * dot(Q[i], K[j])   j in [0, sk)
+//   if (is_causal && j > i) score[j] = -inf
+//   prob     = softmax(score)
+//   out[i]   = prob @ V
+//
+// This avoids MPS GEMM entirely — no padding, no command buffers, no commits.
+// CPU SDPA is fast for small sq*sk (e.g. encoder with 3 tokens: sq=sk=3).
+// MPS GEMM with tiny matrices triggers commit_and_wait per head (~0.4 ms).
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static void sdpa_cpu(const T* q, const T* k, const T* v, T* output,
+                     ctranslate2::dim_t batch_size,
+                     ctranslate2::dim_t seqlen_q,
+                     ctranslate2::dim_t seqlen_k,
+                     ctranslate2::dim_t num_heads,
+                     ctranslate2::dim_t num_heads_k,
+                     ctranslate2::dim_t head_dim,
+                     float scale, bool is_causal,
+                     ctranslate2::dim_t kv_batch_stride) {
+  const ctranslate2::dim_t q_lda  = num_heads   * head_dim;
+  const ctranslate2::dim_t kv_lda = num_heads_k * head_dim;
+  const ctranslate2::dim_t kv_bstride = (kv_batch_stride > 0)
+                                        ? kv_batch_stride
+                                        : seqlen_k * num_heads_k * head_dim;
+
+  // Stack-allocated score buffer. For sk > 8192, fall back to heap.
+  constexpr ctranslate2::dim_t kStackLimit = 8192;
+  float stack_scores[kStackLimit];
+  std::unique_ptr<float[]> heap_scores;
+  float* scores = stack_scores;
+  if (seqlen_k > kStackLimit) {
+    heap_scores.reset(new float[seqlen_k]);
+    scores = heap_scores.get();
+  }
+
+  for (ctranslate2::dim_t b = 0; b < batch_size; ++b) {
+    for (ctranslate2::dim_t h = 0; h < num_heads; ++h) {
+      const ctranslate2::dim_t hk = h % num_heads_k;
+
+      const T* k_base = k + b * kv_bstride + hk * head_dim;
+      const T* v_base = v + b * kv_bstride + hk * head_dim;
+
+      for (ctranslate2::dim_t qi = 0; qi < seqlen_q; ++qi) {
+        // Q layout: [batch, sq, num_heads, head_dim]
+        const T* q_ptr = q + (b * seqlen_q * q_lda) + qi * q_lda + h * head_dim;
+        T* out_ptr = output + (b * seqlen_q * q_lda) + qi * q_lda + h * head_dim;
+
+        // Step 1: scores = scale * Q[qi] · K^T
+        float max_score = -1e30f;
+        for (ctranslate2::dim_t j = 0; j < seqlen_k; ++j) {
+          const T* k_row = k_base + j * kv_lda;
+          float dot = 0.0f;
+          for (ctranslate2::dim_t d = 0; d < head_dim; ++d)
+            dot += float(q_ptr[d]) * float(k_row[d]);
+          float s = dot * scale;
+          if (is_causal && j > qi)
+            s = -1e30f;
+          scores[j] = s;
+          if (s > max_score) max_score = s;
+        }
+
+        // Step 2: softmax
+        float sum_exp = 0.0f;
+        for (ctranslate2::dim_t j = 0; j < seqlen_k; ++j) {
+          scores[j] = std::exp(scores[j] - max_score);
+          sum_exp += scores[j];
+        }
+        const float inv_sum = 1.0f / sum_exp;
+        for (ctranslate2::dim_t j = 0; j < seqlen_k; ++j)
+          scores[j] *= inv_sum;
+
+        // Step 3: out = prob @ V
+        for (ctranslate2::dim_t d = 0; d < head_dim; ++d) {
+          float acc = 0.0f;
+          for (ctranslate2::dim_t j = 0; j < seqlen_k; ++j)
+            acc += scores[j] * float(v_base[j * kv_lda + d]);
+          out_ptr[d] = T(acc);
+        }
+      }
+    }
+  }
+}
+
 }  // anonymous namespace
 
 // ---------------------------------------------------------------------------
@@ -471,6 +559,22 @@ namespace ctranslate2 {
                     dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
                     float scale, bool is_causal,
                     dim_t kv_batch_stride) {
+      // CPU fast-path for small SDPA: avoids MPS GEMM padding overhead.
+      // MPS GEMM with tiny matrices (cols ≤ 3) triggers commit_and_wait
+      // per head due to rowBytes padding — ~0.4ms × num_heads × num_layers.
+      // CPU SDPA for small sq*sk is orders of magnitude faster.
+      // Threshold: sq*sk ≤ 32 routes to CPU (covers decode sq=1 and
+      // short encoder prefill like sq=sk=3).
+      constexpr dim_t kCpuSdpaThresh = 32;
+      if (seqlen_q * seqlen_k <= kCpuSdpaThresh) {
+        // Flush any pending GPU writes so CPU can read Q/K/V.
+        CT2_COMMIT_AND_WAIT();
+        sdpa_cpu<T>(q, k, v, output, batch_size, seqlen_q, seqlen_k,
+                    num_heads, num_heads_k, head_dim,
+                    scale, is_causal, kv_batch_stride);
+        return;
+      }
+
       const dim_t q_lda  = num_heads   * head_dim;
       const dim_t kv_lda = num_heads_k * head_dim;
       const dim_t kv_bstride = (kv_batch_stride > 0)
@@ -495,7 +599,6 @@ namespace ctranslate2 {
                             q_lda, kv_lda, seqlen_q, seqlen_k, head_dim,
                             scale, is_causal);
           } else {
-            // Integer types will never reach SDPA at runtime; throw if they somehow do.
             throw std::runtime_error("sdpa_metal: integer types are not supported");
           }
         }

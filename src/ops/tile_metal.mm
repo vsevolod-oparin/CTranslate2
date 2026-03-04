@@ -22,7 +22,7 @@ namespace ctranslate2 {
                        const dim_t outer_size,
                        const dim_t inner_size,
                        StorageView& output) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       const T* src = input.data<T>();
       T* dst = output.data<T>();

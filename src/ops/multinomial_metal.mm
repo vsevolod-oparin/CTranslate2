@@ -18,7 +18,7 @@ namespace ctranslate2 {
 
     template <Device D, typename T>
     void Multinomial::compute(const StorageView& input, StorageView& output) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       const dim_t class_size  = input.dim(-1);
       const dim_t batch_size  = input.size() / class_size;

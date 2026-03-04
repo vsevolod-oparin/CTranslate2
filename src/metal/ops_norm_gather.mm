@@ -199,7 +199,7 @@ static void dispatch_gather(const char* kname,
   // sync=false is used by batch_gather_in_place (M11.1) which manages its own
   // synchronization after encoding all gathers.
   if (sync)
-    ctranslate2::metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
 }
 
 }  // anonymous namespace

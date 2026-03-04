@@ -44,7 +44,7 @@ namespace ctranslate2 {
   template<>
   template <typename T>
   T primitives<Device::METAL>::at(const T* x, dim_t index) {
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     return x[index];
   }
 
@@ -83,7 +83,7 @@ namespace ctranslate2 {
   template<>
   template <typename U, typename V>
   void primitives<Device::METAL>::convert(const U* x, V* y, dim_t size) {
-    metal::commit_and_wait();
+    CT2_COMMIT_AND_WAIT();
     std::copy(x, x + size, y);
   }
 

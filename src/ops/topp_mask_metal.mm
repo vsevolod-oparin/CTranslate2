@@ -25,7 +25,7 @@ namespace ctranslate2 {
     void TopPMask::compute(const StorageView& input,
                            const StorageView& probs,
                            StorageView& output) const {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
 
       const dim_t depth = input.dim(-1);
       const dim_t batch_size = input.size() / depth;

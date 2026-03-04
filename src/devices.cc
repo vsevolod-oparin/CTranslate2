@@ -142,7 +142,7 @@ namespace ctranslate2 {
       // Unified memory: no device-level copy needed.
       // Flush pending GPU work via the stream sync.
       (void)index;
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
     }
 #endif
 #if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
@@ -159,7 +159,7 @@ namespace ctranslate2 {
 #endif
 #ifdef CT2_WITH_METAL
     if (device == Device::METAL) {
-      metal::commit_and_wait();
+      CT2_COMMIT_AND_WAIT();
     }
 #endif
 #if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)

@@ -315,7 +315,8 @@ static void run_bf16_gemm_inner(bool trans_a, bool trans_b,
 }
 
 // Flush pending GPU work and run one BF16 GEMM.
-// Throws if alpha != 1.0 or beta != 0.0 (not supported by the MPSGraph path).
+// MPSGraph BF16 matmul does not support alpha/beta natively.
+// Strategy: C = A*B, then C *= alpha if alpha != 1.  beta must be 0.
 static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
                                 ctranslate2::dim_t m,
                                 ctranslate2::dim_t n,
@@ -324,13 +325,19 @@ static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
                                 const ctranslate2::bfloat16_t* a, ctranslate2::dim_t lda,
                                 const ctranslate2::bfloat16_t* b, ctranslate2::dim_t ldb,
                                 ctranslate2::bfloat16_t* c, ctranslate2::dim_t ldc) {
-  if (alpha != 1.0f || beta != 0.0f)
+  if (beta != 0.0f)
     throw std::runtime_error(
-        "Metal BF16 GEMM: only alpha=1.0 and beta=0.0 are supported");
+        "Metal BF16 GEMM: only beta=0.0 is supported");
   if (m == 0 || n == 0 || k == 0) return;
   // MPSGraph uses its own queue; flush the deferred CB first.
   ctranslate2::metal::commit_and_wait();
   run_bf16_gemm_inner(trans_a, trans_b, m, n, k, a, lda, b, ldb, c, ldc);
+  // Apply alpha scaling post-GEMM if needed.
+  if (alpha != 1.0f) {
+    const ctranslate2::dim_t size = m * n;
+    ctranslate2::primitives<ctranslate2::Device::METAL>::mul(
+        static_cast<ctranslate2::bfloat16_t>(alpha), c, c, size);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -533,15 +540,21 @@ namespace ctranslate2 {
                                             b + i * strideb, ldb,
                                      beta,  c + i * stridec, ldc);
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {
-      if (alpha != 1.0f || beta != 0.0f)
+      if (beta != 0.0f)
         throw std::runtime_error(
-            "Metal BF16 GEMM: only alpha=1.0 and beta=0.0 are supported");
+            "Metal BF16 GEMM: only beta=0.0 is supported");
       metal::commit_and_wait();  // flush once before the batch loop
       for (dim_t i = 0; i < batch_size; ++i)
         run_bf16_gemm_inner(transpose_a, transpose_b, m, n, k,
                             a + i * stridea, lda,
                             b + i * strideb, ldb,
                             c + i * stridec, ldc);
+      // Apply alpha scaling post-GEMM if needed.
+      if (alpha != 1.0f) {
+        const dim_t total = batch_size * m * n;
+        primitives<Device::METAL>::mul(
+            static_cast<bfloat16_t>(alpha), c, c, total);
+      }
     } else if constexpr (std::is_same_v<In, int8_t> && std::is_same_v<Out, int32_t>) {
       if (batch_size == 0 || m == 0 || n == 0 || k == 0) return;
       if (beta != 0.0f)

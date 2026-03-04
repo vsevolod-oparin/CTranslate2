@@ -50,6 +50,19 @@
 #include "metal/msl_strings.h"
 
 // ---------------------------------------------------------------------------
+// MSL compile options — use Metal Language Version 3.1 when available.
+// Metal 3.1 (macOS 14+) defines __HAVE_BFLOAT__, enabling bfloat16 kernels.
+// ---------------------------------------------------------------------------
+
+static inline MTLCompileOptions* default_msl_compile_options() {
+  MTLCompileOptions* opts = [[MTLCompileOptions alloc] init];
+  if (@available(macOS 14.0, *)) {
+    opts.languageVersion = MTLLanguageVersion3_1;
+  }
+  return opts;
+}
+
+// ---------------------------------------------------------------------------
 // Lazy MSL library compilation (compile once per TU, thread-safe)
 //
 // `flag` and `lib_out` are static locals owned by the calling library getter.
@@ -63,8 +76,9 @@ static inline id<MTLLibrary> compile_library_once(std::once_flag& flag,
   std::call_once(flag, [&] {
     NSError* err = nil;
     NSString* src = [NSString stringWithUTF8String:msl_src];
+    MTLCompileOptions* effective_opts = opts ? opts : default_msl_compile_options();
     lib_out = [ctranslate2::metal::get_metal_device()
-        newLibraryWithSource:src options:opts error:&err];
+        newLibraryWithSource:src options:effective_opts error:&err];
     if (lib_out == nil) {
       std::string msg = std::string("Metal: failed to compile ") + label + " library";
       if (err)

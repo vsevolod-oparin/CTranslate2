@@ -6,6 +6,10 @@
 #  include "./cuda/utils.h"
 #endif
 
+#ifdef CT2_WITH_METAL
+#  include "metal/device.h"
+#endif
+
 #include "cpu/backend.h"
 #include "env.h"
 
@@ -102,6 +106,15 @@ namespace ctranslate2 {
       return false;
 #endif
     }
+    case Device::METAL: {
+#ifdef CT2_WITH_METAL
+      static const bool allow_bfloat16 = read_bool_from_env("CT2_METAL_ALLOW_BF16");
+      return allow_bfloat16 || metal::gpu_supports_bfloat16();
+#else
+      (void)device_index;
+      return false;
+#endif
+    }
     default:
       return false;
     }
@@ -113,6 +126,14 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_CUDA
       static const bool allow_float16 = read_bool_from_env("CT2_CUDA_ALLOW_FP16");
       return allow_float16 || cuda::gpu_has_fp16_tensor_cores(device_index);
+#else
+      (void)device_index;
+      return false;
+#endif
+    }
+    case Device::METAL: {
+#ifdef CT2_WITH_METAL
+      return metal::gpu_supports_float16();
 #else
       (void)device_index;
       return false;

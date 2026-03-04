@@ -26,6 +26,10 @@ namespace ctranslate2 {
 
     template void DequantizeAwq::dequantize<Device::METAL, int32_t, ctranslate2::float16_t>(
         const StorageView&, const StorageView&, const StorageView&, StorageView&) const;
+    template void DequantizeAwq::dequantize<Device::METAL, int32_t, ctranslate2::bfloat16_t>(
+        const StorageView&, const StorageView&, const StorageView&, StorageView&) const;
+    template void DequantizeAwq::dequantize<Device::METAL, int32_t, float>(
+        const StorageView&, const StorageView&, const StorageView&, StorageView&) const;
 
     // ---------------------------------------------------------------------------
 
@@ -38,6 +42,12 @@ namespace ctranslate2 {
     }
 
     template void GemmAwq::compute<Device::METAL, ctranslate2::float16_t, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemmAwq::compute<Device::METAL, ctranslate2::bfloat16_t, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemmAwq::compute<Device::METAL, float, int32_t>(
         const StorageView&, const StorageView&, const StorageView&,
         const StorageView&, StorageView&) const;
 
@@ -63,6 +73,18 @@ namespace ctranslate2 {
         const StorageView&, const StorageView&, const StorageView&,
         const StorageView&, StorageView&) const;
     template void GemvAwq::compute_gemv2<Device::METAL, ctranslate2::float16_t, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemvAwq::compute_gemv<Device::METAL, ctranslate2::bfloat16_t, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemvAwq::compute_gemv2<Device::METAL, ctranslate2::bfloat16_t, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemvAwq::compute_gemv<Device::METAL, float, int32_t>(
+        const StorageView&, const StorageView&, const StorageView&,
+        const StorageView&, StorageView&) const;
+    template void GemvAwq::compute_gemv2<Device::METAL, float, int32_t>(
         const StorageView&, const StorageView&, const StorageView&,
         const StorageView&, StorageView&) const;
 

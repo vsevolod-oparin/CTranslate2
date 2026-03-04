@@ -41,7 +41,7 @@ def main():
     print(f"Input: {tokens}")
     print()
 
-    for beam_size in [2, 4]:
+    for beam_size in [2, 4, 8]:
         print(f"=== beam_size={beam_size}, max_len sweep 1..11 ===")
         for max_len in range(1, 12):
             cpu_r = cpu.translate_batch(

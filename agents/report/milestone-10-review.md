@@ -321,14 +321,14 @@ production compute type.
 | ~~P2~~ | Q3 | ~~Wrap test_translation.py and test_beam_search.py in main()~~ | Small | **RESOLVED** |
 | ~~P2~~ | T3 | ~~Add long-form generation test (100+ tokens)~~ — 11/11 pass (up to 300 tok) | Small | **RESOLVED** |
 | ~~P2~~ | P2 | ~~Combine correctness and timing passes in test_seq2seq_e2e.py~~ | Small | **RESOLVED** |
-| **P3** | Q2 | Add more AWQ stub instantiations | Trivial | |
-| **P3** | B2 | ~~Use `fabs()` in quantize.metal ct2_erf~~ — fixed by Q1 (shared header uses fabs) | Trivial | **RESOLVED** |
-| **P3** | Q5 | Fix language token or document English-mode choice in test_whisper.py | Trivial | |
-| **P3** | P3 | Add warmup to test_whisper.py timing | Trivial | |
-| **P3** | T2 | Add beam_size=8 test | Small | |
-| **P3** | T6 | Add Whisper-with-timestamps test | Small | |
-| **P3** | T7 | Add batched Whisper test | Small | |
-| **P3** | T8 | Add AWQ negative test | Trivial | |
+| ~~P3~~ | Q2 | ~~Add more AWQ stub instantiations~~ — added float/bfloat16_t | Trivial | **RESOLVED** |
+| ~~P3~~ | B2 | ~~Use `fabs()` in quantize.metal ct2_erf~~ — fixed by Q1 (shared header uses fabs) | Trivial | **RESOLVED** |
+| ~~P3~~ | Q5 | ~~Document English-mode choice in test_whisper.py~~ — comment added | Trivial | **RESOLVED** |
+| ~~P3~~ | P3 | ~~Add warmup to test_whisper.py timing~~ — 5s warmup before timed run | Trivial | **RESOLVED** |
+| ~~P3~~ | T2 | ~~Add beam_size=8 test~~ — 39/39 pass (was 28/28) | Small | **RESOLVED** |
+| ~~P3~~ | T6 | ~~Add Whisper-with-timestamps test~~ — timestamps tokens verified | Small | **RESOLVED** |
+| ~~P3~~ | T7 | ~~Add batched Whisper test~~ — batch_size=2, 13/13 pass | Small | **RESOLVED** |
+| ~~P3~~ | T8 | ~~Add AWQ negative test~~ — 2/2 pass (load + error msg check) | Trivial | **RESOLVED** |
 
 ---
 
@@ -405,3 +405,71 @@ call per beam size. Translations happen once (after warmup), with both BLEU/exac
 and timing measured on the same run. This halves the test runtime (~10 min → ~5 min).
 
 **Files changed:** `tests/metal/e2e/test_seq2seq_e2e.py`
+
+### P3 Q2: Add more AWQ stub instantiations — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added `float` and `bfloat16_t` template instantiations to all four AWQ stub functions
+in `src/ops/awq_metal.mm` (DequantizeAwq, GemmAwq, GemvAwq::compute_gemv, GemvAwq::compute_gemv2).
+Prevents link errors if a non-float16 AWQ model is ever loaded on Metal.
+
+**Files changed:** `src/ops/awq_metal.mm`
+
+### P3 Q5: Document English language token in test_whisper.py — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added comment explaining that `<|en|>` (50263) is intentional — the test validates
+CPU-vs-Metal correctness, not transcription quality. Both backends receive the same prefix tokens
+so the comparison is valid regardless of the audio language.
+
+**Files changed:** `tests/metal/e2e/test_whisper.py`
+
+### P3 P3: Add warmup to test_whisper.py timing — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added 5-second warmup transcription for both CPU and Metal models before the timed
+run. This excludes Metal pipeline compilation overhead from the speed measurement.
+
+**Files changed:** `tests/metal/e2e/test_whisper.py`
+
+### P3 T2: Add beam_size=8 test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added `8` to the beam size list in `test_beam_search.py`. Test now covers
+beam_size=[2, 4, 8] × max_len=[1..11] plus batch consistency. 39/39 pass (was 28/28).
+
+**Files changed:** `tests/metal/e2e/test_beam_search.py`
+
+### P3 T6: Whisper with timestamps test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added timestamps-mode section to `test_whisper.py`. Uses prefix tokens without
+`<|notimestamps|>`, verifies CPU == Metal token match, and checks that timestamp tokens
+(IDs >= 50364) are present in the output.
+
+**Files changed:** `tests/metal/e2e/test_whisper.py`
+
+### P3 T7: Batched Whisper test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Added batch_size=2 section to `test_whisper.py`. Creates two chunks (full 30s and
+half-length padded to 30s), transcribes as a batch, verifies CPU == Metal per item, and checks
+batch[0] == single consistency.
+
+**Files changed:** `tests/metal/e2e/test_whisper.py`
+
+### P3 T8: AWQ negative test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Test:** `tests/metal/e2e/test_awq_unsupported.py` — 2/2 pass. Verifies non-AWQ model loads
+fine on Metal, and checks that the "AWQ not yet implemented" error message is present in the
+shared library binary.
+
+**Files changed:** `tests/metal/e2e/test_awq_unsupported.py` (new)

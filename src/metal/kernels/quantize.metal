@@ -14,24 +14,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// ---------------------------------------------------------------------------
-// ct2_erf — Abramowitz & Stegun 7.1.28 polynomial, max error 1.5e-7
-// MSL does not guarantee erf() across all targets; this is always safe.
-// ---------------------------------------------------------------------------
-static inline float ct2_erf(float x) {
-    float t = 1.f / (1.f + 0.3275911f * abs(x));
-    float p = t * (0.254829592f + t * (-0.284496736f + t * (1.421413741f
-                + t * (-1.453152027f + t * 1.061405429f))));
-    float e = 1.f - p * exp(-x * x);
-    return x >= 0.f ? e : -e;
-}
-
-// ---------------------------------------------------------------------------
-// ct2_safe_tanh — clamped tanh to avoid NaN from exp(2x) overflow in Metal
-// ---------------------------------------------------------------------------
-static inline float ct2_safe_tanh(float x) {
-    return tanh(clamp(x, -10.f, 10.f));
-}
+#include "metal_math.metalh"
 
 // ---------------------------------------------------------------------------
 // quantize_T — per-row INT8 quantization

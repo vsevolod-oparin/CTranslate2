@@ -36,27 +36,19 @@ def load_wmt14_subset(n):
     return sources, references
 
 
-def translate_all(translator, tokenizer, sentences, beam_size):
-    """Translate sentences one by one (batch_size=1) and return decoded strings."""
+def translate_all_timed(translator, tokenizer, sentences, beam_size, warmup=0):
+    """Translate with optional warmup. Returns (outputs, elapsed_seconds)."""
+    for sentence in sentences[:warmup]:
+        tokens = tokenize(tokenizer, sentence)
+        translator.translate_batch([tokens], beam_size=beam_size)
+
+    t0 = time.monotonic()
     outputs = []
     for sentence in sentences:
         tokens = tokenize(tokenizer, sentence)
         result = translator.translate_batch([tokens], beam_size=beam_size)
         text = decode(tokenizer, result[0].hypotheses[0])
         outputs.append(text)
-    return outputs
-
-
-def translate_timed(translator, tokenizer, sentences, beam_size, warmup=0):
-    """Translate with timing. Returns (outputs, elapsed_seconds)."""
-    # Warmup
-    for sentence in sentences[:warmup]:
-        tokens = tokenize(tokenizer, sentence)
-        translator.translate_batch([tokens], beam_size=beam_size)
-
-    # Timed run
-    t0 = time.monotonic()
-    outputs = translate_all(translator, tokenizer, sentences, beam_size)
     elapsed = time.monotonic() - t0
     return outputs, elapsed
 
@@ -95,14 +87,21 @@ def main():
         suffix = f"  ({detail})" if detail else ""
         print(f"  [INFO] {label}{suffix}")
 
-    # --- BLEU comparison (hard pass/fail) ---
+    # --- Combined correctness + timing (single pass per beam size) ---
     for beam_size in BEAM_SIZES:
         mode = "greedy" if beam_size == 1 else f"beam={beam_size}"
-        print(f"\n=== BLEU comparison: {mode} ===")
+        print(f"\n=== BLEU + speed: {mode} ===")
 
-        cpu_outputs = translate_all(cpu_translator, tokenizer, sources, beam_size)
-        metal_outputs = translate_all(metal_translator, tokenizer, sources, beam_size)
+        cpu_outputs, cpu_time = translate_all_timed(
+            cpu_translator, tokenizer, sources, beam_size,
+            warmup=WARMUP_SENTENCES,
+        )
+        metal_outputs, metal_time = translate_all_timed(
+            metal_translator, tokenizer, sources, beam_size,
+            warmup=WARMUP_SENTENCES,
+        )
 
+        # Correctness: BLEU
         cpu_bleu = compute_bleu(cpu_outputs, references)
         metal_bleu = compute_bleu(metal_outputs, references)
         bleu_diff = abs(cpu_bleu - metal_bleu)
@@ -117,7 +116,7 @@ def main():
             f"diff={bleu_diff:.2f}",
         )
 
-        # Also check exact token match rate
+        # Correctness: exact match
         exact_matches = sum(1 for c, m in zip(cpu_outputs, metal_outputs) if c == m)
         print(f"  Exact match: {exact_matches}/{len(sources)}")
         check(
@@ -126,24 +125,7 @@ def main():
             f"{exact_matches}/{len(sources)}",
         )
 
-    # --- Speed benchmarks (informational, not pass/fail) ---
-    # The current Metal backend uses per-op commit, which adds ~0.4ms overhead
-    # per command buffer submission. For small models like opus-mt-en-de, this
-    # overhead dominates. M11 (command buffer batching) will address this.
-
-    for beam_size in BEAM_SIZES:
-        mode = "greedy" if beam_size == 1 else f"beam={beam_size}"
-        print(f"\n=== Speed benchmark: batch_size=1, {mode} ===")
-
-        _, cpu_time = translate_timed(
-            cpu_translator, tokenizer, sources, beam_size=beam_size,
-            warmup=WARMUP_SENTENCES,
-        )
-        _, metal_time = translate_timed(
-            metal_translator, tokenizer, sources, beam_size=beam_size,
-            warmup=WARMUP_SENTENCES,
-        )
-
+        # Speed (informational)
         speedup = cpu_time / metal_time if metal_time > 0 else float("inf")
         info(f"CPU:   {cpu_time:.2f}s  ({len(sources)/cpu_time:.1f} sent/s)")
         info(f"Metal: {metal_time:.2f}s  ({len(sources)/metal_time:.1f} sent/s)")

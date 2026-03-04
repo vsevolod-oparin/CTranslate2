@@ -28,35 +28,7 @@
 #include <metal_stdlib>
 using namespace metal;
 
-// Metal Shading Language does not provide erf() in its standard library.
-// We implement it via the Abramowitz & Stegun polynomial approximation
-// (formula 7.1.28, max absolute error 1.5e-7):
-//
-//   t = 1 / (1 + 0.3275911 * |x|)
-//   erf(x) ≈ sign(x) * (1 - poly(t) * exp(-x*x))
-//   poly(t) = t*(a1 + t*(a2 + t*(a3 + t*(a4 + t*a5))))
-//
-// Always operates in float32 regardless of kernel input type.
-static float ct2_erf(float x) {
-  const float p  = 0.3275911f;
-  const float a1 =  0.254829592f;
-  const float a2 = -0.284496736f;
-  const float a3 =  1.421413741f;
-  const float a4 = -1.453152027f;
-  const float a5 =  1.061405429f;
-  float sign = (x >= 0.f) ? 1.f : -1.f;
-  float ax = fabs(x);
-  float t  = 1.f / (1.f + p * ax);
-  float poly = t * (a1 + t * (a2 + t * (a3 + t * (a4 + t * a5))));
-  return sign * (1.f - poly * exp(-ax * ax));
-}
-
-// Metal's tanh() computes (exp(2x)-1)/(exp(2x)+1) which produces NaN when
-// |x| > ~44 because exp(2x) overflows float32 to inf, giving inf/inf = NaN.
-// Clamp to [-10, 10] where tanh is already ±1 to 15+ decimal places.
-static float ct2_safe_tanh(float x) {
-  return tanh(clamp(x, -10.f, 10.f));
-}
+#include "metal_math.metalh"
 
 // y[gid] = (T)(expr)  where expr is a float32 computation in variable v = (float)x[gid].
 #define DEFINE_UNARY(name, T, expr)                     \

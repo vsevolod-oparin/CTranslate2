@@ -313,19 +313,95 @@ production compute type.
 
 | Priority | ID | Action | Effort | Status |
 |----------|----|--------|--------|--------|
-| **P0** | T4-bug | Fix INT8 e2e pipeline on Metal (garbage output) | Medium | **NEW** |
+| ~~P0~~ | T4-bug | ~~Fix INT8 e2e pipeline on Metal~~ — use-after-free fixed, 10/10 pass | Medium | **RESOLVED** |
 | ~~P1~~ | B1 | ~~Move gather `commit_and_wait`~~ — kept as-is (both hazards need sync) | — | **RESOLVED** |
-| ~~P1~~ | T4 | ~~Add INT8 model e2e test~~ — added (11/11 pass, tests fallback path) | — | **RESOLVED** |
-| **P2** | Q1 | Extract shared `ct2_erf`/`ct2_safe_tanh` into metal_math.metalh | Small | |
-| **P2** | T5 | Add float16 model end-to-end test | Medium | |
-| **P2** | Q3 | Wrap test_translation.py and test_beam_search.py in main() | Small | |
-| **P2** | T3 | Add long-form generation test (100+ tokens) | Small | |
-| **P2** | P2 | Combine correctness and timing passes in test_seq2seq_e2e.py | Small | |
+| ~~P1~~ | T4 | ~~Add INT8 model e2e test~~ — rewritten for native INT8 (10/10 pass) | — | **RESOLVED** |
+| ~~P2~~ | Q1 | ~~Extract shared `ct2_erf`/`ct2_safe_tanh` into metal_math.metalh~~ | Small | **RESOLVED** |
+| ~~P2~~ | T5 | ~~Add float16 model end-to-end test~~ — 9/9 pass | Medium | **RESOLVED** |
+| ~~P2~~ | Q3 | ~~Wrap test_translation.py and test_beam_search.py in main()~~ | Small | **RESOLVED** |
+| ~~P2~~ | T3 | ~~Add long-form generation test (100+ tokens)~~ — 11/11 pass (up to 300 tok) | Small | **RESOLVED** |
+| ~~P2~~ | P2 | ~~Combine correctness and timing passes in test_seq2seq_e2e.py~~ | Small | **RESOLVED** |
 | **P3** | Q2 | Add more AWQ stub instantiations | Trivial | |
-| **P3** | B2 | Use `fabs()` consistently in quantize.metal ct2_erf | Trivial | |
+| **P3** | B2 | ~~Use `fabs()` in quantize.metal ct2_erf~~ — fixed by Q1 (shared header uses fabs) | Trivial | **RESOLVED** |
 | **P3** | Q5 | Fix language token or document English-mode choice in test_whisper.py | Trivial | |
 | **P3** | P3 | Add warmup to test_whisper.py timing | Trivial | |
 | **P3** | T2 | Add beam_size=8 test | Small | |
 | **P3** | T6 | Add Whisper-with-timestamps test | Small | |
 | **P3** | T7 | Add batched Whisper test | Small | |
-| **P3** | T8 | Add AWQ negative test | Trivial |
+| **P3** | T8 | Add AWQ negative test | Trivial | |
+
+---
+
+### P0 T4-bug: INT8 e2e pipeline fix — RESOLVED
+
+**Date:** 2026-03-04
+
+**Root cause:** Use-after-free in `Dense::operator()` (`src/layers/common.cc`). The INT8 path
+creates local `qoutput` (int32) and `qinput_scale` (float32) StorageViews. The `_dequantize_op`
+encodes a GPU kernel that reads these buffers, but scope exit frees them before the kernel executes.
+Subsequent allocations reuse the memory, causing the dequantize kernel to read garbage.
+
+**Fix:** Added `synchronize_stream(device)` after the dequantize op (only for `Device::METAL`)
+to flush pending GPU kernels before the local buffers are destroyed. Also enabled
+`mayiuse_int8()` for Metal (`src/types.cc`).
+
+**Test:** `test_int8_translation.py` rewritten for native INT8 — 10/10 pass (greedy, beam=4, batch).
+
+**Files changed:** `src/types.cc`, `src/layers/common.cc`, `tests/metal/e2e/test_int8_translation.py`
+
+### P2 Q1: Extract shared math into metal_math.metalh — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Created `src/metal/kernels/metal_math.metalh` with canonical `ct2_erf()` and
+`ct2_safe_tanh()` definitions. Both `activation.metal` and `quantize.metal` now `#include` the
+shared header. Updated `tools/gen_msl_strings.py` to inline local `.metalh` includes during
+code generation (since `MTLDevice newLibraryWithSource:` has no filesystem).
+
+This also resolves **B2** (quantize.metal used `abs()` instead of `fabs()`) — the shared header
+uses the canonical `fabs()` form.
+
+**Files changed:** `src/metal/kernels/metal_math.metalh` (new), `src/metal/kernels/activation.metal`,
+`src/metal/kernels/quantize.metal`, `tools/gen_msl_strings.py`, `src/metal/msl_strings.h` (regenerated)
+
+### P2 Q3: Wrap test scripts in main() — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** `test_translation.py` and `test_beam_search.py` now use `def main()` with
+`os.path.isdir()` checks and `if __name__ == "__main__": sys.exit(main())`, matching the
+pattern in `test_generator.py`. Prevents opaque crashes when `CT2_TEST_DATA` is misconfigured.
+
+**Files changed:** `tests/metal/e2e/test_translation.py`, `tests/metal/e2e/test_beam_search.py`
+
+### P2 T5: Float16 model e2e test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Test:** `tests/metal/e2e/test_float16_translation.py` — 9/9 pass (greedy, beam=4, batch).
+Float16 model currently falls back to float32 on Metal (mayiuse_float16 returns false).
+Test verifies the fallback produces correct output matching CPU float32.
+
+**Data:** Created `opus-mt-en-de-f16/` via `TransformersConverter` with `quantization='float16'`.
+
+**Files changed:** `tests/metal/e2e/test_float16_translation.py` (new)
+
+### P2 T3: Long-form generation test — RESOLVED
+
+**Date:** 2026-03-04
+
+**Test:** `tests/metal/e2e/test_longform_generation.py` — 11/11 pass. Generates 100, 200, and
+300 tokens (greedy) plus 150 tokens (beam=2) using GPT-2. Stresses KV-cache growth over many
+decode steps. All outputs match CPU exactly.
+
+**Files changed:** `tests/metal/e2e/test_longform_generation.py` (new)
+
+### P2 P2: Combine correctness and timing in test_seq2seq_e2e.py — RESOLVED
+
+**Date:** 2026-03-04
+
+**Change:** Merged the separate correctness and timing passes into a single `translate_all_timed()`
+call per beam size. Translations happen once (after warmup), with both BLEU/exact-match checks
+and timing measured on the same run. This halves the test runtime (~10 min → ~5 min).
+
+**Files changed:** `tests/metal/e2e/test_seq2seq_e2e.py`

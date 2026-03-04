@@ -22,6 +22,13 @@ REPO_ROOT = pathlib.Path(__file__).parent.parent
 KERNELS_DIR = REPO_ROOT / "src" / "metal" / "kernels"
 OUTPUT_FILE = REPO_ROOT / "src" / "metal" / "msl_strings.h"
 
+# Local .metalh headers that may be #included by .metal files.
+# These are inlined by the generator since MTLDevice newLibraryWithSource:
+# does not have filesystem access to resolve #include directives.
+LOCAL_HEADERS = {
+    "metal_math.metalh": KERNELS_DIR / "metal_math.metalh",
+}
+
 # Ordered list of (filename_stem, constant_name).
 # Order must match the order the constants are used in primitives.mm.
 KERNELS = [
@@ -57,6 +64,25 @@ FILE_HEADER = """\
 """
 
 
+def _resolve_local_includes(content: str) -> str:
+    """Inline local .metalh #includes that MTL runtime cannot resolve."""
+    import re
+    _header_cache: dict[str, str] = {}
+
+    def _replace(m: re.Match) -> str:
+        name = m.group(1)
+        if name not in LOCAL_HEADERS:
+            return m.group(0)  # leave unknown includes untouched
+        if name not in _header_cache:
+            path = LOCAL_HEADERS[name]
+            if not path.exists():
+                sys.exit(f"ERROR: local header not found: {path}")
+            _header_cache[name] = path.read_text()
+        return _header_cache[name]
+
+    return re.sub(r'#include\s+"([^"]+\.metalh)"', _replace, content)
+
+
 def build_content() -> str:
     """Return the full text of the generated header."""
     parts = [FILE_HEADER]
@@ -66,6 +92,8 @@ def build_content() -> str:
         if not metal_file.exists():
             sys.exit(f"ERROR: source file not found: {metal_file}")
         content = metal_file.read_text()
+        # Inline local .metalh headers before embedding.
+        content = _resolve_local_includes(content)
         # Ensure the raw-string close marker does not appear inside the content.
         if close_marker in content:
             sys.exit(

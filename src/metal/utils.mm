@@ -17,6 +17,9 @@ namespace ctranslate2 {
       // commit_and_wait() / commit_command_buffer() may commit it.
       thread_local id<MTLCommandBuffer> _thread_buffer = nil;
 
+      // Counter for commit_and_wait() calls (profiling).
+      thread_local uint64_t _commit_count = 0;
+
     }  // namespace
 
 
@@ -68,7 +71,11 @@ namespace ctranslate2 {
       commit_command_buffer();
       [buf waitUntilCompleted];
       CT2_METAL_CHECK_BUFFER(buf);
+      ++_commit_count;
     }
+
+    uint64_t commit_count() { return _commit_count; }
+    void reset_commit_count() { _commit_count = 0; }
 
   }  // namespace metal
 }  // namespace ctranslate2

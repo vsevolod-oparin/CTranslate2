@@ -31,6 +31,17 @@ namespace ctranslate2 {
     }
 
     void Decoder::update_state(DecoderState& state, const StorageView& alive_batches) const {
+#ifdef CT2_WITH_METAL
+      if (_device == Device::METAL) {
+        std::vector<StorageView*> to_gather;
+        to_gather.reserve(state.size());
+        for (auto& pair : state)
+          to_gather.push_back(&pair.second);
+        if (!to_gather.empty())
+          ops::Gather::batch_gather_in_place(to_gather, alive_batches);
+        return;
+      }
+#endif
       for (auto& pair : state) {
         ops::Gather()(pair.second, alive_batches);
       }
@@ -46,11 +57,34 @@ namespace ctranslate2 {
         merge_batch_beam(beam_indices);
       }
 
-      for (auto& [name, value] : state) {
-        if (replicate_state(name))
-          ops::Gather()(value, beam_indices);
-        else if (alive_batches)
-          ops::Gather()(value, *alive_batches);
+#ifdef CT2_WITH_METAL
+      if (_device == Device::METAL) {
+        // Batch all replicate-state gathers into one GPU submission (M11.1).
+        std::vector<StorageView*> to_gather;
+        to_gather.reserve(state.size());
+        for (auto& [name, value] : state) {
+          if (replicate_state(name))
+            to_gather.push_back(&value);
+        }
+        if (!to_gather.empty())
+          ops::Gather::batch_gather_in_place(to_gather, beam_indices);
+
+        // Handle alive_batches gathers (less common, keep sequential).
+        if (alive_batches) {
+          for (auto& [name, value] : state) {
+            if (!replicate_state(name))
+              ops::Gather()(value, *alive_batches);
+          }
+        }
+      } else
+#endif
+      {
+        for (auto& [name, value] : state) {
+          if (replicate_state(name))
+            ops::Gather()(value, beam_indices);
+          else if (alive_batches)
+            ops::Gather()(value, *alive_batches);
+        }
       }
     }
 

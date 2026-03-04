@@ -15,6 +15,12 @@ namespace ctranslate2 {
                       const StorageView& input,
                       StorageView& output) const override;
 
+      // Batch multiple in-place gathers (axis=0) into one GPU submission.
+      // Metal: encodes all gathers, then one commit.
+      // Non-Metal: falls back to sequential gathers.
+      static void batch_gather_in_place(std::vector<StorageView*>& data_views,
+                                        const StorageView& indices);
+
     private:
       template <Device D, typename T>
       void compute(const StorageView& data,

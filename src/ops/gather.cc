@@ -1,8 +1,14 @@
 #include "ctranslate2/ops/gather.h"
 
 #include <algorithm>
+#include <vector>
 
+#include "ctranslate2/devices.h"
 #include "dispatch.h"
+
+#ifdef CT2_WITH_METAL
+#include "metal/ops_metal.h"
+#endif
 
 namespace ctranslate2 {
   namespace ops {
@@ -83,6 +89,62 @@ namespace ctranslate2 {
       output.resize(compute_output_shape(data, input, axis));
       DEVICE_AND_TYPE_DISPATCH(data.device(), data.dtype(),
                                (compute<D, T>(data, input, axis, _batch_dims, output)));
+    }
+
+
+    void Gather::batch_gather_in_place(std::vector<StorageView*>& data_views,
+                                       const StorageView& indices) {
+      if (data_views.empty())
+        return;
+
+#ifdef CT2_WITH_METAL
+      if (data_views[0]->device() == Device::METAL) {
+        // M11.1: encode all gathers, then one commit.
+        // 1. Clone all data views — clones hold the source data.
+        std::vector<StorageView> clones;
+        clones.reserve(data_views.size());
+        for (auto* view : data_views)
+          clones.emplace_back(std::move(*view));
+
+        // 2. For each clone+output pair, resize output and encode gather.
+        for (size_t i = 0; i < data_views.size(); ++i) {
+          StorageView& src = clones[i];
+          StorageView& dst = *data_views[i];
+          const dim_t axis = 0;
+
+          // Compute output shape (same logic as compute_output_shape with axis=0).
+          Shape output_shape(indices.shape());
+          for (dim_t d = axis + 1; d < src.rank(); ++d)
+            output_shape.push_back(src.dim(d));
+          dst.resize(output_shape);
+
+          // Gather parameters (axis=0, batch_dims=0).
+          const dim_t copy_size             = src.stride(axis);
+          const dim_t batch_stride          = src.size();
+          const dim_t num_indices           = indices.size();
+          const dim_t num_indices_per_batch = num_indices;
+          const dim_t total_elements        = num_indices * copy_size;
+
+          TYPE_DISPATCH(src.dtype(),
+            (metal::gather_metal_encode_only<T>(
+                src.data<T>(),
+                dst.data<T>(),
+                indices.data<int32_t>(),
+                copy_size, batch_stride,
+                num_indices_per_batch, total_elements)));
+        }
+
+        // 3. Single sync — all GPU work completes before clones are freed.
+        synchronize_stream(Device::METAL);
+        // 4. Clones destroyed here — safe because GPU work is complete.
+        return;
+      }
+#endif
+
+      // Fallback: sequential gathers for non-Metal devices.
+      const Gather gather;
+      for (auto* view : data_views)
+        gather(*view, indices);
     }
 
   }

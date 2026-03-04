@@ -17,6 +17,10 @@ namespace ctranslate2 {
     // No-op if no commands have been encoded since the last commit.
     void commit_and_wait();
 
+    // Profiling: thread-local count of commit_and_wait() calls.
+    uint64_t commit_count();
+    void reset_commit_count();
+
   }  // namespace metal
 }  // namespace ctranslate2
 

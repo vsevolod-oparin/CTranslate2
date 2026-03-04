@@ -43,10 +43,19 @@ namespace ctranslate2 {
     // gather_metal: for each output slot, copy copy_size elements from src.
     //   dst[slot*copy_size + j] = src[batch_index*batch_stride + indices[slot]*copy_size + j]
     //   - One thread per output element.
+    //   - Commits and waits (synchronous).
     template <typename T>
     void gather_metal(const T* src, T* dst, const int32_t* indices,
                       dim_t copy_size, dim_t batch_stride,
                       dim_t num_indices_per_batch, dim_t total_elements);
+
+    // gather_metal_encode_only: same as gather_metal but encode-only (no commit).
+    //   The caller MUST call commit_and_wait() or synchronize_stream() after
+    //   encoding all gathers.  Used by batch_gather_in_place (M11.1).
+    template <typename T>
+    void gather_metal_encode_only(const T* src, T* dst, const int32_t* indices,
+                                   dim_t copy_size, dim_t batch_stride,
+                                   dim_t num_indices_per_batch, dim_t total_elements);
 
     // alibi_add_metal: add ALiBi positional bias to attention scores.
     //   input/output: [batch_size, num_heads, query_length, key_length]

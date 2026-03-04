@@ -2,6 +2,7 @@
 
 #include <cmath>
 
+#include "ctranslate2/devices.h"
 #include "ctranslate2/ops/activation.h"
 #include "cpu/backend.h"
 #include "dispatch.h"
@@ -399,6 +400,11 @@ namespace ctranslate2 {
                        bias);
         if (residual)
           ops::Add()(*residual, output, output);
+
+        // Metal: flush pending GPU kernels (dequantize_gemm_output reads
+        // qoutput/qinput_scale) before these locals are destroyed.
+        if (device == Device::METAL)
+          synchronize_stream(device);
       } else if (_qzero && _qscale) {
 #ifdef CT2_USE_HIP
         (void)_activation_type;

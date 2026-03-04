@@ -143,6 +143,8 @@ namespace ctranslate2 {
 #endif
     case Device::CPU:
       return cpu::has_gemm_backend(ComputeType::INT8);
+    case Device::METAL:
+      return true;
     default:
       return false;
     }

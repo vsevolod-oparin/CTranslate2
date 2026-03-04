@@ -25,6 +25,10 @@ namespace ctranslate2 {
 #include <vector>
 #include <unordered_map>
 
+#ifdef CT2_WITH_METAL
+#include "metal/utils.h"
+#endif
+
 namespace ctranslate2 {
 
   static void print_as_percentage(std::ostream& os, double ratio) {
@@ -37,6 +41,7 @@ namespace ctranslate2 {
   public:
     std::chrono::microseconds time_in_scope;
     std::chrono::microseconds time_in_scope_and_callees;
+    std::chrono::microseconds gpu_time;  // M11.4: GPU execution time
   };
 
   class Profiler {
@@ -67,11 +72,13 @@ namespace ctranslate2 {
 
     void add_scope_time(const std::string& name,
                         const std::chrono::microseconds& elapsed,
+                        const std::chrono::microseconds& gpu_elapsed,
                         const std::string* parent_name) {
       std::lock_guard<std::mutex> lock(_mutex);
       auto& scope_profile = get_scope_profile(name);
       scope_profile.time_in_scope += elapsed;
       scope_profile.time_in_scope_and_callees += elapsed;
+      scope_profile.gpu_time += gpu_elapsed;
       if (parent_name) {
         auto& parent_scope_profile = get_scope_profile(*parent_name);
         parent_scope_profile.time_in_scope -= elapsed;
@@ -100,6 +107,15 @@ namespace ctranslate2 {
       for (const auto& pair : sorted_cumulated)
         longest_name = std::max(longest_name, pair.first.length());
 
+      // M11.4: Check if any scope has GPU time recorded.
+      bool has_gpu_time = false;
+      for (const auto& pair : sorted_cumulated) {
+        if (pair.second.gpu_time.count() > 0) {
+          has_gpu_time = true;
+          break;
+        }
+      }
+
       double total_time_us = total_time.count();
       double ratio_printed_so_far = 0;
       for (const auto& pair : sorted_cumulated) {
@@ -118,8 +134,15 @@ namespace ctranslate2 {
         os << ' ';
         print_as_percentage(os, ratio_printed_so_far);
         os << ' ' << std::left << std::setw(longest_name) << name
-           << ' ' << (time_in_scope_us / 1000) << "ms"
-           << std::endl;
+           << ' ' << (time_in_scope_us / 1000) << "ms";
+
+        // M11.4: Append GPU time column when available.
+        if (has_gpu_time) {
+          double gpu_time_us = result.gpu_time.count();
+          os << "  " << (gpu_time_us / 1000) << "ms(gpu)";
+        }
+
+        os << std::endl;
       }
     }
   };
@@ -149,6 +172,10 @@ namespace ctranslate2 {
     _parent = current_scope;
     _name = name;
     synchronize_stream(profiler->device());
+#ifdef CT2_WITH_METAL
+    if (profiler->device() == Device::METAL)
+      _gpu_start = metal::gpu_time_elapsed();
+#endif
     _start = std::chrono::high_resolution_clock::now();
     current_scope = this;
   }
@@ -159,7 +186,16 @@ namespace ctranslate2 {
     synchronize_stream(profiler->device());
     auto diff = std::chrono::high_resolution_clock::now() - _start;
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(diff);
-    profiler->add_scope_time(_name, elapsed, _parent ? &_parent->_name : nullptr);
+
+    std::chrono::microseconds gpu_elapsed{0};
+#ifdef CT2_WITH_METAL
+    if (profiler->device() == Device::METAL) {
+      double gpu_secs = metal::gpu_time_elapsed() - _gpu_start;
+      gpu_elapsed = std::chrono::microseconds(static_cast<int64_t>(gpu_secs * 1e6));
+    }
+#endif
+
+    profiler->add_scope_time(_name, elapsed, gpu_elapsed, _parent ? &_parent->_name : nullptr);
     current_scope = _parent;
   }
 

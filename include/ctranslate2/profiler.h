@@ -21,6 +21,7 @@ namespace ctranslate2 {
     ScopeProfiler* _parent = nullptr;
     std::string _name;
     std::chrono::high_resolution_clock::time_point _start;
+    double _gpu_start = 0.0;  // M11.4: accumulated GPU time at scope entry
   };
 
 #else

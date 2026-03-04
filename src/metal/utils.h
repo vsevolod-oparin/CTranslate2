@@ -21,6 +21,11 @@ namespace ctranslate2 {
     uint64_t commit_count();
     void reset_commit_count();
 
+    // M11.4: GPU-native timing from Metal command buffers.
+    // Accumulated GPU execution time (seconds) since last reset.
+    double gpu_time_elapsed();
+    void reset_gpu_time();
+
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
     uint64_t pso_hit_count();

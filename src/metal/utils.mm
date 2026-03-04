@@ -22,6 +22,9 @@ namespace ctranslate2 {
       // Counter for commit_and_wait() calls (profiling).
       thread_local uint64_t _commit_count = 0;
 
+      // M11.4: Accumulated GPU execution time (seconds) since last reset.
+      thread_local double _gpu_time_elapsed = 0.0;
+
     }  // namespace
 
 
@@ -74,10 +77,15 @@ namespace ctranslate2 {
       [buf waitUntilCompleted];
       CT2_METAL_CHECK_BUFFER(buf);
       ++_commit_count;
+      // M11.4: Accumulate GPU execution time.
+      _gpu_time_elapsed += (buf.GPUEndTime - buf.GPUStartTime);
     }
 
     uint64_t commit_count() { return _commit_count; }
     void reset_commit_count() { _commit_count = 0; }
+
+    double gpu_time_elapsed() { return _gpu_time_elapsed; }
+    void reset_gpu_time() { _gpu_time_elapsed = 0.0; }
 
     // M11.2: global PSO cache statistics (atomics for thread safety).
     namespace {

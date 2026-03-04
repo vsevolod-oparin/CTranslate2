@@ -881,10 +881,12 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Test: `tests/metal/e2e/test_bf16_inference.py` (13/13 pass)
 - Report: `agents/report/milestone-11.3-bf16-inference.md`
 
-**11.4 Profiling integration**
+**11.4 Profiling integration** ✅
 - `src/profiler.cc`: add `PROFILE` macro support for Metal
-- Use `[commandBuffer addCompletedHandler:]` + `GPUStartTime`/`GPUEndTime` from command buffer
-- **PASS:** `CT2_ENABLE_PROFILING=1 ct2-translator --device metal` shows per-op timings
+- Use `GPUStartTime`/`GPUEndTime` from command buffer for GPU-native timing
+- **PASS:** `CT2_ENABLE_PROFILING=1 ct2-translator --device metal` shows per-op timings with GPU-ms column
+- Test: `tests/metal/e2e/test_profiling.py` — 7/7 pass
+- Report: `agents/report/milestone-11.4-profiling.md`
 
 ---
 

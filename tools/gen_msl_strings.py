@@ -43,6 +43,7 @@ KERNELS = [
     ("sdpa",           "kSdpaMSL"),
     ("conv1d",         "kConv1dMSL"),
     ("quantize",       "kQuantizeMSL"),
+    ("topk",           "kTopKMSL"),
 ]
 
 # Raw-string delimiter used to wrap the MSL source.

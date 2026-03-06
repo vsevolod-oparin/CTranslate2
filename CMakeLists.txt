@@ -273,6 +273,7 @@ set(METAL_SOURCES
   src/metal/ops_alibi.mm
   src/metal/ops_conv1d.mm
   src/metal/ops_quantize.mm
+  src/metal/ops_topk.mm
   src/ops/normalization_metal.mm
   src/ops/gather_metal.mm
   src/ops/bias_add_metal.mm
@@ -560,6 +561,7 @@ if(WITH_METAL)
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/sdpa.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/conv1d.metal
       ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/quantize.metal
+      ${CMAKE_CURRENT_SOURCE_DIR}/src/metal/kernels/topk.metal
     )
     add_custom_command(
       OUTPUT ${CMAKE_CURRENT_BINARY_DIR}/msl_sync.stamp

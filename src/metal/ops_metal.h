@@ -43,19 +43,15 @@ namespace ctranslate2 {
     // gather_metal: for each output slot, copy copy_size elements from src.
     //   dst[slot*copy_size + j] = src[batch_index*batch_stride + indices[slot]*copy_size + j]
     //   - One thread per output element.
-    //   - Commits and waits (synchronous).
+    //   - Encode-only (no commit).  Callers that read output on CPU must
+    //     call synchronize_stream() or rely on copy_from / .to(CPU) which
+    //     sync internally (storage_view.cc:417).
+    //   - The two-argument Gather::operator() (in-place clone hazard) adds
+    //     its own synchronize_stream() in gather.cc.
     template <typename T>
     void gather_metal(const T* src, T* dst, const int32_t* indices,
                       dim_t copy_size, dim_t batch_stride,
                       dim_t num_indices_per_batch, dim_t total_elements);
-
-    // gather_metal_encode_only: same as gather_metal but encode-only (no commit).
-    //   The caller MUST call commit_and_wait() or synchronize_stream() after
-    //   encoding all gathers.  Used by batch_gather_in_place (M11.1).
-    template <typename T>
-    void gather_metal_encode_only(const T* src, T* dst, const int32_t* indices,
-                                   dim_t copy_size, dim_t batch_stride,
-                                   dim_t num_indices_per_batch, dim_t total_elements);
 
     // alibi_add_metal: add ALiBi positional bias to attention scores.
     //   input/output: [batch_size, num_heads, query_length, key_length]
@@ -141,6 +137,13 @@ namespace ctranslate2 {
         dim_t batch,       dim_t depth,
         bool  transpose_a, bool  transpose_b,
         bool  has_bias,    int   activation_type);
+
+    // topk_metal: GPU argmax (k=1 only).
+    //   Finds the max value and its index in each row of [batch_size, depth].
+    //   One threadgroup (256 threads) per batch item; encode-only.
+    template <typename T>
+    void topk_metal(const T* input, T* values, int32_t* indices,
+                    dim_t batch_size, dim_t depth);
 
   }  // namespace metal
 }  // namespace ctranslate2

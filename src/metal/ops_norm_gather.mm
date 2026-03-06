@@ -152,27 +152,22 @@ static id<MTLComputePipelineState> get_gather_pso(const char* name) {
 //   3: copy_size (uint), 4: batch_stride (uint), 5: num_indices_per_batch (uint)
 //   grid: total_elements threads (one per output element)
 //
-// M10.1: commit_and_wait() makes gather synchronous.  Two hazards require this:
+// M11.6: Gather is now encode-only by default.
 //
-// (1) In-place Gather::operator()(data, input):
-//     StorageView clone(std::move(data));  operator()(clone, input, data);
-//     If gather were encode-only, the clone's MTLBuffer would be freed and
-//     recycled before the GPU reads it.
+// The M10.1 in-place hazard (clone freed before GPU reads) is handled by
+// an explicit synchronize_stream() in the two-argument Gather::operator()
+// in gather.cc.  All other callers either:
+//   (a) feed the gather output to another GPU op (GPU-to-GPU, same CB), or
+//   (b) eventually call copy_from / .to(CPU) which internally calls
+//       synchronize_stream(Device::METAL) (storage_view.cc:417).
 //
-// (2) Out-of-place gather feeding CPU-side operations:
-//     Several call sites (KV-cache update, attention alignment gather) read the
-//     gather output from CPU immediately after the call.  Without a sync, the
-//     CPU reads stale (pre-gather) data from the unified-memory buffer.
-//
-// Making gather unconditionally synchronous is the simplest correct solution.
-// M11 (command buffer batching) will amortize this by batching all layer ops.
+// batch_gather_in_place (M11.1) continues to call gather_metal + explicit sync.
 static void dispatch_gather(const char* kname,
                              const void* src, void* dst, const void* indices,
                              ctranslate2::dim_t copy_size,
                              ctranslate2::dim_t batch_stride,
                              ctranslate2::dim_t num_indices_per_batch,
-                             ctranslate2::dim_t total_elements,
-                             bool sync = true) {
+                             ctranslate2::dim_t total_elements) {
   if (total_elements == 0) return;
   (void)ct2_u32(total_elements);
   uint32_t copy_sz  = ct2_u32(copy_size);
@@ -195,11 +190,6 @@ static void dispatch_gather(const char* kname,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(total_elements), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
-  // Flush immediately — see comment above for the two hazards this prevents.
-  // sync=false is used by batch_gather_in_place (M11.1) which manages its own
-  // synchronization after encoding all gathers.
-  if (sync)
-    CT2_COMMIT_AND_WAIT();
 }
 
 }  // anonymous namespace
@@ -245,17 +235,6 @@ namespace ctranslate2 {
                       copy_size, batch_stride, num_indices_per_batch, total_elements);
     }
 
-    template <typename T>
-    void gather_metal_encode_only(const T* src, T* dst, const int32_t* indices,
-                                   dim_t copy_size, dim_t batch_stride,
-                                   dim_t num_indices_per_batch, dim_t total_elements) {
-      char kname[kKernelNameBufSize];
-      std::snprintf(kname, sizeof(kname), "gather_%s", MetalTypeName<T>::value);
-      dispatch_gather(kname, src, dst, indices,
-                      copy_size, batch_stride, num_indices_per_batch, total_elements,
-                      /*sync=*/false);
-    }
-
     // -----------------------------------------------------------------------
     // Explicit instantiations
     // -----------------------------------------------------------------------
@@ -273,21 +252,13 @@ namespace ctranslate2 {
     template void softmax_metal<float16_t>(const float16_t*, const int32_t*, float16_t*, dim_t, dim_t, bool);
     template void softmax_metal<bfloat16_t>(const bfloat16_t*, const int32_t*, bfloat16_t*, dim_t, dim_t, bool);
 
-    // Gather: all 6 element types
+    // Gather: all 6 element types (encode-only since M11.6)
     template void gather_metal<float>(const float*, float*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
     template void gather_metal<float16_t>(const float16_t*, float16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
     template void gather_metal<bfloat16_t>(const bfloat16_t*, bfloat16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
     template void gather_metal<int32_t>(const int32_t*, int32_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
     template void gather_metal<int16_t>(const int16_t*, int16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
     template void gather_metal<int8_t>(const int8_t*, int8_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-
-    // Gather encode-only (M11.1 batch gather): float types only (KV-cache is always float/f16/bf16)
-    template void gather_metal_encode_only<float>(const float*, float*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-    template void gather_metal_encode_only<float16_t>(const float16_t*, float16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-    template void gather_metal_encode_only<bfloat16_t>(const bfloat16_t*, bfloat16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-    template void gather_metal_encode_only<int32_t>(const int32_t*, int32_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-    template void gather_metal_encode_only<int16_t>(const int16_t*, int16_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
-    template void gather_metal_encode_only<int8_t>(const int8_t*, int8_t*, const int32_t*, dim_t, dim_t, dim_t, dim_t);
 
   }  // namespace metal
 }  // namespace ctranslate2

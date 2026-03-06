@@ -60,6 +60,12 @@ namespace ctranslate2 {
       } else {
         StorageView clone(std::move(data));
         operator()(clone, input, data);
+#ifdef CT2_WITH_METAL
+        // M11.6: gather_metal is now encode-only.  The clone's MTLBuffer must
+        // stay alive until the GPU finishes reading it (M10.1 hazard).
+        if (data.device() == Device::METAL)
+          synchronize_stream(Device::METAL);
+#endif
       }
     }
 
@@ -126,7 +132,7 @@ namespace ctranslate2 {
           const dim_t total_elements        = num_indices * copy_size;
 
           TYPE_DISPATCH(src.dtype(),
-            (metal::gather_metal_encode_only<T>(
+            (metal::gather_metal<T>(
                 src.data<T>(),
                 dst.data<T>(),
                 indices.data<int32_t>(),

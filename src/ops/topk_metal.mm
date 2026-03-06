@@ -1,17 +1,13 @@
 // src/ops/topk_metal.mm
 //
-// M7 — Metal implementation of the TopK op.
+// M11.6 — Metal implementation of the TopK op.
 //
-// Strategy: commit_and_wait() to flush pending GPU writes, then
-// execute the CPU sorting algorithm directly on the shared-memory
-// pointers.  Metal buffers use MTLResourceStorageModeShared (unified
-// memory) so no device copy is needed.  Result is written directly to
-// the output Metal buffers; the next GPU op will see the data without
-// an additional flush.
+// k=1: GPU argmax kernel (encode-only, no commit_and_wait).
+//   The caller (Sampler::operator()) syncs via copy_from which
+//   calls synchronize_stream(Device::METAL) internally.
 //
-// Explicit cast to float32 is used in all comparisons so the code
-// compiles correctly for bfloat16_t (which has operator float() but no
-// comparison operators) as well as float and float16_t.
+// k>1: commit_and_wait() to flush pending GPU writes, then CPU
+//   std::partial_sort on unified-memory pointers.
 
 #include "ctranslate2/ops/topk.h"
 
@@ -19,6 +15,7 @@
 #include <numeric>
 #include <vector>
 
+#include "metal/ops_metal.h"
 #include "metal/utils.h"
 
 namespace ctranslate2 {
@@ -28,26 +25,21 @@ namespace ctranslate2 {
     void TopK::compute(const StorageView& x,
                        StorageView& values,
                        StorageView& indices) const {
-      CT2_COMMIT_AND_WAIT();
-
       const dim_t depth = x.dim(-1);
       const dim_t batch_size = x.size() / depth;
 
-      const DataType* x_data = x.data<DataType>();
       DataType* v_data = values.data<DataType>();
       IndexType* i_data = indices.data<IndexType>();
 
       if (_k == 1) {
-        for (dim_t i = 0; i < batch_size; ++i) {
-          const DataType* row = x_data + i * depth;
-          const DataType* mx = std::max_element(row, row + depth,
-              [](const DataType& a, const DataType& b) {
-                return static_cast<float>(a) < static_cast<float>(b);
-              });
-          v_data[i] = *mx;
-          i_data[i] = static_cast<IndexType>(std::distance(row, mx));
-        }
+        // GPU argmax — encode-only, no sync.
+        metal::topk_metal<DataType>(x.data<DataType>(), v_data, i_data,
+                                     batch_size, depth);
       } else {
+        // CPU fallback for k>1: flush GPU, then partial_sort on shared memory.
+        CT2_COMMIT_AND_WAIT();
+
+        const DataType* x_data = x.data<DataType>();
         std::vector<IndexType> ids(static_cast<std::size_t>(depth));
         for (dim_t i = 0; i < batch_size; ++i) {
           const DataType* inp = x_data + i * depth;

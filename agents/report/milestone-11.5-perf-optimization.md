@@ -136,15 +136,17 @@ Extended `sdpa_decode_cpu` to handle any sq (renamed to `sdpa_cpu`). Routes to C
 
 ### High Impact
 
-1. **Eliminate Gather/TopK syncs (549 + 530 commits)**
-   - Gather uses CPU random-access scatter; could be replaced with a Metal compute kernel
-   - TopK uses `std::sort`; a GPU-based partial sort (bitonic/radix for top-K) would avoid the sync
-   - Combined potential: eliminate ~1000 syncs per inference (~0.4s saved)
+1. ~~**Eliminate Gather/TopK syncs (549 + 530 commits)**~~ **DONE (M11.6)**
+   - Gather is now encode-only by default; sync moved to 2-arg `Gather::operator()` call site
+   - TopK k=1 uses GPU argmax MSL kernel (256-thread parallel reduction)
+   - Result: Whisper Metal/CPU ratio improved from 1.32x to 1.59x (~20% speedup)
 
-2. **Batched MPS GEMM for non-padded attention**
-   - Currently each head's GEMM is a separate `dispatch_mps_gemm` call
-   - MPS supports `MPSMatrixMultiplication` with batched descriptors — encode all heads in one call
-   - Reduces per-head encode overhead
+2. ~~**Batched MPS GEMM for non-padded attention**~~ **DONE**
+   - Added `dispatch_mps_gemm_batched<T>()` using MPS batch matrix descriptors (`matrixDescriptorWithRows:columns:matrices:rowBytes:matrixBytes:dataType:`)
+   - Single `MPSMatrixMultiplication` with `batchSize` encodes all heads in one call
+   - Falls back to per-element loop when MPS batch constraints not met
+   - Applied to both FP32 and FP16 non-padded paths in `gemm_batch_strided`
+   - All e2e tests pass: 90/90 translation, 39/39 beam, 13/13 whisper, 12/12 GPT-2, 9/9 f16, 11/11 longform, 13/13 bf16
 
 3. **Cross-attention FlashMultiHeadAttention**
    - Currently hardcoded to `MultiHeadAttention` in `transformer.cc:178`

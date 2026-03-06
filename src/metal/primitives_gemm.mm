@@ -529,6 +529,108 @@ static void dispatch_int8_gemm(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Batched MPS GEMM for contiguous strided layouts.
+//
+// Uses MPS batch matrix descriptors (matrixDescriptorWithRows:...matrices:...)
+// to encode all batch elements in a single MPSMatrixMultiplication call,
+// eliminating per-element ObjC allocations and enabling MPS-internal
+// GPU scheduling optimizations.
+//
+// Falls back to the per-element loop when MPS batch constraints are not met
+// (matrixBytes must be a multiple of rowBytes and >= rows * rowBytes).
+// ---------------------------------------------------------------------------
+
+template <typename T>
+static bool dispatch_mps_gemm_batched(
+    bool transpose_a, bool transpose_b,
+    ctranslate2::dim_t m, ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha,
+    const T* a, ctranslate2::dim_t lda, ctranslate2::dim_t stridea,
+    const T* b, ctranslate2::dim_t ldb, ctranslate2::dim_t strideb,
+    float beta,
+    T* c, ctranslate2::dim_t ldc, ctranslate2::dim_t stridec,
+    ctranslate2::dim_t batch_size) {
+  if (batch_size <= 0 || m == 0 || n == 0 || k == 0) return true;
+
+  constexpr NSUInteger elem = sizeof(T);
+  const MPSDataType dtype = MPS_Dtype<T>::value;
+
+  const NSUInteger rows_a = transpose_a ? (NSUInteger)k : (NSUInteger)m;
+  const NSUInteger cols_a = transpose_a ? (NSUInteger)m : (NSUInteger)k;
+  const NSUInteger rows_b = transpose_b ? (NSUInteger)n : (NSUInteger)k;
+  const NSUInteger cols_b = transpose_b ? (NSUInteger)k : (NSUInteger)n;
+
+  const NSUInteger rb_a = (NSUInteger)lda * elem;
+  const NSUInteger rb_b = (NSUInteger)ldb * elem;
+  const NSUInteger rb_c = (NSUInteger)ldc * elem;
+
+  const NSUInteger mb_a = (NSUInteger)stridea * elem;
+  const NSUInteger mb_b = (NSUInteger)strideb * elem;
+  const NSUInteger mb_c = (NSUInteger)stridec * elem;
+
+  // MPS batch API requires:
+  //   matrixBytes % rowBytes == 0
+  //   matrixBytes >= rows * rowBytes
+  if (mb_a % rb_a != 0 || mb_a < rows_a * rb_a ||
+      mb_b % rb_b != 0 || mb_b < rows_b * rb_b ||
+      mb_c % rb_c != 0 || mb_c < (NSUInteger)m * rb_c)
+    return false;  // fall back to per-element loop
+
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+
+  // Fetch the command buffer BEFORE @autoreleasepool to avoid use-after-free.
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+
+  @autoreleasepool {
+    MPSMatrixDescriptor* descA =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
+                                              columns:cols_a
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:rb_a
+                                          matrixBytes:mb_a
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descB =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
+                                              columns:cols_b
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:rb_b
+                                          matrixBytes:mb_b
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descC =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)m
+                                              columns:(NSUInteger)n
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:rb_c
+                                          matrixBytes:mb_c
+                                             dataType:dtype];
+
+    MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
+    MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
+    MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
+
+    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    MPSMatrixMultiplication* gemm_op =
+        [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                           transposeLeft:(BOOL)transpose_a
+                                          transposeRight:(BOOL)transpose_b
+                                             resultRows:(NSUInteger)m
+                                          resultColumns:(NSUInteger)n
+                                        interiorColumns:(NSUInteger)k
+                                                  alpha:(double)alpha
+                                                   beta:(double)beta];
+    gemm_op.batchSize = (NSUInteger)batch_size;
+    gemm_op.batchStart = 0;
+
+    [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+  }
+
+  return true;  // successfully dispatched
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -616,11 +718,16 @@ namespace ctranslate2 {
                       beta,
                       c + i * stridec, (int)ldc);
       } else {
-        for (dim_t i = 0; i < batch_size; ++i)
-          dispatch_mps_gemm<float>(transpose_a, transpose_b, m, n, k,
-                                   alpha, a + i * stridea, lda,
-                                          b + i * strideb, ldb,
-                                   beta,  c + i * stridec, ldc);
+        if (!dispatch_mps_gemm_batched<float>(
+                transpose_a, transpose_b, m, n, k,
+                alpha, a, lda, stridea, b, ldb, strideb,
+                beta, c, ldc, stridec, batch_size)) {
+          for (dim_t i = 0; i < batch_size; ++i)
+            dispatch_mps_gemm<float>(transpose_a, transpose_b, m, n, k,
+                                     alpha, a + i * stridea, lda,
+                                            b + i * strideb, ldb,
+                                     beta,  c + i * stridec, ldc);
+        }
       }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
       if (batch_size > 0 && needs_padding()) {
@@ -666,11 +773,16 @@ namespace ctranslate2 {
         if (fb!=sb) delete[] fb;
         if (fc!=sc) delete[] fc;
       } else {
-        for (dim_t i = 0; i < batch_size; ++i)
-          dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
-                                     alpha, a + i * stridea, lda,
-                                            b + i * strideb, ldb,
-                                     beta,  c + i * stridec, ldc);
+        if (!dispatch_mps_gemm_batched<float16_t>(
+                transpose_a, transpose_b, m, n, k,
+                alpha, a, lda, stridea, b, ldb, strideb,
+                beta, c, ldc, stridec, batch_size)) {
+          for (dim_t i = 0; i < batch_size; ++i)
+            dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
+                                       alpha, a + i * stridea, lda,
+                                              b + i * strideb, ldb,
+                                       beta,  c + i * stridec, ldc);
+        }
       }
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {
       if (beta != 0.0f)

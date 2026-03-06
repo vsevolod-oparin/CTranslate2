@@ -28,7 +28,8 @@ namespace ctranslate2 {
                          bool self_attention,
                          bool pre_norm = true,
                          bool is_decoder = false,
-                         Alibi* alibi = nullptr);
+                         Alibi* alibi = nullptr,
+                         bool use_flash_cross_attention = false);
       DataType output_type() const override;
       dim_t output_size() const override;
       virtual void operator()(const StorageView& queries,
@@ -88,6 +89,19 @@ namespace ctranslate2 {
       const dim_t _cache_time_dim;
       std::unique_ptr<const LayerNorm> _q_norm;  // Query normalization
       std::unique_ptr<const LayerNorm> _k_norm;  // Key normalization
+      const bool _use_flash_cross_attention;
+
+      void process_cross_attention_flash(const StorageView& queries,
+                                         const StorageView& values,
+                                         StorageView& fused_proj,
+                                         StorageView& queries_proj,
+                                         StorageView& keys_proj,
+                                         StorageView& values_proj,
+                                         StorageView* cached_keys,
+                                         StorageView* cached_values,
+                                         const Padder* queries_padder,
+                                         const Padder* values_padder,
+                                         dim_t& beam_size) const;
     };
   }
 }

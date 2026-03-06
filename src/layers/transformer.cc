@@ -180,7 +180,9 @@ namespace ctranslate2 {
                                                                     num_heads,
                                                                     /*self_attention=*/false,
                                                                     pre_norm,
-                                                                    /*is_decoder=*/true))
+                                                                    /*is_decoder=*/true,
+                                                                    /*alibi=*/nullptr,
+                                                                    /*use_flash_cross_attention=*/use_flash_attention))
       , _ff(model, scope + "/ffn", pre_norm, activation_type)
       , _external_pre_encoder_attention_layer_norm(build_optional_layer<LayerNorm>(
                                      model, scope + "/external_pre_encoder_attention_layer_norm"))

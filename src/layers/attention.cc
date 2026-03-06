@@ -1,4 +1,5 @@
 #include "ctranslate2/layers/attention.h"
+#include "ctranslate2/ops/flash_attention.h"
 #include "ctranslate2/ops/split.h"
 #include "ctranslate2/utils.h"
 
@@ -297,7 +298,8 @@ namespace ctranslate2 {
                                            bool self_attention,
                                            bool pre_norm,
                                            bool is_decoder,
-                                           Alibi* alibi)
+                                           Alibi* alibi,
+                                           bool use_flash_cross_attention)
       : AttentionLayer(model, scope, num_heads, self_attention, pre_norm, is_decoder, alibi, false)
       , _relative_attention_bias(model.get_variable_if_exists(scope + "/relative_attention_bias"))
       , _relative_position_keys(model.get_variable_if_exists(scope + "/relative_position_keys"))
@@ -310,6 +312,7 @@ namespace ctranslate2 {
       ,_cache_time_dim(_merge_time_and_head_dims ? 1 : 2)
       , _q_norm(build_optional_layer<LayerNorm>(model, scope + "/q_norm"))
       , _k_norm(build_optional_layer<LayerNorm>(model, scope + "/k_norm"))
+      , _use_flash_cross_attention(use_flash_cross_attention)
     {
       if (_relative_position_keys)
         _maximum_relative_position = (_relative_position_keys->dim(0) - 1) / 2;
@@ -420,6 +423,69 @@ namespace ctranslate2 {
       split_heads(queries_proj, _num_heads, queries_padder, beam_size);
     }
 
+    void MultiHeadAttention::process_cross_attention_flash(
+        const StorageView& queries,
+        const StorageView& values,
+        StorageView& fused_proj,
+        StorageView& queries_proj,
+        StorageView& keys_proj,
+        StorageView& values_proj,
+        StorageView* cached_keys,
+        StorageView* cached_values,
+        const Padder* queries_padder,
+        const Padder* values_padder,
+        dim_t& beam_size) const {
+
+      // Q from fused_proj: [batch, sq, nh*dh] → reshape to [batch, sq, nh, dh]
+      queries_proj = std::move(fused_proj);
+      if (queries_padder)
+        queries_padder->add_padding(queries_proj);
+      queries_proj.reshape({queries_proj.dim(0), queries_proj.dim(1), _num_heads, _d_head});
+
+      if (cached_keys == nullptr || cached_keys->empty()) {
+        // Project K/V from encoder output
+        _linear[1](values, fused_proj);
+
+        if (values_padder)
+          values_padder->add_padding(fused_proj);
+
+        if (_num_heads_kv == 1) {
+          // MQA: split into K,V each [batch, sk, dh], then expand to [batch, sk, 1, dh]
+          ops::Split(2, {_d_head, _d_head})(fused_proj, keys_proj, values_proj);
+          apply_k_norm(keys_proj);
+          keys_proj.reshape({keys_proj.dim(0), keys_proj.dim(1), 1, _d_head});
+          values_proj.reshape({values_proj.dim(0), values_proj.dim(1), 1, _d_head});
+        } else if (_num_heads_kv < _num_heads) {
+          // GQA: split into K,V each [batch, sk, nhk*dh] → reshape to [batch, sk, nhk, dh]
+          const ops::Split split_op(2, {_num_heads_kv * _d_head, _num_heads_kv * _d_head});
+          split_op(fused_proj, keys_proj, values_proj);
+          keys_proj.reshape({keys_proj.dim(0), keys_proj.dim(1), _num_heads_kv, _d_head});
+          values_proj.reshape({values_proj.dim(0), values_proj.dim(1), _num_heads_kv, _d_head});
+          apply_k_norm(keys_proj);
+        } else {
+          // MHA: split into K,V each [batch, sk, nh*dh] → reshape to [batch, sk, nh, dh]
+          ops::Split(2, {_num_heads * _d_head, _num_heads * _d_head})(fused_proj, keys_proj, values_proj);
+          keys_proj.reshape({keys_proj.dim(0), keys_proj.dim(1), _num_heads, _d_head});
+          values_proj.reshape({values_proj.dim(0), values_proj.dim(1), _num_heads, _d_head});
+          apply_k_norm(keys_proj);
+        }
+
+        if (cached_keys != nullptr) {
+          *cached_keys = std::move(keys_proj);
+          *cached_values = std::move(values_proj);
+        }
+      }
+
+      if (_q_norm) {
+        StorageView queries_normed(queries_proj.dtype(), queries_proj.device());
+        (*_q_norm)(queries_proj, queries_normed);
+        queries_proj = std::move(queries_normed);
+      }
+
+      if (queries_proj.dim(1) == 1 && cached_keys)
+        beam_size = queries_proj.dim(0) / cached_keys->dim(0);
+    }
+
     void MultiHeadAttention::operator()(const StorageView& queries,
                                         const StorageView& values,
                                         const StorageView* values_lengths,
@@ -453,7 +519,51 @@ namespace ctranslate2 {
       bool prefilling = (_sliding_window > 0 && values_lengths);
 
       if (!_self_attention) {
-      
+        if (_use_flash_cross_attention && device == Device::METAL) {
+          process_cross_attention_flash(queries, values, fused_proj, queries_proj, keys_proj,
+                                        values_proj, cached_keys, cached_values,
+                                        queries_padder, values_padder, beam_size);
+
+          if (cached_keys) {
+            keys_proj.shallow_copy(*cached_keys);
+            values_proj.shallow_copy(*cached_values);
+          }
+
+          // Tile K/V for beam search
+          if (beam_size > 1) {
+            StorageView tiled(keys_proj.dtype(), keys_proj.device());
+            ops::Tile(0, beam_size)(keys_proj, tiled);
+            keys_proj = std::move(tiled);
+            ops::Tile(0, beam_size)(values_proj, tiled);
+            values_proj = std::move(tiled);
+          }
+
+          StorageView& context = fused_proj;
+          ops::FlashAttention fl_attn(_queries_scale, 0, /*is_causal=*/false);
+          fl_attn(queries_proj, keys_proj, values_proj, context,
+                  nullptr, nullptr, attention, return_normalized_attention,
+                  nullptr, nullptr, false, nullptr, 0);
+
+          // Reshape [batch, sq, nh, dh] → [batch, sq, d_model]
+          context.reshape({context.dim(0), context.dim(1), _num_heads * _d_head});
+
+          if (queries_padder)
+            queries_padder->remove_padding(context);
+
+          _linear.back()(context, output, _layer_norm ? &queries : nullptr);
+
+          if (_tensor_parallel) {
+            Shape shape = output.shape();
+            StorageView tmp(std::move(shape), output.dtype(), output.device());
+            ops::ReduceAll ops_reduce_all(ops::ReduceAll::RED_OP::SUM);
+            ops_reduce_all(output, tmp);
+            output = std::move(tmp);
+          }
+          if (_layer_norm && !_pre_norm)
+            (*_layer_norm)(output, output);
+          return;
+        }
+
         process_cross_attention(queries, values, fused_proj, queries_proj, keys_proj,
                                 values_proj, cached_keys, cached_values,
                                 queries_padder, values_padder, beam_size);

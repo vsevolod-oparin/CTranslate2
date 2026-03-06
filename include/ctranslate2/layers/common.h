@@ -122,6 +122,8 @@ namespace ctranslate2 {
       StorageView _encoding;
     };
 
+    class LayerNorm;  // Forward declaration for Dense::fused_norm_and_project.
+
     class Dense : public Layer
     {
     public:
@@ -133,6 +135,13 @@ namespace ctranslate2 {
       dim_t output_size() const override;
       void operator()(const StorageView& input, StorageView& output, const StorageView* residual = nullptr) const;
       void select_weights(const StorageView* index, const StorageView* extra_bias = nullptr);
+
+      // Fused LayerNorm/RMSNorm + GEMV: returns true if fusion was applied,
+      // false if caller should fall back to separate norm + Dense.
+      bool fused_norm_and_project(const LayerNorm& norm,
+                                  const StorageView& input,
+                                  StorageView& output) const;
+
     private:
       bool _packed_weight;
       const StorageView& _weight;
@@ -161,6 +170,12 @@ namespace ctranslate2 {
       DataType output_type() const override;
       dim_t output_size() const override;
       void operator()(const StorageView& input, StorageView& output) const;
+
+      const StorageView& gamma() const { return _gamma; }
+      const StorageView* beta() const { return _beta; }
+      float epsilon() const { return _epsilon; }
+      bool has_beta() const { return _beta != nullptr; }
+
     private:
       const StorageView* _beta;
       const StorageView& _gamma;

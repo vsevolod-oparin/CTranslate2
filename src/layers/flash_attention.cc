@@ -38,11 +38,14 @@ namespace ctranslate2 {
 
       const StorageView* q = &queries;
       if (_layer_norm && _pre_norm) {
-        (*_layer_norm)(queries, queries_proj);
-        q = &queries_proj;
+        if (!_linear[0].fused_norm_and_project(*_layer_norm, queries, fused_proj)) {
+          (*_layer_norm)(queries, queries_proj);
+          q = &queries_proj;
+          _linear[0](*q, fused_proj);
+        }
+      } else {
+        _linear[0](*q, fused_proj);
       }
-
-      _linear[0](*q, fused_proj);
 
       dim_t beam_size = 1;
 

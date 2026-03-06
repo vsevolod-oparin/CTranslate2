@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Generate src/metal/msl_strings.h from the canonical .metal kernel files.
 
-The eleven MSL libraries compiled at runtime by primitives*.mm are sourced from
+The thirteen MSL libraries compiled at runtime by primitives*.mm are sourced from
 .metal files in src/metal/kernels/.  This script reads those files and emits
-a single C++ header (msl_strings.h) containing the eleven constexpr string
+a single C++ header (msl_strings.h) containing the thirteen constexpr string
 constants that primitives.mm includes.
 
 Usage (from repository root):
@@ -44,6 +44,7 @@ KERNELS = [
     ("conv1d",         "kConv1dMSL"),
     ("quantize",       "kQuantizeMSL"),
     ("topk",           "kTopKMSL"),
+    ("fused_norm_gemm", "kFusedNormGemmMSL"),
 ]
 
 # Raw-string delimiter used to wrap the MSL source.

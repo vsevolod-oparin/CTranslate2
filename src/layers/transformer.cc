@@ -20,16 +20,25 @@ namespace ctranslate2 {
 
     void FeedForwardNetwork::operator()(const StorageView& input, StorageView& output) const {
       const StorageView* x = &input;
-      if (_layer_norm && _pre_norm) {
-        (*_layer_norm)(input, output);
-        x = &output;
-      }
+      bool fused = false;
 
       const Device device = input.device();
       const DataType dtype = input.dtype();
-
       StorageView inner(dtype, device);
-      _ff1(*x, inner);
+
+      if (_layer_norm && _pre_norm) {
+        if (!_ff1_noact
+            && _ff1.fused_norm_and_project(*_layer_norm, input, inner)) {
+          fused = true;
+        } else {
+          (*_layer_norm)(input, output);
+          x = &output;
+        }
+      }
+
+      if (!fused) {
+        _ff1(*x, inner);
+      }
       if (_ff1_noact) {
         StorageView linear(dtype, device);
         (*_ff1_noact)(*x, linear);

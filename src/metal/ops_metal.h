@@ -138,6 +138,24 @@ namespace ctranslate2 {
         bool  transpose_a, bool  transpose_b,
         bool  has_bias,    int   activation_type);
 
+    // fused_layer_norm_gemm_metal: fused LayerNorm + GEMV in a single dispatch.
+    //   x: [outer_size, K], gamma: [K], beta: [K] (nullable), W: [N, K], y: [outer_size, N].
+    //   One threadgroup (256 threads) per row; encode-only.
+    template <typename T>
+    void fused_layer_norm_gemm_metal(const T* x, const T* gamma, const T* beta,
+                                      const T* W, T* y,
+                                      dim_t outer_size, dim_t K, dim_t N,
+                                      float epsilon);
+
+    // fused_rms_norm_gemm_metal: fused RMSNorm + GEMV in a single dispatch.
+    //   x: [outer_size, K], gamma: [K], W: [N, K], y: [outer_size, N].
+    //   One threadgroup (256 threads) per row; encode-only.
+    template <typename T>
+    void fused_rms_norm_gemm_metal(const T* x, const T* gamma,
+                                    const T* W, T* y,
+                                    dim_t outer_size, dim_t K, dim_t N,
+                                    float epsilon);
+
     // topk_metal: GPU argmax (k=1 only).
     //   Finds the max value and its index in each row of [batch_size, depth].
     //   One threadgroup (256 threads) per batch item; encode-only.

@@ -7,6 +7,10 @@
 #include "cpu/backend.h"
 #include "dispatch.h"
 
+#ifdef CT2_WITH_METAL
+#include "metal/ops_metal.h"
+#endif
+
 namespace ctranslate2 {
   namespace layers {
 
@@ -445,6 +449,90 @@ namespace ctranslate2 {
       } else {
         _gemm_op(input, *weight, output, nullptr, bias, residual);
       }
+    }
+
+
+    // Fused LN+GEMV is only beneficial for BF16 where MPSGraph GEMM requires
+    // commit_and_wait (saving ~400 us per fusion).  For f32/f16, MPS GEMM is
+    // encode-only and vastly outperforms our naive MSL GEMV.
+    static constexpr dim_t kFusedOuterSizeThreshold = 16;
+    static constexpr dim_t kFusedKMax = 4096;
+
+    bool Dense::fused_norm_and_project(const LayerNorm& norm,
+                                       const StorageView& input,
+                                       StorageView& output) const {
+#ifdef CT2_WITH_METAL
+      if (input.device() != Device::METAL)
+        return false;
+      // Only BF16 benefits — MPSGraph GEMM for BF16 requires commit_and_wait.
+      // For f32/f16, MPS GEMM is encode-only and faster than our naive GEMV.
+      if (input.dtype() != DataType::BFLOAT16)
+        return false;
+      if (_quantized_gemm)
+        return false;
+      if (_activation_type)
+        return false;
+      if (_packed_weight)
+        return false;
+      if (!_partial_weight.empty())
+        return false;
+
+      const StorageView* weight = &_weight;
+      const dim_t K = weight->dim(1);  // trans_b=true: weight is [N, K]
+      const dim_t N = weight->dim(0);
+
+      if (K > kFusedKMax)
+        return false;
+
+      const dim_t outer_size = input.size() / K;
+      if (outer_size > kFusedOuterSizeThreshold)
+        return false;
+
+      if (input.rank() == 2)
+        output.resize({input.dim(0), N});
+      else
+        output.resize({input.dim(0), input.dim(1), N});
+
+      const StorageView& gamma = norm.gamma();
+      const StorageView* beta = norm.beta();
+      float eps = norm.epsilon();
+
+      auto dispatch_fused = [&](auto dummy) {
+        using T = decltype(dummy);
+        if (norm.has_beta()) {
+          metal::fused_layer_norm_gemm_metal(
+              input.data<T>(), gamma.data<T>(),
+              beta ? beta->data<T>() : nullptr,
+              weight->data<T>(), output.data<T>(),
+              outer_size, K, N, eps);
+        } else {
+          metal::fused_rms_norm_gemm_metal(
+              input.data<T>(), gamma.data<T>(),
+              weight->data<T>(), output.data<T>(),
+              outer_size, K, N, eps);
+        }
+      };
+      switch (input.dtype()) {
+        case DataType::FLOAT32:  dispatch_fused(float()); break;
+        case DataType::FLOAT16:  dispatch_fused(float16_t()); break;
+        case DataType::BFLOAT16: dispatch_fused(bfloat16_t()); break;
+        default: return false;
+      }
+
+      // Apply bias separately if present (cheap add)
+      const StorageView* bias = _partial_bias.empty() ? _bias : &_partial_bias;
+      if (bias) {
+        const ops::BiasAdd bias_add_op(nullptr);
+        bias_add_op(output, *bias, output, nullptr);
+      }
+
+      return true;
+#else
+      (void)norm;
+      (void)input;
+      (void)output;
+      return false;
+#endif
     }
 
 

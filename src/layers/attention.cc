@@ -522,12 +522,44 @@ namespace ctranslate2 {
       bool prefilling = (_sliding_window > 0 && values_lengths);
 
       if (!_self_attention) {
-        // Note: flash cross-attention path (_use_flash_cross_attention) is
-        // disabled because it tiles K/V every decode step for beam search,
-        // causing a major regression (2.6x → 1.5x on Whisper).
-        // The old dot_product_attention path broadcasts K/V across beams
-        // via MatMul batch broadcasting without any copy.
-        // TODO: add beam_size broadcasting to sdpa_metal to re-enable.
+        if (_use_flash_cross_attention && device == Device::METAL) {
+          process_cross_attention_flash(queries, values, fused_proj, queries_proj, keys_proj,
+                                        values_proj, cached_keys, cached_values,
+                                        queries_padder, values_padder, beam_size);
+
+          if (cached_keys) {
+            keys_proj.shallow_copy(*cached_keys);
+            values_proj.shallow_copy(*cached_values);
+          }
+
+          // No K/V tiling: beam_size is passed to sdpa_metal which broadcasts
+          // K/V across beams via kv_b = q_b / beam_size.
+
+          StorageView& context = fused_proj;
+          ops::FlashAttention fl_attn(_queries_scale, 0, /*is_causal=*/false);
+          fl_attn(queries_proj, keys_proj, values_proj, context,
+                  nullptr, nullptr, attention, return_normalized_attention,
+                  nullptr, nullptr, false, nullptr, 0, beam_size);
+
+          // Reshape [batch, sq, nh, dh] → [batch, sq, d_model]
+          context.reshape({context.dim(0), context.dim(1), _num_heads * _d_head});
+
+          if (queries_padder)
+            queries_padder->remove_padding(context);
+
+          _linear.back()(context, output, _layer_norm ? &queries : nullptr);
+
+          if (_tensor_parallel) {
+            Shape shape = output.shape();
+            StorageView tmp(std::move(shape), output.dtype(), output.device());
+            ops::ReduceAll ops_reduce_all(ops::ReduceAll::RED_OP::SUM);
+            ops_reduce_all(output, tmp);
+            output = std::move(tmp);
+          }
+          if (_layer_norm && !_pre_norm)
+            (*_layer_norm)(output, output);
+          return;
+        }
 
         process_cross_attention(queries, values, fused_proj, queries_proj, keys_proj,
                                 values_proj, cached_keys, cached_values,

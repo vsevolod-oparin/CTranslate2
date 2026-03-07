@@ -479,7 +479,8 @@ static void sdpa_cpu(const T* q, const T* k, const T* v, T* output,
                      ctranslate2::dim_t num_heads_k,
                      ctranslate2::dim_t head_dim,
                      float scale, bool is_causal,
-                     ctranslate2::dim_t kv_batch_stride) {
+                     ctranslate2::dim_t kv_batch_stride,
+                     ctranslate2::dim_t beam_size = 1) {
   const ctranslate2::dim_t q_lda  = num_heads   * head_dim;
   const ctranslate2::dim_t kv_lda = num_heads_k * head_dim;
   const ctranslate2::dim_t kv_bstride = (kv_batch_stride > 0)
@@ -497,11 +498,12 @@ static void sdpa_cpu(const T* q, const T* k, const T* v, T* output,
   }
 
   for (ctranslate2::dim_t b = 0; b < batch_size; ++b) {
+    const ctranslate2::dim_t kv_b = b / beam_size;  // K/V batch broadcasting
     for (ctranslate2::dim_t h = 0; h < num_heads; ++h) {
       const ctranslate2::dim_t hk = h % num_heads_k;
 
-      const T* k_base = k + b * kv_bstride + hk * head_dim;
-      const T* v_base = v + b * kv_bstride + hk * head_dim;
+      const T* k_base = k + kv_b * kv_bstride + hk * head_dim;
+      const T* v_base = v + kv_b * kv_bstride + hk * head_dim;
 
       for (ctranslate2::dim_t qi = 0; qi < seqlen_q; ++qi) {
         // Q layout: [batch, sq, num_heads, head_dim]
@@ -558,7 +560,8 @@ namespace ctranslate2 {
                     dim_t batch_size, dim_t seqlen_q, dim_t seqlen_k,
                     dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
                     float scale, bool is_causal,
-                    dim_t kv_batch_stride) {
+                    dim_t kv_batch_stride,
+                    dim_t beam_size) {
       // CPU fast-path for small SDPA: avoids MPS GEMM padding overhead.
       // MPS GEMM with tiny matrices (cols ≤ 3) triggers commit_and_wait
       // per head due to rowBytes padding — ~0.4ms × num_heads × num_layers.
@@ -571,7 +574,7 @@ namespace ctranslate2 {
         CT2_COMMIT_AND_WAIT();
         sdpa_cpu<T>(q, k, v, output, batch_size, seqlen_q, seqlen_k,
                     num_heads, num_heads_k, head_dim,
-                    scale, is_causal, kv_batch_stride);
+                    scale, is_causal, kv_batch_stride, beam_size);
         return;
       }
 
@@ -582,12 +585,13 @@ namespace ctranslate2 {
                                    : seqlen_k * num_heads_k * head_dim;
 
       for (dim_t b = 0; b < batch_size; ++b) {
+        const dim_t kv_b = b / beam_size;  // K/V batch broadcasting
         for (dim_t h = 0; h < num_heads; ++h) {
           const dim_t hk = h % num_heads_k;
 
           const T* q_row0 = q      + (b * seqlen_q * num_heads   + h ) * head_dim;
-          const T* k_row0 = k      + b * kv_bstride + hk * head_dim;
-          const T* v_row0 = v      + b * kv_bstride + hk * head_dim;
+          const T* k_row0 = k      + kv_b * kv_bstride + hk * head_dim;
+          const T* v_row0 = v      + kv_b * kv_bstride + hk * head_dim;
           T*     out_row0 = output + (b * seqlen_q * num_heads   + h ) * head_dim;
 
           if constexpr (std::is_same_v<T, float> || std::is_same_v<T, float16_t>) {
@@ -609,24 +613,24 @@ namespace ctranslate2 {
     // unqualified float16_t / bfloat16_t resolve to ctranslate2:: versions.
     template void sdpa_metal<float>(
         const float*, const float*, const float*, float*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
     template void sdpa_metal<float16_t>(
         const float16_t*, const float16_t*, const float16_t*, float16_t*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
     template void sdpa_metal<bfloat16_t>(
         const bfloat16_t*, const bfloat16_t*, const bfloat16_t*, bfloat16_t*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
     // TYPE_DISPATCH in flash_attention_metal.mm generates branches for all types;
     // instantiate the int branches so the linker finds them (they throw at runtime).
     template void sdpa_metal<int8_t>(
         const int8_t*, const int8_t*, const int8_t*, int8_t*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
     template void sdpa_metal<int16_t>(
         const int16_t*, const int16_t*, const int16_t*, int16_t*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
     template void sdpa_metal<int32_t>(
         const int32_t*, const int32_t*, const int32_t*, int32_t*,
-        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t);
+        dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
 
   }  // namespace metal
 }  // namespace ctranslate2

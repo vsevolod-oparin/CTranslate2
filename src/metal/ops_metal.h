@@ -85,12 +85,16 @@ namespace ctranslate2 {
     //     When 0 (default), uses seqlen_k * num_heads_k * head_dim.
     //     Set to total_cache * num_heads_k * head_dim for KV-cache decode
     //     where the cache is pre-allocated larger than seqlen_k_eff.
+    //   beam_size: when > 1, Q has batch_size batches but K/V have
+    //     batch_size/beam_size batches.  K/V batch index = Q batch / beam_size.
+    //     Used by flash cross-attention to avoid tiling K/V for beam search.
     template <typename T>
     void sdpa_metal(const T* q, const T* k, const T* v, T* output,
                     dim_t batch_size, dim_t seqlen_q, dim_t seqlen_k,
                     dim_t num_heads, dim_t num_heads_k, dim_t head_dim,
                     float scale, bool is_causal,
-                    dim_t kv_batch_stride = 0);
+                    dim_t kv_batch_stride = 0,
+                    dim_t beam_size = 1);
 
     // conv1d_metal: 1-D convolution via im2col + GEMM (groups == 1 only).
     //   input:  [B, C_in, T_in]    — NCT layout

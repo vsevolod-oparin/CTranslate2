@@ -204,7 +204,8 @@ namespace ctranslate2 {
                                                StorageView* rotary_sin,
                                                const bool rotary_interleave,
                                                StorageView* alibi,
-                                               dim_t offset) const {
+                                               dim_t offset,
+                                               dim_t) const {
 #ifdef CT2_WITH_FLASH_ATTN
       const Device device = queries.device();
       const DataType dtype = queries.dtype();

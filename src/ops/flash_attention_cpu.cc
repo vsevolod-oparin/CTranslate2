@@ -17,6 +17,7 @@ namespace ctranslate2 {
                                                StorageView*,
                                                const bool,
                                                StorageView*,
+                                               dim_t,
                                                dim_t) const {
       throw std::runtime_error("FlashAttention do not support for CPU");
     }

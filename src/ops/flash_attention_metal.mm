@@ -129,7 +129,8 @@ namespace ctranslate2 {
                                   StorageView* rotary_sin,
                                   const bool rotary_interleave,
                                   StorageView* alibi,
-                                  dim_t offset) const {
+                                  dim_t offset,
+                                  dim_t beam_size) const {
       // Guards for features not yet supported.
       if (alibi) {
         // ALiBi is applied as a standalone AlibiAdd::compute<METAL> op (M6.4).
@@ -243,7 +244,8 @@ namespace ctranslate2 {
               batch_size, seqlen_q, seqlen_k_eff,
               num_heads, num_heads_k, head_dim,
               _queries_scale, eff_causal,
-              total_cache * num_heads_k * head_dim);
+              total_cache * num_heads_k * head_dim,
+              beam_size);
         });
 
       } else {
@@ -260,14 +262,15 @@ namespace ctranslate2 {
                           output.data<T>(),
                           batch_size, seqlen_q, seqlen_k,
                           num_heads, num_heads_k, head_dim,
-                          _queries_scale, _is_causal));
+                          _queries_scale, _is_causal,
+                          /*kv_batch_stride=*/0, beam_size));
       }
     }
 
     template void FlashAttention::compute<Device::METAL>(
         StorageView&, StorageView&, StorageView&, StorageView&,
         StorageView*, StorageView*, StorageView*, bool,
-        StorageView*, StorageView*, const bool, StorageView*, dim_t) const;
+        StorageView*, StorageView*, const bool, StorageView*, dim_t, dim_t) const;
 
   }  // namespace ops
 }  // namespace ctranslate2

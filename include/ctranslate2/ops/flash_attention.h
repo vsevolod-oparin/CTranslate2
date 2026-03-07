@@ -20,7 +20,8 @@ namespace ctranslate2 {
                       StorageView* rotary_sin,
                       const bool rotary_interleave,
                       StorageView* alibi,
-                      dim_t offset) const;
+                      dim_t offset,
+                      dim_t beam_size = 1) const;
 
     private:
       const float _queries_scale;
@@ -39,7 +40,8 @@ namespace ctranslate2 {
                    StorageView* rotary_sin,
                    const bool rotary_interleave,
                    StorageView* alibi,
-                   dim_t offset) const;
+                   dim_t offset,
+                   dim_t beam_size) const;
     };
   }
 }

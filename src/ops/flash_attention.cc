@@ -23,11 +23,13 @@ namespace ctranslate2 {
                                     StorageView* rotary_sin,
                                     const bool rotary_interleave,
                                     StorageView* alibi,
-                                    dim_t offset) const {
+                                    dim_t offset,
+                                    dim_t beam_size) const {
       PROFILE("FlashAttention");
       DEVICE_DISPATCH(queries.device(), compute<D>(queries, keys, values, output, cached_keys, cached_values,
                                                    attention, return_normalized_attention,
-                                                   rotary_cos, rotary_sin, rotary_interleave, alibi, offset));
+                                                   rotary_cos, rotary_sin, rotary_interleave, alibi, offset,
+                                                   beam_size));
     }
   }
 }

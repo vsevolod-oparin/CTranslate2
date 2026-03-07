@@ -631,6 +631,284 @@ static bool dispatch_mps_gemm_batched(
   return true;  // successfully dispatched
 }
 
+// ---------------------------------------------------------------------------
+// Batched MPS GEMM with padded temp buffers and GPU row_copy kernel.
+//
+// Like dispatch_mps_gemm_batched but handles cases where natural row bytes
+// are below MPS alignment requirements.  Uses an MSL compute kernel to
+// copy rows between tightly-packed and MPS-padded layouts — completely
+// encode-only, zero commit_and_wait() calls.
+//
+// For pad_a/pad_b: GPU row_copy from src to padded temp (encode-only)
+// For pad_c:       MPS GEMM writes to padded temp, GPU row_copy back
+//                  (encode-only, zero syncs)
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// GPU row-copy kernel: copies rows between layouts with different row strides.
+// One dispatch replaces thousands of individual blit commands.
+// Grid: [total_rows_across_all_batches, 1, 1], threads per group: [256, 1, 1]
+// Each thread copies a strided chunk of one row (256 threads × uint4 = 4KB/iter).
+// ---------------------------------------------------------------------------
+static const char* kRowCopyMSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void row_copy(
+    device const char* src  [[buffer(0)]],
+    device       char* dst  [[buffer(1)]],
+    constant     uint& copy_bytes   [[buffer(2)]],  // bytes to copy per row
+    constant     uint& src_rb       [[buffer(3)]],  // source row stride (bytes)
+    constant     uint& dst_rb       [[buffer(4)]],  // dest row stride (bytes)
+    constant     uint& rows_per_mat [[buffer(5)]],  // rows per batch element
+    constant     uint& src_mb       [[buffer(6)]],  // source matrixBytes
+    constant     uint& dst_mb       [[buffer(7)]],  // dest matrixBytes
+    uint gid  [[threadgroup_position_in_grid]],
+    uint tid  [[thread_index_in_threadgroup]],
+    uint tgs  [[threads_per_threadgroup]])
+{
+    // gid = global row index across all batches
+    uint batch = gid / rows_per_mat;
+    uint row   = gid % rows_per_mat;
+    uint s_off = batch * src_mb + row * src_rb;
+    uint d_off = batch * dst_mb + row * dst_rb;
+    // Each thread copies a strided chunk of the row.
+    // Use uint (4-byte) copies for alignment.
+    device const uint* s = (device const uint*)(src + s_off);
+    device       uint* d = (device       uint*)(dst + d_off);
+    uint n_uint = copy_bytes / 4;
+    for (uint i = tid; i < n_uint; i += tgs)
+        d[i] = s[i];
+    // Handle remainder bytes (< 4).
+    if (tid == 0) {
+        uint rem_start = n_uint * 4;
+        for (uint i = rem_start; i < copy_bytes; ++i)
+            dst[d_off + i] = src[s_off + i];
+    }
+}
+)";
+
+static id<MTLLibrary> get_row_copy_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kRowCopyMSL, "row_copy");
+}
+
+static id<MTLComputePipelineState> get_row_copy_pso() {
+  static PSOCache cache;
+  return cache.get(get_row_copy_library, "row_copy");
+}
+
+// GPU row-copy dispatch: encode-only, no sync.
+// Copies rows between different row strides for pad/unpad operations.
+static void dispatch_row_copy(id<MTLBuffer> src_buf, NSUInteger src_off,
+                               NSUInteger src_rb, NSUInteger src_mb,
+                               id<MTLBuffer> dst_buf, NSUInteger dst_off,
+                               NSUInteger dst_rb, NSUInteger dst_mb,
+                               NSUInteger copy_bytes, NSUInteger rows,
+                               NSUInteger batch_size) {
+  const NSUInteger total_rows = rows * batch_size;
+  if (total_rows == 0 || copy_bytes == 0) return;
+
+  uint32_t copy_u32   = static_cast<uint32_t>(copy_bytes);
+  uint32_t src_rb_u32 = static_cast<uint32_t>(src_rb);
+  uint32_t dst_rb_u32 = static_cast<uint32_t>(dst_rb);
+  uint32_t rows_u32   = static_cast<uint32_t>(rows);
+  uint32_t src_mb_u32 = static_cast<uint32_t>(src_mb);
+  uint32_t dst_mb_u32 = static_cast<uint32_t>(dst_mb);
+
+  id<MTLComputePipelineState> pso = get_row_copy_pso();
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+  [enc setBuffer:src_buf offset:src_off atIndex:0];
+  [enc setBuffer:dst_buf offset:dst_off atIndex:1];
+  [enc setBytes:&copy_u32   length:sizeof(uint32_t) atIndex:2];
+  [enc setBytes:&src_rb_u32 length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&dst_rb_u32 length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&rows_u32   length:sizeof(uint32_t) atIndex:5];
+  [enc setBytes:&src_mb_u32 length:sizeof(uint32_t) atIndex:6];
+  [enc setBytes:&dst_mb_u32 length:sizeof(uint32_t) atIndex:7];
+
+  NSUInteger threads_per_group = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreadgroups:MTLSizeMake(total_rows, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
+  [enc endEncoding];
+}
+
+template <typename T>
+static void dispatch_mps_gemm_batched_padded(
+    bool transpose_a, bool transpose_b,
+    ctranslate2::dim_t m, ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha,
+    const T* a, ctranslate2::dim_t lda, ctranslate2::dim_t stridea,
+    const T* b, ctranslate2::dim_t ldb, ctranslate2::dim_t strideb,
+    float beta,
+    T* c, ctranslate2::dim_t ldc, ctranslate2::dim_t stridec,
+    ctranslate2::dim_t batch_size) {
+  if (batch_size <= 0 || m == 0 || n == 0 || k == 0) return;
+
+  constexpr NSUInteger elem = sizeof(T);
+  const MPSDataType dtype = MPS_Dtype<T>::value;
+
+  const NSUInteger rows_a = transpose_a ? (NSUInteger)k : (NSUInteger)m;
+  const NSUInteger cols_a = transpose_a ? (NSUInteger)m : (NSUInteger)k;
+  const NSUInteger rows_b = transpose_b ? (NSUInteger)n : (NSUInteger)k;
+  const NSUInteger cols_b = transpose_b ? (NSUInteger)k : (NSUInteger)n;
+
+  const NSUInteger nat_rb_a = (NSUInteger)lda * elem;
+  const NSUInteger nat_rb_b = (NSUInteger)ldb * elem;
+  const NSUInteger nat_rb_c = (NSUInteger)ldc * elem;
+
+  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
+  @autoreleasepool {
+    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dtype];
+    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dtype];
+    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n dataType:dtype];
+  }
+
+  const bool pad_a = (nat_rb_a < mps_rb_a);
+  const bool pad_b = (nat_rb_b < mps_rb_b);
+  const bool pad_c = (nat_rb_c < mps_rb_c);
+
+  // matrixBytes for the padded layout: rows * padded_rowBytes.
+  const NSUInteger mb_a = rows_a * mps_rb_a;
+  const NSUInteger mb_b = rows_b * mps_rb_b;
+  const NSUInteger mb_c = (NSUInteger)m * mps_rb_c;
+
+  id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;
+
+  // GPU row_copy for pad/unpad — entirely encode-only, zero syncs.
+  // The row_copy MSL kernel runs on the same command buffer as MPS GEMM,
+  // so Metal guarantees correct execution order.
+
+  if (pad_a) {
+    tmp_a = alloc_temp_buffer(mb_a * (NSUInteger)batch_size);
+    id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+    dispatch_row_copy(src_buf, off_a,
+                      nat_rb_a, (NSUInteger)stridea * elem,
+                      tmp_a, 0,
+                      mps_rb_a, mb_a,
+                      nat_rb_a, rows_a, (NSUInteger)batch_size);
+    buf_a = tmp_a;
+    off_a = 0;
+  } else {
+    buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  }
+
+  if (pad_b) {
+    tmp_b = alloc_temp_buffer(mb_b * (NSUInteger)batch_size);
+    NSUInteger src_off_b = 0;
+    id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(b, &src_off_b);
+    dispatch_row_copy(src_buf, src_off_b,
+                      nat_rb_b, (NSUInteger)strideb * elem,
+                      tmp_b, 0,
+                      mps_rb_b, mb_b,
+                      nat_rb_b, rows_b, (NSUInteger)batch_size);
+    buf_b = tmp_b;
+    off_b = 0;
+  } else {
+    buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  }
+
+  if (pad_c) {
+    tmp_c = alloc_temp_buffer(mb_c * (NSUInteger)batch_size);
+    if (beta != 0.0f) {
+      NSUInteger src_off_c = 0;
+      id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(c, &src_off_c);
+      dispatch_row_copy(src_buf, src_off_c,
+                        nat_rb_c, (NSUInteger)stridec * elem,
+                        tmp_c, 0,
+                        mps_rb_c, mb_c,
+                        nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
+    }
+    // If beta==0, MPS GEMM will overwrite C entirely (no need to zero-fill).
+    buf_c = tmp_c;
+    off_c = 0;
+  } else {
+    buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+  }
+
+  // Compute final layout parameters for the MPS batch descriptor.
+  const NSUInteger final_mb_a = pad_a ? mb_a : (NSUInteger)stridea * elem;
+  const NSUInteger final_mb_b = pad_b ? mb_b : (NSUInteger)strideb * elem;
+  const NSUInteger final_mb_c = pad_c ? mb_c : (NSUInteger)stridec * elem;
+  const NSUInteger final_rb_a = pad_a ? mps_rb_a : nat_rb_a;
+  const NSUInteger final_rb_b = pad_b ? mps_rb_b : nat_rb_b;
+  const NSUInteger final_rb_c = pad_c ? mps_rb_c : nat_rb_c;
+
+  // Verify MPS batch constraints for the padded layout.
+  if (final_mb_a % final_rb_a != 0 || final_mb_a < rows_a * final_rb_a ||
+      final_mb_b % final_rb_b != 0 || final_mb_b < rows_b * final_rb_b ||
+      final_mb_c % final_rb_c != 0 || final_mb_c < (NSUInteger)m * final_rb_c) {
+    // Fallback: per-element MPS for safety.
+    for (ctranslate2::dim_t i = 0; i < batch_size; ++i)
+      dispatch_mps_gemm<T>(transpose_a, transpose_b, m, n, k,
+                           alpha, a + i * stridea, lda,
+                                  b + i * strideb, ldb,
+                           beta,  c + i * stridec, ldc);
+    return;
+  }
+
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+
+  @autoreleasepool {
+    MPSMatrixDescriptor* descA =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
+                                              columns:cols_a
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:final_rb_a
+                                          matrixBytes:final_mb_a
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descB =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
+                                              columns:cols_b
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:final_rb_b
+                                          matrixBytes:final_mb_b
+                                             dataType:dtype];
+    MPSMatrixDescriptor* descC =
+        [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)m
+                                              columns:(NSUInteger)n
+                                             matrices:(NSUInteger)batch_size
+                                             rowBytes:final_rb_c
+                                          matrixBytes:final_mb_c
+                                             dataType:dtype];
+
+    MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
+    MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
+    MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
+
+    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    MPSMatrixMultiplication* gemm_op =
+        [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                           transposeLeft:(BOOL)transpose_a
+                                          transposeRight:(BOOL)transpose_b
+                                             resultRows:(NSUInteger)m
+                                          resultColumns:(NSUInteger)n
+                                        interiorColumns:(NSUInteger)k
+                                                  alpha:(double)alpha
+                                                   beta:(double)beta];
+    gemm_op.batchSize = (NSUInteger)batch_size;
+    gemm_op.batchStart = 0;
+
+    [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+  }
+
+  // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.
+  if (pad_c) {
+    NSUInteger dst_off_c = 0;
+    id<MTLBuffer> dst_buf = ctranslate2::metal_buffer_for_ptr(c, &dst_off_c);
+    dispatch_row_copy(tmp_c, 0,
+                      mps_rb_c, mb_c,
+                      dst_buf, dst_off_c,
+                      nat_rb_c, (NSUInteger)stridec * elem,
+                      nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
+  }
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -706,17 +984,12 @@ namespace ctranslate2 {
 
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
       if (batch_size > 0 && needs_padding()) {
-        CT2_COMMIT_AND_WAIT();  // one sync for entire batch
-        for (dim_t i = 0; i < batch_size; ++i)
-          cblas_sgemm(CblasRowMajor,
-                      transpose_a ? CblasTrans : CblasNoTrans,
-                      transpose_b ? CblasTrans : CblasNoTrans,
-                      (int)m, (int)n, (int)k,
-                      alpha,
-                      a + i * stridea, (int)lda,
-                      b + i * strideb, (int)ldb,
-                      beta,
-                      c + i * stridec, (int)ldc);
+        // Batched MPS GEMM with padded temp buffers: 1-2 syncs for the
+        // entire batch, vs N syncs for per-element or slow CPU cblas.
+        dispatch_mps_gemm_batched_padded<float>(
+            transpose_a, transpose_b, m, n, k,
+            alpha, a, lda, stridea, b, ldb, strideb,
+            beta, c, ldc, stridec, batch_size);
       } else {
         if (!dispatch_mps_gemm_batched<float>(
                 transpose_a, transpose_b, m, n, k,
@@ -731,47 +1004,12 @@ namespace ctranslate2 {
       }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
       if (batch_size > 0 && needs_padding()) {
-        CT2_COMMIT_AND_WAIT();  // one sync for entire batch
-        // float16: widen, cblas_sgemm, narrow for each batch element
-        const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
-        const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
-        const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
-        const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
-        const NSUInteger rows_c = (NSUInteger)m;
-        const NSUInteger cols_c = (NSUInteger)n;
-        constexpr NSUInteger kST = 4096;
-        float sa[kST], sb[kST], sc[kST];
-        const NSUInteger ea = rows_a*cols_a, eb = rows_b*cols_b, ec = rows_c*cols_c;
-        float* fa = (ea<=kST)?sa:new float[ea];
-        float* fb = (eb<=kST)?sb:new float[eb];
-        float* fc = (ec<=kST)?sc:new float[ec];
-        for (dim_t i = 0; i < batch_size; ++i) {
-          const In* ai = a + i * stridea;
-          const In* bi = b + i * strideb;
-          Out* ci = c + i * stridec;
-          for (NSUInteger r = 0; r < rows_a; ++r)
-            for (NSUInteger j = 0; j < cols_a; ++j)
-              fa[r*cols_a+j] = float(ai[r*(NSUInteger)lda+j]);
-          for (NSUInteger r = 0; r < rows_b; ++r)
-            for (NSUInteger j = 0; j < cols_b; ++j)
-              fb[r*cols_b+j] = float(bi[r*(NSUInteger)ldb+j]);
-          if (beta != 0.0f)
-            for (NSUInteger r = 0; r < rows_c; ++r)
-              for (NSUInteger j = 0; j < cols_c; ++j)
-                fc[r*cols_c+j] = float(ci[r*(NSUInteger)ldc+j]);
-          cblas_sgemm(CblasRowMajor,
-                      transpose_a ? CblasTrans : CblasNoTrans,
-                      transpose_b ? CblasTrans : CblasNoTrans,
-                      (int)m, (int)n, (int)k,
-                      alpha, fa, (int)cols_a, fb, (int)cols_b,
-                      beta, fc, (int)cols_c);
-          for (NSUInteger r = 0; r < rows_c; ++r)
-            for (NSUInteger j = 0; j < cols_c; ++j)
-              ci[r*(NSUInteger)ldc+j] = Out(fc[r*cols_c+j]);
-        }
-        if (fa!=sa) delete[] fa;
-        if (fb!=sb) delete[] fb;
-        if (fc!=sc) delete[] fc;
+        // Batched MPS GEMM with padded temp buffers: 1-2 syncs for the
+        // entire batch, vs N syncs for per-element or slow CPU cblas.
+        dispatch_mps_gemm_batched_padded<float16_t>(
+            transpose_a, transpose_b, m, n, k,
+            alpha, a, lda, stridea, b, ldb, strideb,
+            beta, c, ldc, stridec, batch_size);
       } else {
         if (!dispatch_mps_gemm_batched<float16_t>(
                 transpose_a, transpose_b, m, n, k,

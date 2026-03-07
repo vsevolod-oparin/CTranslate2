@@ -925,6 +925,15 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - **Decision:** kernel exists in codebase but production retains CPU fallback for k>1
 - Report: `agents/report/milestone-11.10-gpu-topk-k.md`
 
+**11.11 Batched Padded GEMM & faster_whisper optimization** ✅
+- Added `dispatch_mps_gemm_batched_padded<T>()` for batched MPS GEMM with row-alignment padding
+- MSL `row_copy` kernel for encode-only C unpack (zero syncs)
+- `batch_cpu_gemm_f32`/`batch_cpu_gemm_f16` helpers: single sync + N cblas loop (was N syncs)
+- Fixed per-element dispatch regression causing 17,700 syncs per faster_whisper transcription
+- faster_whisper whisper-large-v3-turbo beam=5: 0.58× → **1.06×** Metal/CPU
+- Native API whisper-large-v3-turbo greedy: **1.45×** Metal/CPU
+- Report: `agents/report/milestone-11.11-batched-padded-gemm.md`
+
 ---
 
 ### Milestone 12: Testing, CI, Documentation

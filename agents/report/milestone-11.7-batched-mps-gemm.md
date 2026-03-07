@@ -63,3 +63,7 @@ All e2e tests pass:
 - 9/9 float16
 - 11/11 long-form
 - 13/13 BF16
+
+## Related
+
+- **M11.11**: Extended batched GEMM to handle padded matrices via `dispatch_mps_gemm_batched_padded<T>()`. See `agents/report/milestone-11.11-batched-padded-gemm.md`.

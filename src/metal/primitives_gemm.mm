@@ -780,53 +780,56 @@ static void dispatch_mps_gemm_batched_padded(
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;
 
-  // GPU row_copy for pad/unpad — entirely encode-only, zero syncs.
-  // The row_copy MSL kernel runs on the same command buffer as MPS GEMM,
-  // so Metal guarantees correct execution order.
+  // CPU memcpy for A/B packing (needs flush to read GPU data).
+  // GPU row_copy for C unpack (encode-only after MPS GEMM, zero syncs).
+  if (pad_a || pad_b || (pad_c && beta != 0.0f))
+    CT2_COMMIT_AND_WAIT();
 
   if (pad_a) {
     tmp_a = alloc_temp_buffer(mb_a * (NSUInteger)batch_size);
-    id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(a, &off_a);
-    dispatch_row_copy(src_buf, off_a,
-                      nat_rb_a, (NSUInteger)stridea * elem,
-                      tmp_a, 0,
-                      mps_rb_a, mb_a,
-                      nat_rb_a, rows_a, (NSUInteger)batch_size);
+    auto* dst = static_cast<uint8_t*>([tmp_a contents]);
+    auto* src = reinterpret_cast<const uint8_t*>(a);
+    for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
+      for (NSUInteger r = 0; r < rows_a; ++r)
+        std::memcpy(dst + i * mb_a + r * mps_rb_a,
+                     src + i * (NSUInteger)stridea * elem + r * nat_rb_a,
+                     nat_rb_a);
+    }
     buf_a = tmp_a;
-    off_a = 0;
   } else {
     buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
   }
 
   if (pad_b) {
     tmp_b = alloc_temp_buffer(mb_b * (NSUInteger)batch_size);
-    NSUInteger src_off_b = 0;
-    id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(b, &src_off_b);
-    dispatch_row_copy(src_buf, src_off_b,
-                      nat_rb_b, (NSUInteger)strideb * elem,
-                      tmp_b, 0,
-                      mps_rb_b, mb_b,
-                      nat_rb_b, rows_b, (NSUInteger)batch_size);
+    auto* dst = static_cast<uint8_t*>([tmp_b contents]);
+    auto* src = reinterpret_cast<const uint8_t*>(b);
+    for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
+      for (NSUInteger r = 0; r < rows_b; ++r)
+        std::memcpy(dst + i * mb_b + r * mps_rb_b,
+                     src + i * (NSUInteger)strideb * elem + r * nat_rb_b,
+                     nat_rb_b);
+    }
     buf_b = tmp_b;
-    off_b = 0;
   } else {
     buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
   }
 
   if (pad_c) {
     tmp_c = alloc_temp_buffer(mb_c * (NSUInteger)batch_size);
+    auto* dst = static_cast<uint8_t*>([tmp_c contents]);
     if (beta != 0.0f) {
-      NSUInteger src_off_c = 0;
-      id<MTLBuffer> src_buf = ctranslate2::metal_buffer_for_ptr(c, &src_off_c);
-      dispatch_row_copy(src_buf, src_off_c,
-                        nat_rb_c, (NSUInteger)stridec * elem,
-                        tmp_c, 0,
-                        mps_rb_c, mb_c,
-                        nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
+      auto* src = reinterpret_cast<const uint8_t*>(c);
+      for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
+        for (NSUInteger r = 0; r < (NSUInteger)m; ++r)
+          std::memcpy(dst + i * mb_c + r * mps_rb_c,
+                       src + i * (NSUInteger)stridec * elem + r * nat_rb_c,
+                       nat_rb_c);
+      }
+    } else {
+      std::memset(dst, 0, mb_c * (NSUInteger)batch_size);
     }
-    // If beta==0, MPS GEMM will overwrite C entirely (no need to zero-fill).
     buf_c = tmp_c;
-    off_c = 0;
   } else {
     buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
   }
@@ -982,14 +985,66 @@ namespace ctranslate2 {
              ((NSUInteger)ldc * elem_sz < mps_c);
     };
 
+    // Helper: single-sync CPU cblas loop for a batch of tiny padded float32 GEMMs.
+    auto batch_cpu_gemm_f32 = [&](const float* ba, const float* bb, float* bc) {
+      CT2_COMMIT_AND_WAIT();
+      for (dim_t i = 0; i < batch_size; ++i)
+        cblas_sgemm(CblasRowMajor,
+                    transpose_a ? CblasTrans : CblasNoTrans,
+                    transpose_b ? CblasTrans : CblasNoTrans,
+                    (int)m, (int)n, (int)k,
+                    alpha,
+                    ba + i * stridea, (int)lda,
+                    bb + i * strideb, (int)ldb,
+                    beta,
+                    bc + i * stridec, (int)ldc);
+    };
+
+    // Helper: single-sync CPU cblas loop for a batch of tiny padded float16 GEMMs.
+    // Widens to float32, runs cblas_sgemm, narrows back.
+    auto batch_cpu_gemm_f16 = [&](const float16_t* ba, const float16_t* bb, float16_t* bc) {
+      CT2_COMMIT_AND_WAIT();
+      const dim_t elems_a = (transpose_a ? k : m) * (transpose_a ? m : k);
+      const dim_t elems_b = (transpose_b ? n : k) * (transpose_b ? k : n);
+      const dim_t elems_c = m * n;
+      // Stack-allocate for small buffers, heap for large.
+      constexpr dim_t kStackMax = 4096;
+      float sa[kStackMax], sb[kStackMax], sc[kStackMax];
+      float* fa = (elems_a <= kStackMax) ? sa : new float[elems_a];
+      float* fb = (elems_b <= kStackMax) ? sb : new float[elems_b];
+      float* fc = (elems_c <= kStackMax) ? sc : new float[elems_c];
+      for (dim_t i = 0; i < batch_size; ++i) {
+        const auto* ai = ba + i * stridea;
+        const auto* bi = bb + i * strideb;
+        auto* ci = bc + i * stridec;
+        for (dim_t j = 0; j < elems_a; ++j) fa[j] = static_cast<float>(ai[j]);
+        for (dim_t j = 0; j < elems_b; ++j) fb[j] = static_cast<float>(bi[j]);
+        if (beta != 0.0f)
+          for (dim_t j = 0; j < elems_c; ++j) fc[j] = static_cast<float>(ci[j]);
+        cblas_sgemm(CblasRowMajor,
+                    transpose_a ? CblasTrans : CblasNoTrans,
+                    transpose_b ? CblasTrans : CblasNoTrans,
+                    (int)m, (int)n, (int)k,
+                    alpha, fa, (int)lda, fb, (int)ldb,
+                    beta, fc, (int)ldc);
+        for (dim_t j = 0; j < elems_c; ++j) ci[j] = static_cast<float16_t>(fc[j]);
+      }
+      if (fa != sa) delete[] fa;
+      if (fb != sb) delete[] fb;
+      if (fc != sc) delete[] fc;
+    };
+
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
       if (batch_size > 0 && needs_padding()) {
-        // Batched MPS GEMM with padded temp buffers: 1-2 syncs for the
-        // entire batch, vs N syncs for per-element or slow CPU cblas.
-        dispatch_mps_gemm_batched_padded<float>(
-            transpose_a, transpose_b, m, n, k,
-            alpha, a, lda, stridea, b, ldb, strideb,
-            beta, c, ldc, stridec, batch_size);
+        constexpr dim_t kCpuGemmThresh = 4096;
+        if (m * n > kCpuGemmThresh) {
+          dispatch_mps_gemm_batched_padded<float>(
+              transpose_a, transpose_b, m, n, k,
+              alpha, a, lda, stridea, b, ldb, strideb,
+              beta, c, ldc, stridec, batch_size);
+        } else {
+          batch_cpu_gemm_f32(a, b, c);
+        }
       } else {
         if (!dispatch_mps_gemm_batched<float>(
                 transpose_a, transpose_b, m, n, k,
@@ -1004,12 +1059,15 @@ namespace ctranslate2 {
       }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
       if (batch_size > 0 && needs_padding()) {
-        // Batched MPS GEMM with padded temp buffers: 1-2 syncs for the
-        // entire batch, vs N syncs for per-element or slow CPU cblas.
-        dispatch_mps_gemm_batched_padded<float16_t>(
-            transpose_a, transpose_b, m, n, k,
-            alpha, a, lda, stridea, b, ldb, strideb,
-            beta, c, ldc, stridec, batch_size);
+        constexpr dim_t kCpuGemmThresh = 4096;
+        if (m * n > kCpuGemmThresh) {
+          dispatch_mps_gemm_batched_padded<float16_t>(
+              transpose_a, transpose_b, m, n, k,
+              alpha, a, lda, stridea, b, ldb, strideb,
+              beta, c, ldc, stridec, batch_size);
+        } else {
+          batch_cpu_gemm_f16(a, b, c);
+        }
       } else {
         if (!dispatch_mps_gemm_batched<float16_t>(
                 transpose_a, transpose_b, m, n, k,
@@ -1017,9 +1075,9 @@ namespace ctranslate2 {
                 beta, c, ldc, stridec, batch_size)) {
           for (dim_t i = 0; i < batch_size; ++i)
             dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
-                                       alpha, a + i * stridea, lda,
-                                              b + i * strideb, ldb,
-                                       beta,  c + i * stridec, ldc);
+                                         alpha, a + i * stridea, lda,
+                                                b + i * strideb, ldb,
+                                         beta,  c + i * stridec, ldc);
         }
       }
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {

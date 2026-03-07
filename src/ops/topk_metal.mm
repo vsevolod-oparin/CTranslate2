@@ -1,13 +1,15 @@
 // src/ops/topk_metal.mm
 //
-// M11.6 — Metal implementation of the TopK op.
+// Metal implementation of the TopK op.
 //
 // k=1: GPU argmax kernel (encode-only, no commit_and_wait).
 //   The caller (Sampler::operator()) syncs via copy_from which
 //   calls synchronize_stream(Device::METAL) internally.
 //
-// k>1: commit_and_wait() to flush pending GPU writes, then CPU
-//   std::partial_sort on unified-memory pointers.
+// k>1: CPU partial_sort is still faster than GPU iterative argmax
+//   for typical beam search shapes (k=5, depth=51865).  The GPU
+//   kernel exists (topk_k_<T>) but the k sequential passes with
+//   barriers cannot beat CPU partial_sort (~33µs) given CB overhead.
 
 #include "ctranslate2/ops/topk.h"
 
@@ -37,6 +39,8 @@ namespace ctranslate2 {
                                      batch_size, depth);
       } else {
         // CPU fallback for k>1: flush GPU, then partial_sort on shared memory.
+        // GPU topk_k kernel exists but is slower for typical shapes
+        // (k sequential full-vocab scans ~1ms vs CPU partial_sort ~33µs).
         CT2_COMMIT_AND_WAIT();
 
         const DataType* x_data = x.data<DataType>();

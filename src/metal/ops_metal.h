@@ -156,12 +156,14 @@ namespace ctranslate2 {
                                     dim_t outer_size, dim_t K, dim_t N,
                                     float epsilon);
 
-    // topk_metal: GPU argmax (k=1 only).
-    //   Finds the max value and its index in each row of [batch_size, depth].
+    // topk_metal: GPU top-k selection.
+    //   k=1: argmax kernel. k>1: iterative argmax with excluded-index list.
+    //   Finds the top-k values and their indices in each row of [batch_size, depth].
+    //   Output: values [batch_size, k], indices [batch_size, k].
     //   One threadgroup (256 threads) per batch item; encode-only.
     template <typename T>
     void topk_metal(const T* input, T* values, int32_t* indices,
-                    dim_t batch_size, dim_t depth);
+                    dim_t batch_size, dim_t depth, dim_t k = 1);
 
   }  // namespace metal
 }  // namespace ctranslate2

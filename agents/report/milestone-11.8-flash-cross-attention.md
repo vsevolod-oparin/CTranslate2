@@ -1,4 +1,4 @@
-# M11.6 — Flash Cross-Attention on Metal
+# M11.8 — Flash Cross-Attention on Metal
 
 ## Summary
 

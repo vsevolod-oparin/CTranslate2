@@ -897,20 +897,20 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Gather encode-only by default; TopK k=1 uses GPU argmax MSL kernel
 - Eliminated ~1079 `commit_and_wait()` calls per Whisper inference
 - Whisper Metal/CPU ratio improved from 1.32x → 1.59x
-- Report: `agents/report/milestone-11-further-optimizations.md`
+- Report: `agents/report/milestone-11.6-gather-topk-syncs.md`
 
 **11.7 Batched MPS GEMM for non-padded attention** ✅
 - `dispatch_mps_gemm_batched<T>()` using MPS batch matrix descriptors
 - Single `MPSMatrixMultiplication` with `batchSize` encodes all heads in one call
 - Whisper Metal/CPU ratio improved from 1.59x → 2.61x
-- Report: covered in `agents/report/milestone-11.5-perf-optimization.md` (Further Optimization section)
+- Report: `agents/report/milestone-11.7-batched-mps-gemm.md`
 
 **11.8 Flash Cross-Attention on Metal** ✅
 - Routes cross-attention through `FlashAttention` op → `sdpa_metal` (fused QK^T + softmax + attn*V)
 - `process_cross_attention_flash()`: `[batch, seq, heads, dim]` layout, zero-copy reshape
 - Beam_size broadcasting (`kv_b = b / beam_size`) eliminates K/V tiling across beams
 - Whisper Metal/CPU ratio: ~1.98x median (on power); faster than old `dot_product_attention` (1.80x)
-- Report: `agents/report/milestone-11.6-flash-cross-attention.md`
+- Report: `agents/report/milestone-11.8-flash-cross-attention.md`
 
 **11.9 Fused LayerNorm + GEMM kernel** ✅
 - Fused LayerNorm/RMSNorm + GEMV in single MSL dispatch (256 threads/row)

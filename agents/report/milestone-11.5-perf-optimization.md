@@ -141,18 +141,15 @@ Extended `sdpa_decode_cpu` to handle any sq (renamed to `sdpa_cpu`). Routes to C
    - TopK k=1 uses GPU argmax MSL kernel (256-thread parallel reduction)
    - Result: Whisper Metal/CPU ratio improved from 1.32x to 1.59x (~20% speedup)
 
-2. ~~**Batched MPS GEMM for non-padded attention**~~ **DONE**
-   - Added `dispatch_mps_gemm_batched<T>()` using MPS batch matrix descriptors (`matrixDescriptorWithRows:columns:matrices:rowBytes:matrixBytes:dataType:`)
+2. ~~**Batched MPS GEMM for non-padded attention**~~ **DONE (M11.7)**
    - Single `MPSMatrixMultiplication` with `batchSize` encodes all heads in one call
-   - Falls back to per-element loop when MPS batch constraints not met
-   - Applied to both FP32 and FP16 non-padded paths in `gemm_batch_strided`
-   - All e2e tests pass: 90/90 translation, 39/39 beam, 13/13 whisper, 12/12 GPT-2, 9/9 f16, 11/11 longform, 13/13 bf16
+   - Report: `agents/report/milestone-11.7-batched-mps-gemm.md`
 
 3. ~~**Cross-attention FlashMultiHeadAttention**~~ **DONE (M11.8)**
    - Routes cross-attention through `FlashAttention` → `sdpa_metal` (fused kernel)
    - Beam_size broadcasting (`kv_b = b / beam_size`) eliminates K/V tiling
    - Whisper Metal/CPU ratio: ~1.98x median (on power)
-   - Report: `agents/report/milestone-11.6-flash-cross-attention.md`
+   - Report: `agents/report/milestone-11.8-flash-cross-attention.md`
 
 ### Medium Impact
 

@@ -888,6 +888,43 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Test: `tests/metal/e2e/test_profiling.py` — 7/7 pass
 - Report: `agents/report/milestone-11.4-profiling.md`
 
+**11.5 General Metal performance optimization** ✅
+- 5 optimizations: CPU GEMM for tiny padded, MPS+temp for large padded, GPU blit Split/Concat, batched CPU GEMM, CPU SDPA for small
+- Whisper Metal/CPU ratio: 1.28-1.37x (60s audio)
+- Report: `agents/report/milestone-11.5-perf-optimization.md`
+
+**11.6 Eliminate Gather/TopK syncs** ✅
+- Gather encode-only by default; TopK k=1 uses GPU argmax MSL kernel
+- Eliminated ~1079 `commit_and_wait()` calls per Whisper inference
+- Whisper Metal/CPU ratio improved from 1.32x → 1.59x
+- Report: `agents/report/milestone-11-further-optimizations.md`
+
+**11.7 Batched MPS GEMM for non-padded attention** ✅
+- `dispatch_mps_gemm_batched<T>()` using MPS batch matrix descriptors
+- Single `MPSMatrixMultiplication` with `batchSize` encodes all heads in one call
+- Whisper Metal/CPU ratio improved from 1.59x → 2.61x
+- Report: covered in `agents/report/milestone-11.5-perf-optimization.md` (Further Optimization section)
+
+**11.8 Flash Cross-Attention on Metal** ✅
+- Routes cross-attention through `FlashAttention` op → `sdpa_metal` (fused QK^T + softmax + attn*V)
+- `process_cross_attention_flash()`: `[batch, seq, heads, dim]` layout, zero-copy reshape
+- Beam_size broadcasting (`kv_b = b / beam_size`) eliminates K/V tiling across beams
+- Whisper Metal/CPU ratio: ~1.98x median (on power); faster than old `dot_product_attention` (1.80x)
+- Report: `agents/report/milestone-11.6-flash-cross-attention.md`
+
+**11.9 Fused LayerNorm + GEMM kernel** ✅
+- Fused LayerNorm/RMSNorm + GEMV in single MSL dispatch (256 threads/row)
+- BF16 only (MPS BF16 GEMM requires `commit_and_wait`; for f32/f16 MPS encode-only is faster)
+- Guards: outer_size ≤ 16, K ≤ 4096, no quantization, no activation
+- Fused in: MultiHeadAttention pre-norm + QKV proj, FeedForwardNetwork pre-norm + FF1 proj
+- Report: `agents/report/milestone-11.9-fused-norm-gemm.md`
+
+**11.10 GPU TopK kernel for k>1** ✅
+- Iterative argmax with excluded-index list MSL kernel (`topk_k_<T>`)
+- Kernel works (30/30 tests) but CPU `partial_sort` is faster for beam search shapes (k=5, depth=51865: GPU ~1.5ms vs CPU ~33µs)
+- **Decision:** kernel exists in codebase but production retains CPU fallback for k>1
+- Report: `agents/report/milestone-11.10-gpu-topk-k.md`
+
 ---
 
 ### Milestone 12: Testing, CI, Documentation

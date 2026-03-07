@@ -148,16 +148,18 @@ Extended `sdpa_decode_cpu` to handle any sq (renamed to `sdpa_cpu`). Routes to C
    - Applied to both FP32 and FP16 non-padded paths in `gemm_batch_strided`
    - All e2e tests pass: 90/90 translation, 39/39 beam, 13/13 whisper, 12/12 GPT-2, 9/9 f16, 11/11 longform, 13/13 bf16
 
-3. **Cross-attention FlashMultiHeadAttention**
-   - Currently hardcoded to `MultiHeadAttention` in `transformer.cc:178`
-   - Using Flash attention for cross-attention would bypass `gemm_batch_strided` entirely
-   - For short-sequence models this would eliminate the worst-case padding overhead
+3. ~~**Cross-attention FlashMultiHeadAttention**~~ **DONE (M11.8)**
+   - Routes cross-attention through `FlashAttention` → `sdpa_metal` (fused kernel)
+   - Beam_size broadcasting (`kv_b = b / beam_size`) eliminates K/V tiling
+   - Whisper Metal/CPU ratio: ~1.98x median (on power)
+   - Report: `agents/report/milestone-11.6-flash-cross-attention.md`
 
 ### Medium Impact
 
-4. **Fused LayerNorm + GEMM kernel**
-   - LayerNorm output feeds directly to Q/K/V GEMM projections
-   - Fusing avoids writing intermediate results to memory and dispatching separate commands
+4. ~~**Fused LayerNorm + GEMM kernel**~~ **DONE (M11.9)**
+   - Fused LayerNorm/RMSNorm + GEMV in single MSL dispatch (BF16 only)
+   - Eliminates one `commit_and_wait()` per fused site (~400 µs)
+   - Report: `agents/report/milestone-11.9-fused-norm-gemm.md`
 
 5. **Reduction/Softmax kernel optimization**
    - 574 reduction commits suggest these ops sync per-call

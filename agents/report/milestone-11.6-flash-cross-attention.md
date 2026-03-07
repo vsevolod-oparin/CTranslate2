@@ -66,7 +66,22 @@ When not met → existing `dot_product_attention` path (no regressions for CPU o
 
 The existing prefill path (offset=0) already handles arbitrary sq/sk with `is_causal=false`.
 
+### 5. Beam_size broadcasting — additional changes (commit `e528112a`)
+
+| File | Change |
+|------|--------|
+| `src/metal/ops_metal.h` | Added `dim_t beam_size = 1` to `sdpa_metal` signature |
+| `src/metal/ops_sdpa.mm` | `kv_b = b / beam_size` in both GPU and CPU paths |
+| `include/ctranslate2/ops/flash_attention.h` | Added `dim_t beam_size = 1` to operator/compute |
+| `src/ops/flash_attention.cc` | Threaded `beam_size` through |
+| `src/ops/flash_attention_metal.mm` | Passed `beam_size` to `sdpa_metal` calls |
+| `src/ops/flash_attention_cpu.cc` | Added beam_size param (compile fix) |
+| `src/ops/flash_attention_gpu.cu` | Added beam_size param (compile fix) |
+| `src/layers/attention.cc` | Removed K/V Tile, pass beam_size to FlashAttention |
+
 ## Beam Search Handling
+
+### Initial Implementation (commit `261dacf4`)
 
 - Q: `[batch*beam, 1, nh, dh]`
 - Cached K/V: `[batch, sk, nhk, dh]`
@@ -74,21 +89,46 @@ The existing prefill path (offset=0) already handles arbitrary sq/sk with `is_ca
 - Tile K/V via `ops::Tile(0, beam_size)` → `[batch*beam, sk, nhk, dh]`
 - Call FlashAttention with batch_size = batch*beam
 
+### Beam Broadcasting Fix (commit `e528112a`)
+
+The initial `ops::Tile` approach caused a **performance regression** from 2.6x → 1.5x for Whisper beam_size=5. Tiling copies the entire encoder K/V cache (batch × sk × nhk × dh) per layer per decode step.
+
+**Fix:** Added `beam_size` parameter to `sdpa_metal` so Q indexes `batch*beam` while K/V index `batch` using `kv_b = b / beam_size`. This eliminates tiling entirely — zero-copy broadcast.
+
+Changes for beam broadcasting:
+- `sdpa_metal()` and `sdpa_cpu()` in `ops_sdpa.mm`: `kv_b = b / beam_size` for K/V batch indexing
+- `FlashAttention::operator()` and `compute<D>()`: added `dim_t beam_size = 1` parameter
+- `flash_attention_metal.mm`: passes `beam_size` to `sdpa_metal` calls
+- `flash_attention_cpu.cc` / `flash_attention_gpu.cu`: compile-fix (beam_size param unused)
+- `attention.cc`: no K/V tiling — passes `beam_size` directly to FlashAttention
+
+```cpp
+// In sdpa_metal / sdpa_cpu — both GPU and CPU paths:
+for (dim_t b = 0; b < batch_size; ++b) {
+  const dim_t kv_b = b / beam_size;  // K/V batch broadcasting
+  // Q and output use b; K/V use kv_b
+}
+```
+
 ## MQA/GQA
 
 `sdpa_metal` supports `num_heads_kv < num_heads` natively — no `replicate_heads` needed. This is more memory-efficient than the existing `process_cross_attention` path.
 
 ## Performance Results
 
-### Whisper ASR (whisper-base, 60s Russian podcast)
+### Whisper ASR (whisper-base, 60s Russian podcast, Apple M4, plugged in)
 
 | Optimization Stage | Metal/CPU Ratio |
 |---|---|
 | After eliminate Gather/TopK syncs (M11) | ~1.59x |
 | After batched MPS GEMM for non-padded attention (M11) | ~2.61x |
-| After flash cross-attention (this change) | ~1.92-2.48x |
+| After flash cross-attention with Tile (initial, `261dacf4`) | ~1.51x (regression) |
+| **After flash cross-attention with beam_size broadcasting (`e528112a`)** | **~1.98x (median on power)** |
+| Flash cross-attn disabled (old dot_product_attention) | ~1.80x (median on power) |
 
-The flash cross-attention does not materially change Whisper speed because the batched MPS GEMM optimization (M11) was already coalescing the cross-attention GEMMs efficiently within a single command buffer submission. The benefit is primarily **code simplification** (fewer op dispatches per decode step) and **architectural consistency** (cross-attention uses the same fused kernel as self-attention).
+The initial flash cross-attention implementation regressed Whisper performance due to K/V tiling. After adding beam_size broadcasting, flash cross-attention with broadcasting (1.98x) is **faster** than the old `dot_product_attention` path (1.80x) on plugged-in power.
+
+**Note:** Battery vs plugged-in significantly affects results. On battery: flash+broadcast ~1.70x, old path ~2.0x. On power: flash+broadcast ~1.98x, old path ~1.80x. Always benchmark on power.
 
 ### Seq2seq (opus-mt-en-de, WMT14 100 sentences)
 

@@ -53,8 +53,16 @@ template<> struct MPS_Dtype<ctranslate2::float16_t> { static const MPSDataType v
 //
 // MPSMatrix requires rowBytes >= [MPSMatrixDescriptor rowBytesForColumns:...].
 // When the natural stride is below this minimum, we copy to a row-padded
-// temporary buffer.  For the output we flush the GPU and unpack back to c.
+// temporary buffer.  For the output we encode a GPU row_copy back to c.
 // ---------------------------------------------------------------------------
+
+// Forward declaration — defined after row_copy MSL infrastructure.
+static void dispatch_row_copy(id<MTLBuffer> src_buf, NSUInteger src_off,
+                              NSUInteger src_rb, NSUInteger src_mb,
+                              id<MTLBuffer> dst_buf, NSUInteger dst_off,
+                              NSUInteger dst_rb, NSUInteger dst_mb,
+                              NSUInteger copy_bytes, NSUInteger rows,
+                              NSUInteger batch_size);
 
 template <typename T>
 static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
@@ -244,13 +252,15 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
   }
 
-  // If C was routed to a padded temp buffer, flush GPU and unpack back to c.
+  // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.
   if (pad_c) {
-    CT2_COMMIT_AND_WAIT();
-    const auto* src = static_cast<const uint8_t*>([tmp_c contents]);
-    auto* dst = reinterpret_cast<uint8_t*>(c);
-    for (NSUInteger r = 0; r < rows_c; ++r)
-      std::memcpy(dst + r * nat_rb_c, src + r * mps_rb_c, nat_rb_c);
+    NSUInteger dst_off_c = 0;
+    id<MTLBuffer> dst_buf = ctranslate2::metal_buffer_for_ptr(c, &dst_off_c);
+    dispatch_row_copy(tmp_c, 0,
+                      mps_rb_c, rows_c * mps_rb_c,
+                      dst_buf, dst_off_c,
+                      nat_rb_c, rows_c * nat_rb_c,
+                      nat_rb_c, rows_c, 1);
   }
 }
 

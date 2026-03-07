@@ -74,6 +74,10 @@ namespace ctranslate2 {
   void primitives<Device::METAL>::indexed_fill(T* x, T a,
                                                 const int32_t* indices,
                                                 dim_t num_indices) {
+    // Flush pending GPU writes: x may live in a buffer with in-flight GPU
+    // work (e.g. row_copy from padded GEMM output).  The CPU loop below
+    // modifies x directly, so the GPU must finish first.
+    CT2_COMMIT_AND_WAIT();
     for (dim_t i = 0; i < num_indices; ++i)
       x[indices[i]] = a;
   }

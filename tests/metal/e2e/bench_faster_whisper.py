@@ -18,8 +18,8 @@ audio, _ = librosa.load(audio_file, sr=16000, mono=True)
 dur = len(audio) / 16000
 print(f"Model: {model_name}  beam_size={beam_size}  audio={dur:.0f}s")
 
-model_cpu = WhisperModel(whisper_path, device="cpu")
-model_metal = WhisperModel(whisper_path, device="metal")
+model_cpu = WhisperModel(whisper_path, device="cpu", compute_type="float32")
+model_metal = WhisperModel(whisper_path, device="metal", compute_type="float32")
 
 # Single warmup each
 for m in (model_cpu, model_metal):

@@ -18,6 +18,26 @@ namespace ctranslate2 {
     split_batch_beam(data, beam_size);
   }
 
+#ifdef CT2_WITH_METAL
+  static void batch_gather_beam_flat(std::vector<StorageView*>& views,
+                                     const StorageView& indices,
+                                     dim_t beam_size) {
+    if (views.empty() || views[0]->device() != Device::METAL) {
+      for (auto* v : views)
+        gather_beam_flat(*v, indices, beam_size);
+      return;
+    }
+
+    for (auto* v : views)
+      merge_batch_beam(*v);
+
+    ops::Gather::batch_gather_in_place(views, indices);
+
+    for (auto* v : views)
+      split_batch_beam(*v, beam_size);
+  }
+#endif
+
   static void update_sample_with_prefix(const size_t step,
                                         StorageView& sampled_ids,
                                         StorageView& sampled_scores,
@@ -680,12 +700,23 @@ namespace ctranslate2 {
         break;
       }
 
-      gather(gather_indices, active_beams);
-      gather_beam_flat(topk_ids, active_beams, _beam_size);
-      gather_beam_flat(topk_scores, active_beams, _beam_size);
-      gather_beam_flat(alive_seq, active_beams, _beam_size);
-      if (alive_attention)
-        gather_beam_flat(alive_attention, active_beams, _beam_size);
+      gather(gather_indices, active_beams);  // CPU-to-CPU, no sync
+
+#ifdef CT2_WITH_METAL
+      if (topk_ids.device() == Device::METAL) {
+        std::vector<StorageView*> beam_views = {&topk_ids, &topk_scores, &alive_seq};
+        if (alive_attention)
+          beam_views.push_back(&alive_attention);
+        batch_gather_beam_flat(beam_views, active_beams, _beam_size);
+      } else
+#endif
+      {
+        gather_beam_flat(topk_ids, active_beams, _beam_size);
+        gather_beam_flat(topk_scores, active_beams, _beam_size);
+        gather_beam_flat(alive_seq, active_beams, _beam_size);
+        if (alive_attention)
+          gather_beam_flat(alive_attention, active_beams, _beam_size);
+      }
 
       // If some sentences finished on this step, ignore them for the next step.
       std::unique_ptr<StorageView> keep_batches;

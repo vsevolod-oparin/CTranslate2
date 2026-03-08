@@ -58,6 +58,16 @@ namespace ctranslate2 {
         const std::vector<dim_t>& batch_ids,
         std::vector<bool>& results);
 
+    // Fused timestamp check + disable (M11.17).
+    // Same reduction as should_sample_timestamps_metal, but writes -inf
+    // directly to logits[batch_id][0..num_text) on the GPU.
+    // Encode-only — no CT2_COMMIT_AND_WAIT().
+    template <typename T>
+    void fuse_timestamp_check_and_disable_metal(
+        const T* log_probs, T* logits, dim_t vocab_size,
+        dim_t num_text_tokens, dim_t num_ts_tokens,
+        const std::vector<dim_t>& batch_ids);
+
   }  // namespace metal
 }  // namespace ctranslate2
 

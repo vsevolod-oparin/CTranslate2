@@ -116,6 +116,105 @@ static id<MTLComputePipelineState> get_should_sample_ts_pso(const char* name) {
   return cache.get(get_should_sample_ts_library, name);
 }
 
+// ---------------------------------------------------------------------------
+// MSL kernel for fused timestamp check + disable (M11.17).
+// Same 3-pass reduction as should_sample_ts, but instead of writing boolean
+// result, threads cooperatively fill logits[batch_id][0..num_text) with -inf
+// when should_sample is true.  No CPU readback — encode-only.
+// ---------------------------------------------------------------------------
+static constexpr const char* kFuseTimestampDisableMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_FUSE_TS_DISABLE(T)                                            \
+kernel void fuse_ts_disable_##T(                                             \
+    device const T*     log_probs   [[buffer(0)]],                           \
+    device       T*     logits      [[buffer(1)]],                           \
+    device const uint*  batch_ids   [[buffer(2)]],                           \
+    constant     uint&  vocab_size  [[buffer(3)]],                           \
+    constant     uint&  num_text    [[buffer(4)]],                           \
+    constant     uint&  num_ts      [[buffer(5)]],                           \
+    threadgroup  float* shmem       [[threadgroup(0)]],                      \
+    uint tg_idx [[threadgroup_position_in_grid]],                            \
+    uint tid    [[thread_index_in_threadgroup]],                             \
+    uint tgs    [[threads_per_threadgroup]])                                  \
+{                                                                            \
+    uint bid = batch_ids[tg_idx];                                            \
+    device const T* row = log_probs + bid * vocab_size;                      \
+                                                                             \
+    /* Pass 1: max over text tokens [0, num_text) */                         \
+    float val = -FLT_MAX;                                                    \
+    for (uint i = tid; i < num_text; i += tgs)                               \
+        val = max(val, (float)row[i]);                                       \
+    shmem[tid] = val;                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s && shmem[tid + s] > shmem[tid])                          \
+            shmem[tid] = shmem[tid + s];                                     \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float max_text_val = shmem[0];                                           \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Pass 2: max over timestamp tokens for stable logsumexp */             \
+    val = -FLT_MAX;                                                          \
+    for (uint i = tid; i < num_ts; i += tgs)                                 \
+        val = max(val, (float)row[num_text + i]);                            \
+    shmem[tid] = val;                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s && shmem[tid + s] > shmem[tid])                          \
+            shmem[tid] = shmem[tid + s];                                     \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float max_ts_val = shmem[0];                                             \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Pass 3: sum(exp(ts[i] - max_ts)) */                                   \
+    float sum_exp = 0.f;                                                     \
+    for (uint i = tid; i < num_ts; i += tgs)                                 \
+        sum_exp += exp((float)row[num_text + i] - max_ts_val);               \
+    shmem[tid] = sum_exp;                                                    \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s) shmem[tid] += shmem[tid + s];                           \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+                                                                             \
+    /* Thread 0 decides; broadcast via shmem[0] */                           \
+    if (tid == 0) {                                                          \
+        float logsumexp_ts = log(shmem[0]) + max_ts_val;                     \
+        shmem[0] = (logsumexp_ts > max_text_val) ? 1.f : 0.f;               \
+    }                                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* If should_sample: write -inf to logits[bid][0..num_text) */           \
+    if (shmem[0] > 0.5f) {                                                   \
+        device T* logits_row = logits + bid * vocab_size;                    \
+        T neg_inf = T(-HUGE_VALF);                                           \
+        for (uint i = tid; i < num_text; i += tgs)                           \
+            logits_row[i] = neg_inf;                                         \
+    }                                                                        \
+}
+
+DEFINE_FUSE_TS_DISABLE(float)
+DEFINE_FUSE_TS_DISABLE(half)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_FUSE_TS_DISABLE(bfloat)
+#endif
+)msl";
+
+static id<MTLLibrary> get_fuse_ts_disable_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kFuseTimestampDisableMSL, "fuse_ts_disable");
+}
+
+static id<MTLComputePipelineState> get_fuse_ts_disable_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_fuse_ts_disable_library, name);
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -359,6 +458,68 @@ namespace ctranslate2 {
   template void should_sample_timestamps_metal<bfloat16_t>(
       const bfloat16_t*, dim_t, dim_t, dim_t,
       const std::vector<dim_t>&, std::vector<bool>&);
+
+  // -------------------------------------------------------------------------
+  // Fused timestamp check + disable — M11.17.
+  // Same reduction as should_sample_timestamps_metal, but writes -inf
+  // directly to logits instead of returning booleans.  Encode-only: no sync.
+  // -------------------------------------------------------------------------
+
+  template <typename T>
+  void fuse_timestamp_check_and_disable_metal(
+      const T* log_probs,
+      T* logits,
+      dim_t vocab_size,
+      dim_t num_text_tokens,
+      dim_t num_ts_tokens,
+      const std::vector<dim_t>& batch_ids) {
+    const size_t num = batch_ids.size();
+    if (num == 0) return;
+
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "fuse_ts_disable_%s", MetalTypeName<T>::value);
+
+    // Upload batch_ids as uint array.
+    id<MTLBuffer> ids_buf = alloc_temp_buffer(num * sizeof(uint32_t));
+    auto* ids_ptr = static_cast<uint32_t*>([ids_buf contents]);
+    for (size_t i = 0; i < num; ++i)
+      ids_ptr[i] = static_cast<uint32_t>(batch_ids[i]);
+
+    NSUInteger lp_off = 0, lg_off = 0;
+    id<MTLBuffer> lp_buf = metal_buffer_for_ptr(log_probs, &lp_off);
+    id<MTLBuffer> lg_buf = metal_buffer_for_ptr(logits, &lg_off);
+
+    uint32_t vocab = ct2_u32(vocab_size);
+    uint32_t ntxt  = ct2_u32(num_text_tokens);
+    uint32_t nts   = ct2_u32(num_ts_tokens);
+
+    id<MTLComputePipelineState> pso = get_fuse_ts_disable_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:lp_buf  offset:lp_off                  atIndex:0];
+    [enc setBuffer:lg_buf  offset:lg_off                  atIndex:1];
+    [enc setBuffer:ids_buf offset:0                       atIndex:2];
+    [enc setBytes:&vocab   length:sizeof(uint32_t)        atIndex:3];
+    [enc setBytes:&ntxt    length:sizeof(uint32_t)        atIndex:4];
+    [enc setBytes:&nts     length:sizeof(uint32_t)        atIndex:5];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(float) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(num, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+    // Encode-only — no CT2_COMMIT_AND_WAIT().
+  }
+
+  template void fuse_timestamp_check_and_disable_metal<float>(
+      const float*, float*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&);
+  template void fuse_timestamp_check_and_disable_metal<float16_t>(
+      const float16_t*, float16_t*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&);
+  template void fuse_timestamp_check_and_disable_metal<bfloat16_t>(
+      const bfloat16_t*, bfloat16_t*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&);
 
   }  // namespace metal
 

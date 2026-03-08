@@ -158,9 +158,10 @@ Extended `sdpa_decode_cpu` to handle any sq (renamed to `sdpa_cpu`). Routes to C
    - Eliminates one `commit_and_wait()` per fused site (~400 µs)
    - Report: `agents/report/milestone-11.9-fused-norm-gemm.md`
 
-5. **Reduction/Softmax kernel optimization**
-   - 574 reduction commits suggest these ops sync per-call
-   - Could batch multiple softmax operations or use a persistent kernel
+5. ~~**Reduction/Softmax kernel optimization**~~ **DONE (M11.17)**
+   - Fused timestamp check + disable kernel eliminates `should_sample_timestamps_metal` readback
+   - 1176 → 0 syncs from timestamp check; 1205 → 1035 from indexed_fill (second apply no-op)
+   - Report: `agents/report/milestone-11.17-reduction-optimization.md`
 
 6. ~~**BeamSearch GPU acceleration**~~ **DONE (M11.16)**
    - `prepare_length_mask` replaced with GPU MSL kernel (encode-only)

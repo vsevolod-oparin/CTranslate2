@@ -823,21 +823,16 @@ namespace ctranslate2 {
 
 #ifdef CT2_WITH_METAL
           if (log_probs.device() == Device::METAL) {
-            // Fused GPU path: one dispatch + one sync for all batch_ids.
-            std::vector<bool> ts_results;
+            // M11.17 fused GPU path: check + write -inf in one kernel, no sync.
+            // Eliminates should_sample_timestamps_metal readback AND the
+            // subsequent disable_tokens.add() loop + indexed_fill sync.
             DEVICE_AND_FLOAT_DISPATCH(
               "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
-              (metal::should_sample_timestamps_metal<T>(
-                  log_probs.data<T>(), log_probs.dim(-1),
+              (metal::fuse_timestamp_check_and_disable_metal<T>(
+                  log_probs.data<T>(), logits.data<T>(), log_probs.dim(-1),
                   _timestamp_begin_id,
                   _timestamp_end_id - _timestamp_begin_id + 1,
-                  check_timestamps_prob_for_batch, ts_results)));
-            for (size_t i = 0; i < check_timestamps_prob_for_batch.size(); ++i) {
-              if (ts_results[i]) {
-                for (size_t t = 0; t < _timestamp_begin_id; ++t)
-                  disable_tokens.add(check_timestamps_prob_for_batch[i], t);
-              }
-            }
+                  check_timestamps_prob_for_batch)));
           } else
 #endif
           {

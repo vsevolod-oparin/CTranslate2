@@ -2,6 +2,9 @@
 
 #include <stdexcept>
 #include <string>
+#include <vector>
+
+#include "ctranslate2/types.h"
 
 // ---------------------------------------------------------------------------
 // C++ interface — callable from plain .cc files
@@ -45,6 +48,15 @@ namespace ctranslate2 {
     void reset_pso_stats();
     void increment_pso_hits();
     void increment_pso_misses();
+
+    // Fused should_sample_timestamp for Whisper ApplyTimestampRules.
+    // One GPU dispatch for all batch_ids, single CT2_COMMIT_AND_WAIT().
+    template <typename T>
+    void should_sample_timestamps_metal(
+        const T* log_probs, dim_t vocab_size,
+        dim_t num_text_tokens, dim_t num_ts_tokens,
+        const std::vector<dim_t>& batch_ids,
+        std::vector<bool>& results);
 
   }  // namespace metal
 }  // namespace ctranslate2

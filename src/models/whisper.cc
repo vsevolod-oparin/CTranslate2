@@ -11,6 +11,10 @@
 #  include "cuda/utils.h"
 #endif
 
+#ifdef CT2_WITH_METAL
+#  include "metal/utils.h"
+#endif
+
 namespace ctranslate2 {
   namespace models {
 
@@ -817,16 +821,37 @@ namespace ctranslate2 {
           StorageView log_probs(logits.dtype(), logits.device());
           ops::LogSoftMax()(logits, log_probs);
 
-          for (const dim_t batch_id : check_timestamps_prob_for_batch) {
-            bool sample_timestamp = false;
-
+#ifdef CT2_WITH_METAL
+          if (log_probs.device() == Device::METAL) {
+            // Fused GPU path: one dispatch + one sync for all batch_ids.
+            std::vector<bool> ts_results;
             DEVICE_AND_FLOAT_DISPATCH(
               "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
-              (sample_timestamp = should_sample_timestamp<D, T>(log_probs, batch_id)));
+              (metal::should_sample_timestamps_metal<T>(
+                  log_probs.data<T>(), log_probs.dim(-1),
+                  _timestamp_begin_id,
+                  _timestamp_end_id - _timestamp_begin_id + 1,
+                  check_timestamps_prob_for_batch, ts_results)));
+            for (size_t i = 0; i < check_timestamps_prob_for_batch.size(); ++i) {
+              if (ts_results[i]) {
+                for (size_t t = 0; t < _timestamp_begin_id; ++t)
+                  disable_tokens.add(check_timestamps_prob_for_batch[i], t);
+              }
+            }
+          } else
+#endif
+          {
+            for (const dim_t batch_id : check_timestamps_prob_for_batch) {
+              bool sample_timestamp = false;
 
-            if (sample_timestamp) {
-              for (size_t i = 0; i < _timestamp_begin_id; ++i)
-                disable_tokens.add(batch_id, i);
+              DEVICE_AND_FLOAT_DISPATCH(
+                "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
+                (sample_timestamp = should_sample_timestamp<D, T>(log_probs, batch_id)));
+
+              if (sample_timestamp) {
+                for (size_t i = 0; i < _timestamp_begin_id; ++i)
+                  disable_tokens.add(batch_id, i);
+              }
             }
           }
         }

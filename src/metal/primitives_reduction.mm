@@ -25,6 +25,97 @@ static id<MTLComputePipelineState> get_reduction_pso(const char* name) {
   return cache.get(get_reduction_library, name);
 }
 
+// ---------------------------------------------------------------------------
+// MSL kernel for fused should_sample_timestamp (M11 optimization).
+// One threadgroup per batch_id.  3-pass reduction:
+//   1. max over text tokens [0, num_text)
+//   2. max over timestamp tokens [num_text, num_text + num_ts)
+//   3. sum(exp(ts[i] - max_ts)) over timestamp tokens
+// Thread 0 compares log(sum_exp) + max_ts > max_text, writes uint result.
+// ---------------------------------------------------------------------------
+static constexpr const char* kShouldSampleTsMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_SHOULD_SAMPLE_TS(T)                                           \
+kernel void should_sample_ts_##T(                                            \
+    device const T*     log_probs   [[buffer(0)]],                           \
+    device       uint*  results     [[buffer(1)]],                           \
+    device const uint*  batch_ids   [[buffer(2)]],                           \
+    constant     uint&  vocab_size  [[buffer(3)]],                           \
+    constant     uint&  num_text    [[buffer(4)]],                           \
+    constant     uint&  num_ts      [[buffer(5)]],                           \
+    threadgroup  float* shmem       [[threadgroup(0)]],                      \
+    uint tg_idx [[threadgroup_position_in_grid]],                            \
+    uint tid    [[thread_index_in_threadgroup]],                             \
+    uint tgs    [[threads_per_threadgroup]])                                  \
+{                                                                            \
+    uint bid = batch_ids[tg_idx];                                            \
+    device const T* row = log_probs + bid * vocab_size;                      \
+                                                                             \
+    /* Pass 1: max over text tokens [0, num_text) */                         \
+    float val = -FLT_MAX;                                                    \
+    for (uint i = tid; i < num_text; i += tgs)                               \
+        val = max(val, (float)row[i]);                                       \
+    shmem[tid] = val;                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s && shmem[tid + s] > shmem[tid])                          \
+            shmem[tid] = shmem[tid + s];                                     \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float max_text_val = shmem[0];                                           \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Pass 2: max over timestamp tokens for stable logsumexp */             \
+    val = -FLT_MAX;                                                          \
+    for (uint i = tid; i < num_ts; i += tgs)                                 \
+        val = max(val, (float)row[num_text + i]);                            \
+    shmem[tid] = val;                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s && shmem[tid + s] > shmem[tid])                          \
+            shmem[tid] = shmem[tid + s];                                     \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float max_ts_val = shmem[0];                                             \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Pass 3: sum(exp(ts[i] - max_ts)) */                                   \
+    float sum_exp = 0.f;                                                     \
+    for (uint i = tid; i < num_ts; i += tgs)                                 \
+        sum_exp += exp((float)row[num_text + i] - max_ts_val);               \
+    shmem[tid] = sum_exp;                                                    \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tgs >> 1; s > 0; s >>= 1) {                               \
+        if (tid < s) shmem[tid] += shmem[tid + s];                           \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+                                                                             \
+    if (tid == 0) {                                                          \
+        float logsumexp_ts = log(shmem[0]) + max_ts_val;                     \
+        results[tg_idx] = (logsumexp_ts > max_text_val) ? 1u : 0u;          \
+    }                                                                        \
+}
+
+DEFINE_SHOULD_SAMPLE_TS(float)
+DEFINE_SHOULD_SAMPLE_TS(half)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_SHOULD_SAMPLE_TS(bfloat)
+#endif
+)msl";
+
+static id<MTLLibrary> get_should_sample_ts_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kShouldSampleTsMSL, "should_sample_ts");
+}
+
+static id<MTLComputePipelineState> get_should_sample_ts_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_should_sample_ts_library, name);
+}
+
 }  // anonymous namespace
 
 namespace ctranslate2 {
@@ -197,5 +288,78 @@ namespace ctranslate2 {
   template float primitives<Device::METAL>::logsumexp(const float*,      dim_t);
   template float primitives<Device::METAL>::logsumexp(const float16_t*,  dim_t);
   template float primitives<Device::METAL>::logsumexp(const bfloat16_t*, dim_t);
+
+  // -------------------------------------------------------------------------
+  // Fused should_sample_timestamps — one GPU dispatch for all batch_ids.
+  // Eliminates 2N CT2_COMMIT_AND_WAIT() calls (max + logsumexp per batch_id)
+  // down to a single sync.
+  // -------------------------------------------------------------------------
+  namespace metal {
+
+  template <typename T>
+  void should_sample_timestamps_metal(
+      const T* log_probs,
+      dim_t vocab_size,
+      dim_t num_text_tokens,
+      dim_t num_ts_tokens,
+      const std::vector<dim_t>& batch_ids,
+      std::vector<bool>& results) {
+    const size_t num = batch_ids.size();
+    if (num == 0) { results.clear(); return; }
+
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "should_sample_ts_%s", MetalTypeName<T>::value);
+
+    // Upload batch_ids as uint array.
+    id<MTLBuffer> ids_buf = alloc_temp_buffer(num * sizeof(uint32_t));
+    auto* ids_ptr = static_cast<uint32_t*>([ids_buf contents]);
+    for (size_t i = 0; i < num; ++i)
+      ids_ptr[i] = static_cast<uint32_t>(batch_ids[i]);
+
+    // Output buffer for boolean results.
+    id<MTLBuffer> res_buf = alloc_temp_buffer(num * sizeof(uint32_t));
+
+    NSUInteger inp_off = 0;
+    id<MTLBuffer> inp_buf = metal_buffer_for_ptr(log_probs, &inp_off);
+
+    uint32_t vocab = ct2_u32(vocab_size);
+    uint32_t ntxt  = ct2_u32(num_text_tokens);
+    uint32_t nts   = ct2_u32(num_ts_tokens);
+
+    id<MTLComputePipelineState> pso = get_should_sample_ts_pso(kname);
+    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
+    id<MTLComputeCommandEncoder> enc =
+        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:inp_buf offset:inp_off                 atIndex:0];
+    [enc setBuffer:res_buf offset:0                       atIndex:1];
+    [enc setBuffer:ids_buf offset:0                       atIndex:2];
+    [enc setBytes:&vocab   length:sizeof(uint32_t)        atIndex:3];
+    [enc setBytes:&ntxt    length:sizeof(uint32_t)        atIndex:4];
+    [enc setBytes:&nts     length:sizeof(uint32_t)        atIndex:5];
+    [enc setThreadgroupMemoryLength:kReductionTGS * sizeof(float) atIndex:0];
+    [enc dispatchThreadgroups:MTLSizeMake(num, 1, 1)
+        threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
+    [enc endEncoding];
+
+    CT2_COMMIT_AND_WAIT();
+
+    const auto* res_ptr = static_cast<const uint32_t*>([res_buf contents]);
+    results.resize(num);
+    for (size_t i = 0; i < num; ++i)
+      results[i] = (res_ptr[i] != 0);
+  }
+
+  template void should_sample_timestamps_metal<float>(
+      const float*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&, std::vector<bool>&);
+  template void should_sample_timestamps_metal<float16_t>(
+      const float16_t*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&, std::vector<bool>&);
+  template void should_sample_timestamps_metal<bfloat16_t>(
+      const bfloat16_t*, dim_t, dim_t, dim_t,
+      const std::vector<dim_t>&, std::vector<bool>&);
+
+  }  // namespace metal
 
 }  // namespace ctranslate2

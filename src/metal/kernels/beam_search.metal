@@ -60,3 +60,36 @@ DEFINE_PENALIZE(half)
 #if defined(__HAVE_BFLOAT__)
 DEFINE_PENALIZE(bfloat)
 #endif
+
+// Kernel: prepare_length_mask
+// ---------------------------
+//   2D grid: [batch_size, num_heads * num_queries].
+//   Each thread writes one element of the output mask.
+//
+//   buffer(0): const int*  lengths     — per-batch sequence lengths
+//   buffer(1): int*        mask        — output mask [batch_size, num_heads * num_queries]
+//   buffer(2): uint        num_heads
+//   buffer(3): uint        num_queries
+//   buffer(4): uint        mask_future — 0 or 1
+//   buffer(5): uint        multi_query — 0 or 1
+kernel void prepare_length_mask(
+    device const int*  lengths     [[buffer(0)]],
+    device       int*  mask        [[buffer(1)]],
+    constant     uint& num_heads   [[buffer(2)]],
+    constant     uint& num_queries [[buffer(3)]],
+    constant     uint& mask_future [[buffer(4)]],
+    constant     uint& multi_query [[buffer(5)]],
+    uint2 gid [[thread_position_in_grid]])
+{
+    uint b = gid.x;
+    uint i = gid.y;
+    int length = lengths[b];
+    int val;
+    if (mask_future) {
+        uint idx = multi_query ? (i / num_heads) : (i % num_queries);
+        val = min(length, (int)(idx + 1));
+    } else {
+        val = length;
+    }
+    mask[b * num_heads * num_queries + i] = val;
+}

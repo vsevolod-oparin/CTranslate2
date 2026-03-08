@@ -162,9 +162,11 @@ Extended `sdpa_decode_cpu` to handle any sq (renamed to `sdpa_cpu`). Routes to C
    - 574 reduction commits suggest these ops sync per-call
    - Could batch multiple softmax operations or use a persistent kernel
 
-6. **BeamSearch GPU acceleration**
-   - 255 beam search commits; currently CPU-based
-   - Beam hypothesis management (score sorting, expansion) could use GPU sort
+6. ~~**BeamSearch GPU acceleration**~~ **DONE (M11.16)**
+   - `prepare_length_mask` replaced with GPU MSL kernel (encode-only)
+   - `CT2_COMMIT_AND_WAIT` retained as required fence for prior GPU work
+   - Sync count unchanged (14); CPU loop replaced with GPU encode
+   - Report: `agents/report/milestone-11.16-beam-search-gpu.md`
 
 ### Low Impact / Quality of Life
 

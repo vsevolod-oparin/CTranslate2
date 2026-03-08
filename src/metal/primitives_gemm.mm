@@ -1017,8 +1017,12 @@ namespace ctranslate2 {
     // Widens to float32, runs cblas_sgemm, narrows back.
     auto batch_cpu_gemm_f16 = [&](const float16_t* ba, const float16_t* bb, float16_t* bc) {
       CT2_COMMIT_AND_WAIT();
-      const dim_t elems_a = (transpose_a ? k : m) * (transpose_a ? m : k);
-      const dim_t elems_b = (transpose_b ? n : k) * (transpose_b ? k : n);
+      const dim_t rows_a = transpose_a ? k : m;
+      const dim_t cols_a = transpose_a ? m : k;
+      const dim_t rows_b = transpose_b ? n : k;
+      const dim_t cols_b = transpose_b ? k : n;
+      const dim_t elems_a = rows_a * cols_a;
+      const dim_t elems_b = rows_b * cols_b;
       const dim_t elems_c = m * n;
       // Stack-allocate for small buffers, heap for large.
       constexpr dim_t kStackMax = 4096;
@@ -1030,17 +1034,27 @@ namespace ctranslate2 {
         const auto* ai = ba + i * stridea;
         const auto* bi = bb + i * strideb;
         auto* ci = bc + i * stridec;
-        for (dim_t j = 0; j < elems_a; ++j) fa[j] = static_cast<float>(ai[j]);
-        for (dim_t j = 0; j < elems_b; ++j) fb[j] = static_cast<float>(bi[j]);
+        // Strided widen: lda/ldb may differ from cols when input is non-contiguous.
+        for (dim_t r = 0; r < rows_a; ++r)
+          for (dim_t c = 0; c < cols_a; ++c)
+            fa[r * cols_a + c] = static_cast<float>(ai[r * lda + c]);
+        for (dim_t r = 0; r < rows_b; ++r)
+          for (dim_t c = 0; c < cols_b; ++c)
+            fb[r * cols_b + c] = static_cast<float>(bi[r * ldb + c]);
         if (beta != 0.0f)
-          for (dim_t j = 0; j < elems_c; ++j) fc[j] = static_cast<float>(ci[j]);
+          for (dim_t r = 0; r < m; ++r)
+            for (dim_t c = 0; c < n; ++c)
+              fc[r * n + c] = static_cast<float>(ci[r * ldc + c]);
+        // cblas uses the contiguous widened layout (lda=cols_a, ldb=cols_b, ldc=n).
         cblas_sgemm(CblasRowMajor,
                     transpose_a ? CblasTrans : CblasNoTrans,
                     transpose_b ? CblasTrans : CblasNoTrans,
                     (int)m, (int)n, (int)k,
-                    alpha, fa, (int)lda, fb, (int)ldb,
-                    beta, fc, (int)ldc);
-        for (dim_t j = 0; j < elems_c; ++j) ci[j] = static_cast<float16_t>(fc[j]);
+                    alpha, fa, (int)cols_a, fb, (int)cols_b,
+                    beta, fc, (int)n);
+        for (dim_t r = 0; r < m; ++r)
+          for (dim_t c = 0; c < n; ++c)
+            ci[r * ldc + c] = static_cast<float16_t>(fc[r * n + c]);
       }
       if (fa != sa) delete[] fa;
       if (fb != sb) delete[] fb;

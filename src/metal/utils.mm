@@ -83,14 +83,13 @@ namespace ctranslate2 {
         return;
       }
       // Auto-enable trace via env var on first real commit.
-      static bool _env_checked = false;
-      if (!_env_checked) {
-        _env_checked = true;
+      static std::once_flag _env_flag;
+      std::call_once(_env_flag, [] {
         if (std::getenv("CT2_METAL_TRACE")) {
           _trace_enabled = true;
           std::atexit([] { dump_commit_trace(); });
         }
-      }
+      });
       // Capture a strong reference before resetting the thread-local slot.
       id<MTLCommandBuffer> buf = _thread_buffer;
       commit_command_buffer();

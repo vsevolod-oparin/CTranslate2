@@ -4,6 +4,41 @@
 
 Review of all 18 milestone reports (M11.1–M11.18) for potential bugs, missed optimizations, inconsistencies, and performance anti-patterns in the CTranslate2 Metal backend.
 
+## Fixes Applied
+
+| Bug | Fix | Status |
+|-----|-----|--------|
+| `batch_cpu_gemm_f16` stride bug — linear widen ignoring lda/ldb | Strided copy + contiguous cblas leading dims | **FIXED** |
+| TopK GPU kernel silent truncation at k>64 | Runtime guard with exception in `dispatch_topk_k` | **FIXED** |
+| `_env_checked` data race in `commit_and_wait_impl` | Replaced with `std::call_once` | **FIXED** |
+| Beam size detection (dim(0) ratio) | **NOT A BUG** — `(batch*beam)/batch = beam` is correct for any batch_size | Verified OK |
+
+All 150 e2e tests pass after fixes (39 beam_search + 90 translation + 13 whisper + 8 faster_whisper).
+
+### Regression Tests
+
+Standalone test: `tests/metal/bugfix_test.mm` — **6/6 PASS**
+
+| Test | Result | Detail |
+|------|--------|--------|
+| FP16 strided GEMM (lda=8 > k=5, trans_b, batch=2) | PASS | max_err=3.48e-4 |
+| FP16 strided GEMM (ldb=8 > n=3, no_trans, batch=3) | PASS | max_err=2.52e-4 |
+| FP16 strided GEMM (ldc=8 > n=3, batch=2) | PASS | max_err=4.53e-4 |
+| TopK k=5 does not throw | PASS | |
+| TopK k=64 boundary does not throw | PASS | |
+| TopK k=65 throws runtime_error | PASS | |
+
+GEMM tests use padded strides with garbage values (999.f, 888.f, 777.f) in padding columns to detect the exact stride bug — before the fix, the linear widen loop would read garbage as real data.
+
+### Files Modified
+
+| File | Change |
+|------|--------|
+| `src/metal/primitives_gemm.mm` | Strided widen/narrow in `batch_cpu_gemm_f16`; contiguous leading dims for cblas |
+| `src/metal/ops_topk.mm` | `kTopKMaxK=64` constant + runtime guard in `dispatch_topk_k` |
+| `src/metal/utils.mm` | `std::call_once` for env var check in `commit_and_wait_impl` |
+| `tests/metal/bugfix_test.mm` | New regression test (6 tests) |
+
 ## Potential Bugs
 
 ### Critical

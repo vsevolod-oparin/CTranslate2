@@ -46,12 +46,19 @@ static void dispatch_argmax(const char* kname,
   [enc endEncoding];
 }
 
+static constexpr ctranslate2::dim_t kTopKMaxK = 64;  // Must match TOPK_MAX_K in topk.metal
+
 static void dispatch_topk_k(const char* kname,
                               const void* input, void* values, void* indices,
                               ctranslate2::dim_t batch_size,
                               ctranslate2::dim_t depth,
                               ctranslate2::dim_t k) {
   if (batch_size == 0 || depth == 0 || k == 0) return;
+  if (k > kTopKMaxK) {
+    throw std::runtime_error(
+        "Metal TopK GPU kernel: k=" + std::to_string(k) +
+        " exceeds TOPK_MAX_K=" + std::to_string(kTopKMaxK));
+  }
   uint32_t d = ct2_u32(depth);
   uint32_t k_val = ct2_u32(k);
   id<MTLComputePipelineState> pso = get_topk_pso(kname);

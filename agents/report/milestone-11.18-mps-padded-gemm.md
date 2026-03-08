@@ -62,6 +62,8 @@ Float16 m=1 attention GEMMs continue to use the cblas fallback (1 sync per call)
 
 4. **Float16 MPS padded m=1**: Even with post-sync (eliminating buffer lifetime issues), MPS produces garbled output for float16 batched GEMM with m=1 and small n. Reverted to cblas for float16.
 
+5. **`protect_buffer` on all padded GEMMs**: Initially placed `protect_buffer(a/b/c)` inside `dispatch_mps_gemm_batched_padded` (called for all padded GEMMs). This caused 0.46x regression for float16 inference — deferring frees for large float16 GEMMs (which never needed protection) starved the allocation pool. Fixed by moving `protect_buffer` to the caller site, only for the `m == 1` float32 path.
+
 ## Changes
 
 | File | Change |

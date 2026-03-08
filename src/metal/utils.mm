@@ -99,6 +99,9 @@ namespace ctranslate2 {
       _commit_count.fetch_add(1, std::memory_order_relaxed);
       // M11.4: Accumulate GPU execution time.
       _gpu_time_elapsed += (buf.GPUEndTime - buf.GPUStartTime);
+      // M11.18: Now that all GPU work has completed, recycle deferred-free
+      // buffers back to the allocator pool for reuse.
+      flush_pending_frees();
       if (_trace_enabled && caller) {
         std::lock_guard<std::mutex> lk(_trace_mutex);
         _trace_counts[caller]++;

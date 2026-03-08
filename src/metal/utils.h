@@ -41,6 +41,18 @@ namespace ctranslate2 {
     void dump_commit_trace();
     void reset_commit_trace();
 
+    // M11.18: Deferred-free mechanism for encode-only GPU kernels.
+    //
+    // protect_buffer() marks a live allocation as GPU-referenced.  When that
+    // buffer is later freed, it goes to a deferred queue instead of the reuse
+    // pool.  flush_pending_frees() moves deferred buffers back to the pool
+    // after commit_and_wait() completes all prior GPU work.
+    //
+    // This prevents encode-only GPU kernels from reading/writing a buffer
+    // that has been recycled and overwritten by a subsequent allocate().
+    void protect_buffer(const void* ptr);
+    void flush_pending_frees();
+
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
     uint64_t pso_hit_count();

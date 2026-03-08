@@ -131,14 +131,15 @@ def main():
 
     # Warmup both backends
     info("Warming up...")
+    perf_beam_size = int(sys.argv[2]) if len(sys.argv) > 2 else 5
     for m in (model_cpu, model_metal):
-        segs, _ = m.transcribe(audio_file, language="ru", beam_size=5, without_timestamps=True)
+        segs, _ = m.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)
         list(segs)  # consume generator
 
     # Benchmark CPU
     t0 = time.monotonic()
     cpu_segs, _ = model_cpu.transcribe(
-        audio_file, language="ru", beam_size=5, without_timestamps=True,
+        audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True,
     )
     list(cpu_segs)
     cpu_ms = (time.monotonic() - t0) * 1000
@@ -146,7 +147,7 @@ def main():
     # Benchmark Metal
     t0 = time.monotonic()
     metal_segs, _ = model_metal.transcribe(
-        audio_file, language="ru", beam_size=5, without_timestamps=True,
+        audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True,
     )
     list(metal_segs)
     metal_ms = (time.monotonic() - t0) * 1000
@@ -155,7 +156,7 @@ def main():
     rtf_metal = metal_ms / (duration_s * 1000)
     speedup = cpu_ms / metal_ms if metal_ms > 0 else float("inf")
 
-    info(f"Audio duration: {duration_s:.1f}s")
+    info(f"Audio duration: {duration_s:.1f}s at beam_size={perf_beam_size}")
     info(f"CPU:   {cpu_ms:.0f} ms  (RTF={rtf_cpu:.3f})")
     info(f"Metal: {metal_ms:.0f} ms  (RTF={rtf_metal:.3f})")
     info(f"Speedup: {speedup:.2f}x  (Metal / CPU)")

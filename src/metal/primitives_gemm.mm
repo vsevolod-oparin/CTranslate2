@@ -922,6 +922,7 @@ static void dispatch_mps_gemm_batched_padded(
                       nat_rb_c, (NSUInteger)stridec * elem,
                       nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
   }
+
 }
 
 }  // anonymous namespace
@@ -1048,12 +1049,23 @@ namespace ctranslate2 {
 
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
       if (batch_size > 0 && needs_padding()) {
-        constexpr dim_t kCpuGemmThresh = 4096;
-        if (m * n > kCpuGemmThresh) {
+        if (m * n > 4096 || m == 1) {
+          // M11.18: Route m=1 decode attention GEMMs through MPS padded path
+          // (encode-only, zero syncs) instead of cblas (1 sync per call).
           dispatch_mps_gemm_batched_padded<float>(
               transpose_a, transpose_b, m, n, k,
               alpha, a, lda, stridea, b, ldb, strideb,
               beta, c, ldc, stridec, batch_size);
+          if (m == 1) {
+            // M11.18: Protect original buffers from premature reuse.
+            // Only needed for m=1 decode attention GEMMs where the caller
+            // may free A/B/C before the encode-only GPU work completes.
+            // Large GEMMs (m*n > 4096) don't need this — their buffers
+            // are long-lived and not recycled between syncs.
+            ctranslate2::metal::protect_buffer(a);
+            ctranslate2::metal::protect_buffer(b);
+            ctranslate2::metal::protect_buffer(c);
+          }
         } else {
           batch_cpu_gemm_f32(a, b, c);
         }
@@ -1071,8 +1083,10 @@ namespace ctranslate2 {
       }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
       if (batch_size > 0 && needs_padding()) {
-        constexpr dim_t kCpuGemmThresh = 4096;
-        if (m * n > kCpuGemmThresh) {
+        if (m * n > 4096) {
+          // Note: m==1 NOT routed here for float16 — MPS batched GEMM produces
+          // incorrect results for float16 with m=1 small matrices (verified in
+          // M11.18).  float16 m=1 stays on cblas via batch_cpu_gemm_f16.
           dispatch_mps_gemm_batched_padded<float16_t>(
               transpose_a, transpose_b, m, n, k,
               alpha, a, lda, stridea, b, ldb, strideb,

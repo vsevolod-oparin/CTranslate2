@@ -94,10 +94,44 @@ namespace ctranslate2 {
 
         const size_t     sz  = live_it->second.requested_size;
         id<MTLBuffer>    buf = live_it->second.buffer;
+        const bool  is_protected = live_it->second.gpu_protected;
         _live.erase(live_it);
 
-        // Return to pool (ARC retains the MTLBuffer through the vector).
-        _pool[sz].push_back(buf);
+        if (is_protected) {
+          // M11.18: This buffer is referenced by a pending encode-only GPU
+          // kernel (e.g. MPS padded GEMM row_copy-back).  Defer recycling
+          // until commit_and_wait() completes all prior GPU work.
+          _pending_free.push_back({sz, buf, false});
+        } else {
+          // Return to pool immediately (safe — not GPU-referenced).
+          _pool[sz].push_back(buf);
+        }
+      }
+
+      // Mark a live buffer as GPU-protected: its reclamation will be deferred
+      // when free() is called, until after the next commit_and_wait().
+      void protect_buffer(const void* ptr) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
+        for (auto& [base, entry] : _live) {
+          const uint8_t* base_ptr = static_cast<const uint8_t*>(base);
+          if (byte_ptr >= base_ptr && byte_ptr < base_ptr + entry.requested_size) {
+            entry.gpu_protected = true;
+            return;
+          }
+        }
+        // Not found in _live — might already be freed or not from this allocator.
+        // Silently ignore (the buffer might be a temp or stack allocation).
+      }
+
+      // Move all pending-free buffers to the pool for reuse.
+      // Called after commit_and_wait() ensures prior GPU work has completed.
+      void flush_pending_frees() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (auto& entry : _pending_free) {
+          _pool[entry.requested_size].push_back(entry.buffer);
+        }
+        _pending_free.clear();
       }
 
       void clear_cache() override {
@@ -109,11 +143,13 @@ namespace ctranslate2 {
       struct LiveEntry {
         size_t        requested_size;
         id<MTLBuffer> buffer;
+        bool          gpu_protected = false;  // M11.18: deferred free
       };
 
       std::mutex                                               _mutex;
       std::unordered_map<void*, LiveEntry>                     _live;
       std::unordered_map<size_t, std::vector<id<MTLBuffer>>>   _pool;
+      std::vector<LiveEntry>                                   _pending_free;
     };
 
   }  // namespace metal
@@ -133,5 +169,19 @@ namespace ctranslate2 {
         get_allocator<Device::METAL>())
         .buffer_for_ptr(ptr, offset_out);
   }
+
+  namespace metal {
+    void flush_pending_frees() {
+      static_cast<MetalAllocator&>(
+          get_allocator<Device::METAL>())
+          .flush_pending_frees();
+    }
+
+    void protect_buffer(const void* ptr) {
+      static_cast<MetalAllocator&>(
+          get_allocator<Device::METAL>())
+          .protect_buffer(ptr);
+    }
+  }  // namespace metal
 
 }  // namespace ctranslate2

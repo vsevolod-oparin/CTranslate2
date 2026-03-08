@@ -790,21 +790,19 @@ static void dispatch_mps_gemm_batched_padded(
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;
 
-  // CPU memcpy for A/B packing (needs flush to read GPU data).
-  // GPU row_copy for C unpack (encode-only after MPS GEMM, zero syncs).
-  if (pad_a || pad_b || (pad_c && beta != 0.0f))
-    CT2_COMMIT_AND_WAIT();
+  // GPU row_copy for A/B/C packing — encode-only, zero CPU waits.
+  // Row_copy and MPS GEMM are on separate command buffers (non-blocking commit
+  // between them); the serial command queue guarantees execution order.
 
   if (pad_a) {
     tmp_a = alloc_temp_buffer(mb_a * (NSUInteger)batch_size);
-    auto* dst = static_cast<uint8_t*>([tmp_a contents]);
-    auto* src = reinterpret_cast<const uint8_t*>(a);
-    for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
-      for (NSUInteger r = 0; r < rows_a; ++r)
-        std::memcpy(dst + i * mb_a + r * mps_rb_a,
-                     src + i * (NSUInteger)stridea * elem + r * nat_rb_a,
-                     nat_rb_a);
-    }
+    NSUInteger src_off_a = 0;
+    id<MTLBuffer> src_buf_a = ctranslate2::metal_buffer_for_ptr(a, &src_off_a);
+    dispatch_row_copy(src_buf_a, src_off_a,
+                      nat_rb_a, (NSUInteger)stridea * elem,
+                      tmp_a, 0,
+                      mps_rb_a, mb_a,
+                      nat_rb_a, rows_a, (NSUInteger)batch_size);
     buf_a = tmp_a;
   } else {
     buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
@@ -812,14 +810,13 @@ static void dispatch_mps_gemm_batched_padded(
 
   if (pad_b) {
     tmp_b = alloc_temp_buffer(mb_b * (NSUInteger)batch_size);
-    auto* dst = static_cast<uint8_t*>([tmp_b contents]);
-    auto* src = reinterpret_cast<const uint8_t*>(b);
-    for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
-      for (NSUInteger r = 0; r < rows_b; ++r)
-        std::memcpy(dst + i * mb_b + r * mps_rb_b,
-                     src + i * (NSUInteger)strideb * elem + r * nat_rb_b,
-                     nat_rb_b);
-    }
+    NSUInteger src_off_b = 0;
+    id<MTLBuffer> src_buf_b = ctranslate2::metal_buffer_for_ptr(b, &src_off_b);
+    dispatch_row_copy(src_buf_b, src_off_b,
+                      nat_rb_b, (NSUInteger)strideb * elem,
+                      tmp_b, 0,
+                      mps_rb_b, mb_b,
+                      nat_rb_b, rows_b, (NSUInteger)batch_size);
     buf_b = tmp_b;
   } else {
     buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
@@ -827,22 +824,27 @@ static void dispatch_mps_gemm_batched_padded(
 
   if (pad_c) {
     tmp_c = alloc_temp_buffer(mb_c * (NSUInteger)batch_size);
-    auto* dst = static_cast<uint8_t*>([tmp_c contents]);
     if (beta != 0.0f) {
-      auto* src = reinterpret_cast<const uint8_t*>(c);
-      for (ctranslate2::dim_t i = 0; i < batch_size; ++i) {
-        for (NSUInteger r = 0; r < (NSUInteger)m; ++r)
-          std::memcpy(dst + i * mb_c + r * mps_rb_c,
-                       src + i * (NSUInteger)stridec * elem + r * nat_rb_c,
-                       nat_rb_c);
-      }
+      NSUInteger src_off_c = 0;
+      id<MTLBuffer> src_buf_c = ctranslate2::metal_buffer_for_ptr(c, &src_off_c);
+      dispatch_row_copy(src_buf_c, src_off_c,
+                        nat_rb_c, (NSUInteger)stridec * elem,
+                        tmp_c, 0,
+                        mps_rb_c, mb_c,
+                        nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
     } else {
-      std::memset(dst, 0, mb_c * (NSUInteger)batch_size);
+      std::memset(static_cast<uint8_t*>([tmp_c contents]), 0,
+                  mb_c * (NSUInteger)batch_size);
     }
     buf_c = tmp_c;
   } else {
     buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
   }
+
+  // Non-blocking commit: flush row_copy encoders to a separate CB so MPS
+  // GEMM gets a fresh CB.  The serial queue ensures row_copy finishes first.
+  if (pad_a || pad_b || (pad_c && beta != 0.0f))
+    ctranslate2::metal::commit_command_buffer();
 
   // Compute final layout parameters for the MPS batch descriptor.
   const NSUInteger final_mb_a = pad_a ? mb_a : (NSUInteger)stridea * elem;

@@ -152,6 +152,24 @@ namespace ctranslate2 {
         _pool.clear();  // ARC releases all pooled MTLBuffers.
       }
 
+      // Return total bytes held in pool (not live — available for reuse).
+      size_t pool_bytes() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        size_t total = 0;
+        for (const auto& [sz, bufs] : _pool)
+          total += sz * bufs.size();
+        return total;
+      }
+
+      // Return total bytes in live allocations.
+      size_t live_bytes() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        size_t total = 0;
+        for (const auto& [ptr, entry] : _live)
+          total += entry.requested_size;
+        return total;
+      }
+
     private:
       struct LiveEntry {
         size_t        requested_size;
@@ -200,6 +218,18 @@ namespace ctranslate2 {
       static_cast<MetalAllocator&>(
           get_allocator<Device::METAL>())
           .protect_buffer_by_base(base_ptr);
+    }
+
+    size_t pool_bytes() {
+      return static_cast<MetalAllocator&>(
+          get_allocator<Device::METAL>())
+          .pool_bytes();
+    }
+
+    size_t live_bytes() {
+      return static_cast<MetalAllocator&>(
+          get_allocator<Device::METAL>())
+          .live_bytes();
     }
   }  // namespace metal
 

@@ -55,6 +55,10 @@ namespace ctranslate2 {
     void protect_buffer_by_base(void* base_ptr);
     void flush_pending_frees();
 
+    // Allocator memory stats (bytes).
+    size_t pool_bytes();   // Cached but unused (reclaimable via clear_cache).
+    size_t live_bytes();   // Currently in use by StorageView/tensors.
+
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
     uint64_t pso_hit_count();

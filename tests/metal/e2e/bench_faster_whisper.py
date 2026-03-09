@@ -18,20 +18,22 @@ audio, _ = librosa.load(audio_file, sr=16000, mono=True)
 dur = len(audio) / 16000
 print(f"Model: {model_name}  beam_size={beam_size}  audio={dur:.0f}s")
 
+# Benchmark CPU first, then free before loading Metal to avoid 2x memory.
 model_cpu = WhisperModel(whisper_path, device="cpu", compute_type="float32")
-model_metal = WhisperModel(whisper_path, device="metal", compute_type="float32")
-
-# Single warmup each
-for m in (model_cpu, model_metal):
-    list(m.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
-
-# Benchmark
+list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 t0 = time.monotonic()
 list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 cpu_ms = (time.monotonic() - t0) * 1000
+del model_cpu
+import gc; gc.collect()
 
+model_metal = WhisperModel(whisper_path, device="metal", compute_type="float32")
+list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 t0 = time.monotonic()
 list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 metal_ms = (time.monotonic() - t0) * 1000
+del model_metal
+gc.collect()
+import ctranslate2; ctranslate2.clear_device_cache("metal")
 
 print(f"CPU: {cpu_ms:.0f}ms  Metal: {metal_ms:.0f}ms  Speedup: {cpu_ms/metal_ms:.2f}x")

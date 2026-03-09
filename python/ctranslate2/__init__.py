@@ -39,6 +39,7 @@ try:
         TranslationResult,
         Translator,
         contains_model,
+        clear_device_cache,
         get_cuda_device_count,
         get_metal_device_count,
         get_supported_compute_types,

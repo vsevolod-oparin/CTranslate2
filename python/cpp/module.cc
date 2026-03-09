@@ -1,5 +1,6 @@
 #include <pybind11/pybind11.h>
 
+#include <ctranslate2/allocator.h>
 #include <ctranslate2/devices.h>
 #include <ctranslate2/models/model.h>
 #include <ctranslate2/random.h>
@@ -69,6 +70,14 @@ PYBIND11_MODULE(_ext, m)
   m.def("get_metal_device_count", []() {
     return ctranslate2::get_device_count(ctranslate2::Device::METAL);
   }, "Returns the number of visible Metal devices (0 or 1).");
+
+  m.def("clear_device_cache", [](const std::string& device) {
+    ctranslate2::Device d = ctranslate2::str_to_device(device);
+    if (ctranslate2::get_device_count(d) > 0)
+      ctranslate2::get_allocator(d).clear_cache();
+  }, py::arg("device"),
+     "Releases all cached allocator buffers for the given device back to the system. "
+     "On Metal (unified memory) this directly reduces system RAM pressure.");
 
   m.def("get_supported_devices", &get_supported_devices,
         "Returns the list of devices supported by this build: always includes 'cpu', "

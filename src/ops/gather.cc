@@ -8,6 +8,7 @@
 
 #ifdef CT2_WITH_METAL
 #include "metal/ops_metal.h"
+#include "metal/utils.h"
 #endif
 
 namespace ctranslate2 {
@@ -61,10 +62,12 @@ namespace ctranslate2 {
         StorageView clone(std::move(data));
         operator()(clone, input, data);
 #ifdef CT2_WITH_METAL
-        // M11.6: gather_metal is now encode-only.  The clone's MTLBuffer must
-        // stay alive until the GPU finishes reading it (M10.1 hazard).
-        if (data.device() == Device::METAL)
-          synchronize_stream(Device::METAL);
+        if (data.device() == Device::METAL) {
+          // M11.21: Protect clone and indices from premature reuse.
+          metal::protect_buffer(clone.buffer());
+          if (input.device() == Device::METAL)
+            metal::protect_buffer(input.buffer());
+        }
 #endif
       }
     }
@@ -140,9 +143,14 @@ namespace ctranslate2 {
                 num_indices_per_batch, total_elements)));
         }
 
-        // 3. Single sync — all GPU work completes before clones are freed.
-        synchronize_stream(Device::METAL);
-        // 4. Clones destroyed here — safe because GPU work is complete.
+        // 3. M11.21: Protect all GPU-referenced buffers from premature reuse.
+        //    Clone buffers: read by GPU gather kernels.
+        //    Indices buffer: read by GPU gather kernels (indices may be freed
+        //    by the caller before the next commit_and_wait).
+        for (auto& clone : clones)
+          metal::protect_buffer(clone.buffer());
+        if (indices.device() == Device::METAL)
+          metal::protect_buffer(indices.buffer());
         return;
       }
 #endif

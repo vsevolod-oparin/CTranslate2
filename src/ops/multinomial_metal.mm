@@ -44,8 +44,10 @@ static const char* kMultinomialMSL = R"(
 #include <metal_stdlib>
 using namespace metal;
 
-// Threadgroup scratch for prefix sum.  TGS ≤ 1024.
-constant uint TGS_CONST [[function_constant(0)]];
+// Sequential-chunk multinomial sampling.
+// Each thread handles a contiguous chunk of the probability vector so that
+// the exclusive prefix sum of per-thread sums gives the correct CDF offset.
+// (Strided access would make the prefix sum inconsistent with element order.)
 
 kernel void multinomial_float(
     device const float*  probs      [[buffer(0)]],
@@ -56,36 +58,34 @@ kernel void multinomial_float(
     uint  tid      [[thread_index_in_threadgroup]],
     uint  tgs      [[threads_per_threadgroup]])
 {
-    // Pointer to this batch row's probabilities.
     device const float* row = probs + batch_id * class_size;
     float threshold = rand_vals[batch_id];
 
-    // --- Phase 1: Each thread sums its chunk ---
-    // Thread tid handles indices [tid, tid+tgs, tid+2*tgs, ...] (strided).
+    // Sequential chunk bounds for this thread.
+    uint chunk = (class_size + tgs - 1) / tgs;
+    uint start = tid * chunk;
+    uint end   = min(start + chunk, class_size);
+
+    // Phase 1: sum this thread's contiguous chunk.
     float local_sum = 0.0f;
-    for (uint i = tid; i < class_size; i += tgs)
+    for (uint i = start; i < end; ++i)
         local_sum += row[i];
 
-    // --- Phase 2: Threadgroup exclusive prefix sum of local_sums ---
-    threadgroup float shared_sums[1024];
+    // Phase 2: exclusive prefix sum of local sums (thread 0).
+    threadgroup float shared_sums[1025];
     shared_sums[tid] = local_sum;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
-    // Simple sequential prefix sum (tgs ≤ 1024; done by thread 0).
     if (tid == 0) {
-        // Scale threshold by total sum (handles unnormalized distributions).
         float total = 0.0f;
         for (uint i = 0; i < tgs; ++i)
             total += shared_sums[i];
-        // Now do exclusive prefix sum in-place.
         float running = 0.0f;
         for (uint i = 0; i < tgs; ++i) {
             float val = shared_sums[i];
             shared_sums[i] = running;
             running += val;
         }
-        // Store scaled threshold in slot after prefix sums.
-        // total should be ~1.0 for softmax output; multiply threshold.
         shared_sums[tgs] = threshold * total;
     }
     threadgroup_barrier(mem_flags::mem_threadgroup);
@@ -93,11 +93,10 @@ kernel void multinomial_float(
     float my_offset = shared_sums[tid];
     float scaled_threshold = shared_sums[tgs];
 
-    // --- Phase 3: Each thread scans its chunk with offset ---
-    // The winning thread is the one whose cumsum first exceeds threshold.
+    // Phase 3: scan this chunk with offset to find threshold crossing.
     float cumsum = my_offset;
-    int my_result = -1;  // No match found.
-    for (uint i = tid; i < class_size; i += tgs) {
+    int my_result = -1;
+    for (uint i = start; i < end; ++i) {
         cumsum += row[i];
         if (cumsum > scaled_threshold) {
             my_result = int(i);
@@ -105,14 +104,13 @@ kernel void multinomial_float(
         }
     }
 
-    // --- Phase 4: Find the thread with the smallest winning index ---
-    // Write each thread's result to shared memory; thread 0 picks the min.
+    // Phase 4: find thread with smallest winning index.
     threadgroup int shared_results[1024];
     shared_results[tid] = my_result;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
     if (tid == 0) {
-        int best = int(class_size) - 1;  // Fallback: last class.
+        int best = int(class_size) - 1;
         for (uint i = 0; i < tgs; ++i) {
             int r = shared_results[i];
             if (r >= 0 && r < best)
@@ -134,11 +132,15 @@ kernel void multinomial_half(
     device const half* row = probs + batch_id * class_size;
     float threshold = rand_vals[batch_id];
 
+    uint chunk = (class_size + tgs - 1) / tgs;
+    uint start = tid * chunk;
+    uint end   = min(start + chunk, class_size);
+
     float local_sum = 0.0f;
-    for (uint i = tid; i < class_size; i += tgs)
+    for (uint i = start; i < end; ++i)
         local_sum += float(row[i]);
 
-    threadgroup float shared_sums[1024];
+    threadgroup float shared_sums[1025];
     shared_sums[tid] = local_sum;
     threadgroup_barrier(mem_flags::mem_threadgroup);
 
@@ -161,7 +163,7 @@ kernel void multinomial_half(
 
     float cumsum = my_offset;
     int my_result = -1;
-    for (uint i = tid; i < class_size; i += tgs) {
+    for (uint i = start; i < end; ++i) {
         cumsum += float(row[i]);
         if (cumsum > scaled_threshold) {
             my_result = int(i);
@@ -229,13 +231,6 @@ static void dispatch_multinomial_gpu(const T* probs,
   id<MTLBuffer> buf_probs  = ctranslate2::metal_buffer_for_ptr(probs, &off_probs);
   id<MTLBuffer> buf_output = ctranslate2::metal_buffer_for_ptr(output, &off_output);
 
-  // Create a small temporary buffer for random values.
-  // batch_size is typically 1–5, so this is tiny.
-  id<MTLBuffer> buf_rand = [ctranslate2::metal::get_metal_device()
-      newBufferWithBytes:rand_vals_host
-                  length:batch_size * sizeof(float)
-                 options:MTLResourceStorageModeShared];
-
   uint32_t cs = ctranslate2::dim_t(class_size);
 
   // Encode.
@@ -246,7 +241,9 @@ static void dispatch_multinomial_gpu(const T* probs,
   [enc setBuffer:buf_probs  offset:off_probs  atIndex:0];
   [enc setBuffer:buf_output offset:off_output atIndex:1];
   [enc setBytes:&cs length:sizeof(cs) atIndex:2];
-  [enc setBuffer:buf_rand offset:0 atIndex:3];
+  // Random values are tiny (batch_size ≤ ~10, 4 bytes each) — use setBytes
+  // to avoid MTLBuffer allocation overhead on every dispatch.
+  [enc setBytes:rand_vals_host length:batch_size * sizeof(float) atIndex:3];
 
   NSUInteger tgs = std::min<NSUInteger>(256, pso.maxTotalThreadsPerThreadgroup);
   [enc dispatchThreadgroups:MTLSizeMake(batch_size, 1, 1)
@@ -256,8 +253,6 @@ static void dispatch_multinomial_gpu(const T* probs,
   // Protect input/output buffers from deferred-free reuse.
   ctranslate2::metal::protect_buffer_by_base([buf_probs contents]);
   ctranslate2::metal::protect_buffer_by_base([buf_output contents]);
-  // buf_rand is ARC-managed and will live until autorelease pool drain,
-  // which happens after commit_and_wait(). Safe.
 }
 
 }  // namespace

@@ -56,7 +56,13 @@ namespace ctranslate2 {
 
     id<MTLCommandBuffer> get_current_command_buffer() {
       if (_thread_buffer == nil) {
-        _thread_buffer = [get_metal_command_queue() commandBuffer];
+        // commandBuffer returns autoreleased (+0).  We retain to own it
+        // in the thread-local slot; released in commit_command_buffer().
+        // The @autoreleasepool drains the autorelease reference immediately
+        // so it doesn't leak on Python threads (which have no pool).
+        @autoreleasepool {
+          _thread_buffer = [[get_metal_command_queue() commandBuffer] retain];
+        }
         CT2_METAL_CHECK_OBJ(_thread_buffer, "MTLCommandBuffer");
       }
       return _thread_buffer;
@@ -68,6 +74,7 @@ namespace ctranslate2 {
         return;
       }
       [_thread_buffer commit];
+      [_thread_buffer release];
       _thread_buffer = nil;
     }
 
@@ -94,11 +101,17 @@ namespace ctranslate2 {
           std::atexit([] { dump_commit_trace(); });
         }
       });
-      // Capture a strong reference before resetting the thread-local slot.
-      id<MTLCommandBuffer> buf = _thread_buffer;
+      // Retain the buffer independently — commit_command_buffer() releases
+      // the thread-local slot.  We need buf alive for waitUntilCompleted
+      // and GPUEndTime/GPUStartTime access.
+      id<MTLCommandBuffer> buf = [_thread_buffer retain];
       commit_command_buffer();
-      [buf waitUntilCompleted];
-      CT2_METAL_CHECK_BUFFER(buf);
+      @autoreleasepool {
+        // Drain autoreleased ObjC temporaries (compute encoders,
+        // descriptors, etc.) that accumulated since the last drain.
+        [buf waitUntilCompleted];
+        CT2_METAL_CHECK_BUFFER(buf);
+      }
       _commit_count.fetch_add(1, std::memory_order_relaxed);
       // M11.4: Accumulate GPU execution time (atomic add via CAS loop).
       {
@@ -107,6 +120,7 @@ namespace ctranslate2 {
         while (!_gpu_time_elapsed.compare_exchange_weak(
             old_val, old_val + delta, std::memory_order_relaxed)) {}
       }
+      [buf release];
       // M11.18: Now that all GPU work has completed, recycle deferred-free
       // buffers back to the allocator pool for reuse.
       flush_pending_frees();
@@ -142,11 +156,24 @@ namespace ctranslate2 {
       id<MTLBuffer> src_buf = metal_buffer_for_ptr(src, &src_off);
       id<MTLBuffer> dst_buf = metal_buffer_for_ptr(dst, &dst_off);
       id<MTLCommandBuffer> cmd = get_current_command_buffer();
-      id<MTLBlitCommandEncoder> blit = [cmd blitCommandEncoder];
+      id<MTLBlitCommandEncoder> blit;
+      @autoreleasepool {
+        blit = [[cmd blitCommandEncoder] retain];
+      }
       [blit copyFromBuffer:src_buf sourceOffset:src_off
                   toBuffer:dst_buf destinationOffset:dst_off
                       size:static_cast<NSUInteger>(bytes)];
       [blit endEncoding];
+      [blit release];
+    }
+
+    id<MTLComputeCommandEncoder> create_compute_encoder() {
+      id<MTLCommandBuffer> cmd = get_current_command_buffer();
+      id<MTLComputeCommandEncoder> enc;
+      @autoreleasepool {
+        enc = [[cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial] retain];
+      }
+      return enc;
     }
 
     uint64_t commit_count() { return _commit_count.load(std::memory_order_relaxed); }

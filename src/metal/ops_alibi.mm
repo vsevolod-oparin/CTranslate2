@@ -116,9 +116,8 @@ namespace ctranslate2 {
       const uint32_t u_cached_kl    = ct2_u32(cached_key_length);
       const uint32_t u_alibi_offset = ct2_u32(alibi_offset);
 
-      id<MTLCommandBuffer> cmd = get_current_command_buffer();
       id<MTLComputeCommandEncoder> enc =
-          [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+          create_compute_encoder();
       [enc setComputePipelineState:pso];
 
       NSUInteger off_in = 0, off_alibi = 0, off_out = 0;
@@ -139,6 +138,7 @@ namespace ctranslate2 {
       [enc dispatchThreads:MTLSizeMake(rows_ns, kl_ns, 1)
           threadsPerThreadgroup:MTLSizeMake(1, tg_kl, 1)];
       [enc endEncoding];
+      [enc release];
     }
 
 #define DECLARE_ALIBI_METAL(T)                                               \

@@ -141,9 +141,8 @@ namespace ctranslate2 {
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
     id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(T));
     id<MTLComputePipelineState> pso = get_reduction_pso(kname);
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
     [enc setBuffer:inp_buf offset:inp_off       atIndex:0];
     [enc setBuffer:out_buf offset:0             atIndex:1];
@@ -152,9 +151,12 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
+    [enc release];
     CT2_COMMIT_AND_WAIT();
     const T* partials = static_cast<const T*>([out_buf contents]);
-    return std::accumulate(partials, partials + num_groups, T(0));
+    T result = std::accumulate(partials, partials + num_groups, T(0));
+    [out_buf release];
+    return result;
   }
 
   // max_element: index of the maximum element (argmax).
@@ -172,9 +174,8 @@ namespace ctranslate2 {
     id<MTLBuffer> vals_buf = alloc_temp_buffer(num_groups * sizeof(float));
     id<MTLBuffer> idxs_buf = alloc_temp_buffer(num_groups * sizeof(uint32_t));
     id<MTLComputePipelineState> pso = get_reduction_pso(kname);
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
     [enc setBuffer:inp_buf  offset:inp_off       atIndex:0];
     [enc setBuffer:vals_buf offset:0             atIndex:1];
@@ -185,6 +186,7 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
+    [enc release];
     CT2_COMMIT_AND_WAIT();
     const float*    pv = static_cast<const float*>([vals_buf contents]);
     const uint32_t* pi = static_cast<const uint32_t*>([idxs_buf contents]);
@@ -196,6 +198,8 @@ namespace ctranslate2 {
         best_idx = pi[g];
       }
     }
+    [vals_buf release];
+    [idxs_buf release];
     return static_cast<dim_t>(best_idx);
   }
 
@@ -212,9 +216,8 @@ namespace ctranslate2 {
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
     id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(T));
     id<MTLComputePipelineState> pso = get_reduction_pso(kname);
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
     [enc setBuffer:inp_buf offset:inp_off       atIndex:0];
     [enc setBuffer:out_buf offset:0             atIndex:1];
@@ -223,9 +226,12 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
+    [enc release];
     CT2_COMMIT_AND_WAIT();
     const T* partials = static_cast<const T*>([out_buf contents]);
-    return *std::max_element(partials, partials + num_groups);
+    T result = *std::max_element(partials, partials + num_groups);
+    [out_buf release];
+    return result;
   }
 
   // amax: max of absolute values.
@@ -242,9 +248,8 @@ namespace ctranslate2 {
     id<MTLBuffer> inp_buf = metal_buffer_for_ptr(array, &inp_off);
     id<MTLBuffer> out_buf = alloc_temp_buffer(num_groups * sizeof(float));
     id<MTLComputePipelineState> pso = get_reduction_pso(kname);
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
     [enc setBuffer:inp_buf offset:inp_off          atIndex:0];
     [enc setBuffer:out_buf offset:0                atIndex:1];
@@ -253,9 +258,11 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num_groups, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
+    [enc release];
     CT2_COMMIT_AND_WAIT();
     const float* partials = static_cast<const float*>([out_buf contents]);
     float result = *std::max_element(partials, partials + num_groups);
+    [out_buf release];
     return T(result);
   }
 
@@ -333,9 +340,8 @@ namespace ctranslate2 {
     uint32_t nts   = ct2_u32(num_ts_tokens);
 
     id<MTLComputePipelineState> pso = get_fuse_ts_disable_pso(kname);
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
     [enc setBuffer:lp_buf  offset:lp_off                  atIndex:0];
     [enc setBuffer:lg_buf  offset:lg_off                  atIndex:1];
@@ -347,7 +353,10 @@ namespace ctranslate2 {
     [enc dispatchThreadgroups:MTLSizeMake(num, 1, 1)
         threadsPerThreadgroup:MTLSizeMake(kReductionTGS, 1, 1)];
     [enc endEncoding];
+    [enc release];
     // Encode-only — no CT2_COMMIT_AND_WAIT().
+    // Release temp buffer (command buffer retains it until GPU completes).
+    [ids_buf release];
   }
 
   template void fuse_timestamp_check_and_disable_metal<float>(

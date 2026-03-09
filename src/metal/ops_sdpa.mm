@@ -61,9 +61,8 @@ static void dispatch_causal_mask(T* scores,
   const ctranslate2::dim_t total = seqlen_q * seqlen_k;
   uint32_t sk     = ct2_u32(seqlen_k);
   uint32_t offset = 0u;
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(scores, &off) offset:off atIndex:0];
@@ -74,6 +73,7 @@ static void dispatch_causal_mask(T* scores,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(total), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -201,6 +201,10 @@ static void sdpa_mps_gemm(bool trans_b,
                                                   alpha:(double)alpha
                                                    beta:0.0];
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    [matA release];
+    [matB release];
+    [matC release];
+    [gemm_op release];
   }
 
   // If C required padding: flush, then unpack the padded temp back to c.
@@ -212,6 +216,11 @@ static void sdpa_mps_gemm(bool trans_b,
       std::memcpy(dst + r * nat_rb_c, src + r * mps_rb_c, nat_rb_c);
     }
   }
+
+  // Release temp buffers (command buffer retains them until GPU completes).
+  if (tmp_a) [tmp_a release];
+  if (tmp_b) [tmp_b release];
+  if (tmp_c) [tmp_c release];
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +325,13 @@ static void sdpa_bf16_gemm(bool trans_b,
     }
     // c is a Shared-mode MTLBuffer contents pointer — directly CPU-writable.
     [[results[entry.result] mpsndarray] readBytes:c strideBytes:nil];
+    [tdA release];
+    [tdB release];
   }
+
+  // Release temp buffers (MPSGraph ran synchronously, GPU is done).
+  if (tmp_a) [tmp_a release];
+  if (tmp_b) [tmp_b release];
 }
 
 // ---------------------------------------------------------------------------

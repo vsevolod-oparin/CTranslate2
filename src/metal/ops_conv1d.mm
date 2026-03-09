@@ -68,9 +68,8 @@ static void dispatch_im2col(
   std::snprintf(kname, sizeof(kname), "im2col_%s", MetalTypeName<T>::value);
 
   id<MTLComputePipelineState> pso = get_conv1d_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_in = 0, off_out = 0;
@@ -92,6 +91,7 @@ static void dispatch_im2col(
   [enc dispatchThreads:MTLSizeMake((NSUInteger)total, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace

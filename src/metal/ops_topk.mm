@@ -30,9 +30,8 @@ static void dispatch_argmax(const char* kname,
   if (batch_size == 0 || depth == 0) return;
   uint32_t d = ct2_u32(depth);
   id<MTLComputePipelineState> pso = get_topk_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_in = 0, off_val = 0, off_idx = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(input,   &off_in)  offset:off_in  atIndex:0];
@@ -44,6 +43,7 @@ static void dispatch_argmax(const char* kname,
   [enc dispatchThreadgroups:MTLSizeMake(static_cast<NSUInteger>(batch_size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(kTopKBlock, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 static constexpr ctranslate2::dim_t kTopKMaxK = 64;  // Must match TOPK_MAX_K in topk.metal
@@ -62,9 +62,8 @@ static void dispatch_topk_k(const char* kname,
   uint32_t d = ct2_u32(depth);
   uint32_t k_val = ct2_u32(k);
   id<MTLComputePipelineState> pso = get_topk_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_in = 0, off_val = 0, off_idx = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(input,   &off_in)  offset:off_in  atIndex:0];
@@ -77,6 +76,7 @@ static void dispatch_topk_k(const char* kname,
   [enc dispatchThreadgroups:MTLSizeMake(static_cast<NSUInteger>(batch_size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(kTopKBlock, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace

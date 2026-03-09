@@ -115,6 +115,12 @@ namespace ctranslate2 {
     // Both src and dst must be within MetalAllocator-managed buffers.
     void blit_copy(const void* src, void* dst, size_t bytes);
 
+    // Create a serial compute encoder from the current command buffer.
+    // Returns a +1 retained encoder — caller MUST call [enc endEncoding]
+    // followed by [enc release].  The @autoreleasepool inside drains the
+    // autoreleased reference so it doesn't leak on Python threads.
+    id<MTLComputeCommandEncoder> create_compute_encoder();
+
   }  // namespace metal
 
   // ---------------------------------------------------------------------------

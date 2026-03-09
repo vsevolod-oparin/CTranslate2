@@ -147,9 +147,8 @@ namespace ctranslate2 {
       const uint32_t u_interleave  = interleave    ? 1u : 0u;
       const uint32_t u_transposed  = is_transposed ? 1u : 0u;
 
-      id<MTLCommandBuffer> cmd = get_current_command_buffer();
       id<MTLComputeCommandEncoder> enc =
-          [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+          create_compute_encoder();
       [enc setComputePipelineState:pso];
 
       NSUInteger off_in = 0, off_sin = 0, off_cos = 0, off_out = 0;
@@ -171,6 +170,7 @@ namespace ctranslate2 {
       [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(total_vecs), depth_ns, 1)
           threadsPerThreadgroup:MTLSizeMake(1, tg_depth, 1)];
       [enc endEncoding];
+      [enc release];
     }
 
 #define DECLARE_ROTARY_METAL(T)                                               \

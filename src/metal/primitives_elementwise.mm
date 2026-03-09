@@ -33,9 +33,8 @@ static void dispatch_binary(const char* kernel_name,
   if (size == 0) return;
   (void)ct2_u32(size);
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
@@ -46,6 +45,7 @@ static void dispatch_binary(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // y[i] = scalar op x[i]  (scalar passed via setBytes:, no buffer allocation)
@@ -56,9 +56,8 @@ static void dispatch_scalar(const char* kernel_name,
   if (size == 0) return;
   (void)ct2_u32(size);
   id<MTLComputePipelineState> pso = get_elementwise_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_x = 0, off_y = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(x, &off_x) offset:off_x atIndex:0];
@@ -69,6 +68,7 @@ static void dispatch_scalar(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -93,9 +93,8 @@ static void dispatch_unary(const char* kernel_name,
   (void)ct2_u32(size);
 
   id<MTLComputePipelineState> pso = get_activation_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_x = 0, off_y = 0;
   id<MTLBuffer> mtl_x = ctranslate2::metal_buffer_for_ptr(x, &off_x);
@@ -107,6 +106,7 @@ static void dispatch_unary(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -134,9 +134,8 @@ static void dispatch_broadcast1(const char* kernel_name,
   if (size == 0) return;
   (void)ct2_u32(size);
   id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   id<MTLBuffer> mtl_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
@@ -151,6 +150,7 @@ static void dispatch_broadcast1(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 
 }
 
@@ -163,9 +163,8 @@ static void dispatch_broadcast2(const char* kernel_name,
   if (size == 0) return;
   (void)ct2_u32(size);
   id<MTLComputePipelineState> pso = get_broadcast_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
@@ -178,6 +177,7 @@ static void dispatch_broadcast2(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace

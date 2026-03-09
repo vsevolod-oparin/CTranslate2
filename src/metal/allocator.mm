@@ -29,9 +29,25 @@ namespace ctranslate2 {
     //
     // Thread safety: a single mutex guards both maps.  Allocation is not on the
     // hot path (buffers are long-lived in CTranslate2's StorageView).
+    //
+    // Memory management: ARC is NOT enabled for this TU (thread-local
+    // id<MTLCommandBuffer/Queue> in utils.mm prevent it).  MTLBuffer objects
+    // are manually released.  newBufferWithLength: returns +1 retained;
+    // we release when evicting from pool or on destruction.
 
     class MetalAllocator : public Allocator {
     public:
+      ~MetalAllocator() {
+        for (auto& [sz, bufs] : _pool)
+          for (id<MTLBuffer> buf : bufs)
+            [buf release];
+        for (auto& entry : _pending_free)
+          [entry.buffer release];
+        for (auto& [ptr, entry] : _live)
+          [entry.buffer release];
+      }
+
+
       // Returns the MTLBuffer that contains ptr and sets *offset_out to the
       // byte offset of ptr within that buffer.  Needed by compute encoders
       // (which take id<MTLBuffer> + offset, not raw void*).
@@ -149,7 +165,13 @@ namespace ctranslate2 {
 
       void clear_cache() override {
         std::lock_guard<std::mutex> lock(_mutex);
-        _pool.clear();  // ARC releases all pooled MTLBuffers.
+        for (auto& [sz, bufs] : _pool)
+          for (id<MTLBuffer> buf : bufs)
+            [buf release];
+        _pool.clear();
+        for (auto& entry : _pending_free)
+          [entry.buffer release];
+        _pending_free.clear();
       }
 
       // Return total bytes held in pool (not live — available for reuse).

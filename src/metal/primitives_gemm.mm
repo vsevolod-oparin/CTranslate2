@@ -256,6 +256,10 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
                                                    beta:(double)beta];
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    [matA release];
+    [matB release];
+    [matC release];
+    [gemm_op release];
   }
 
   // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.
@@ -268,6 +272,11 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
                       nat_rb_c, rows_c * nat_rb_c,
                       nat_rb_c, rows_c, 1);
   }
+
+  // Release temp buffers (command buffer retains them until GPU completes).
+  if (tmp_a) [tmp_a release];
+  if (tmp_b) [tmp_b release];
+  if (tmp_c) [tmp_c release];
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +390,13 @@ static void run_bf16_gemm_inner(bool trans_a, bool trans_b,
 
     // c is a Shared MTLBuffer contents pointer — valid as CPU destination.
     [[results[entry.result] mpsndarray] readBytes:c strideBytes:nil];
+    [tdA release];
+    [tdB release];
   }
+
+  // Release temp buffers (MPSGraph ran synchronously, GPU is done).
+  if (tmp_a) [tmp_a release];
+  if (tmp_b) [tmp_b release];
 }
 
 // Flush pending GPU work and run one BF16 GEMM.
@@ -462,6 +477,10 @@ static void dispatch_mps_gemm_buf(
                                                   alpha:(double)alpha
                                                    beta:0.0];
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    [matA release];
+    [matB release];
+    [matC release];
+    [gemm_op release];
   }
 }
 
@@ -543,6 +562,11 @@ static void dispatch_int8_gemm(
     for (ctranslate2::dim_t col = 0; col < n; ++col)
       dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
   }
+
+  // Release temp buffers (GPU completed, CPU readback done).
+  [tmp_a release];
+  [tmp_b release];
+  [tmp_c release];
 }
 
 // ---------------------------------------------------------------------------
@@ -642,6 +666,10 @@ static bool dispatch_mps_gemm_batched(
     gemm_op.batchStart = 0;
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    [matA release];
+    [matB release];
+    [matC release];
+    [gemm_op release];
   }
 
   return true;  // successfully dispatched
@@ -733,9 +761,8 @@ static void dispatch_row_copy(id<MTLBuffer> src_buf, NSUInteger src_off,
   uint32_t dst_mb_u32 = static_cast<uint32_t>(dst_mb);
 
   id<MTLComputePipelineState> pso = get_row_copy_pso();
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   [enc setBuffer:src_buf offset:src_off atIndex:0];
   [enc setBuffer:dst_buf offset:dst_off atIndex:1];
@@ -750,6 +777,7 @@ static void dispatch_row_copy(id<MTLBuffer> src_buf, NSUInteger src_off,
   [enc dispatchThreadgroups:MTLSizeMake(total_rows, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(threads_per_group, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -825,9 +853,8 @@ static void dispatch_gemv_f16_batched(
   if (batch_size <= 0 || n == 0 || k == 0) return;
 
   id<MTLComputePipelineState> pso = get_gemv_f16_pso();
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
@@ -859,6 +886,7 @@ static void dispatch_gemv_f16_batched(
   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)batch_size, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
   [enc endEncoding];
+  [enc release];
 
   // M11.19: Protect original buffers from premature reuse (encode-only).
   // Use O(1) protect_buffer_by_base — base pointers already obtained above.
@@ -1031,6 +1059,10 @@ static void dispatch_mps_gemm_batched_padded(
     gemm_op.batchStart = 0;
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+    [matA release];
+    [matB release];
+    [matC release];
+    [gemm_op release];
   }
 
   // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.
@@ -1043,6 +1075,11 @@ static void dispatch_mps_gemm_batched_padded(
                       nat_rb_c, (NSUInteger)stridec * elem,
                       nat_rb_c, (NSUInteger)m, (NSUInteger)batch_size);
   }
+
+  // Release temp buffers (command buffer retains them until GPU completes).
+  if (tmp_a) [tmp_a release];
+  if (tmp_b) [tmp_b release];
+  if (tmp_c) [tmp_c release];
 
 }
 
@@ -1346,6 +1383,11 @@ namespace ctranslate2 {
               dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
           }
         }
+
+        // Release temp buffers (GPU completed, CPU readback done).
+        [tmp_a release];
+        [tmp_b release];
+        [tmp_c release];
       }
     } else {
       METAL_STUB(gemm_batch_strided);

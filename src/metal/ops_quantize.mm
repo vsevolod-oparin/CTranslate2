@@ -62,9 +62,8 @@ static void dispatch_quantize(
   std::snprintf(kname, sizeof(kname), "quantize_%s", MetalTypeName<T>::value);
 
   id<MTLComputePipelineState> pso = get_quantize_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_in = 0, off_out = 0, off_sc = 0;
@@ -79,6 +78,7 @@ static void dispatch_quantize(
   [enc dispatchThreadgroups:MTLSizeMake(batch_size, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(kQuantBlock, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -103,9 +103,8 @@ static void dispatch_dequantize(
   std::snprintf(kname, sizeof(kname), "dequantize_%s", MetalTypeName<T>::value);
 
   id<MTLComputePipelineState> pso = get_quantize_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_in = 0, off_sc = 0, off_out = 0;
@@ -121,6 +120,7 @@ static void dispatch_dequantize(
   [enc dispatchThreads:MTLSizeMake(total, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -155,9 +155,8 @@ static void dispatch_dequantize_gemm_output(
                 MetalTypeName<T>::value);
 
   id<MTLComputePipelineState> pso = get_quantize_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_c=0, off_as=0, off_bs=0, off_bi=0, off_y=0;
@@ -177,6 +176,7 @@ static void dispatch_dequantize_gemm_output(
   [enc dispatchThreads:MTLSizeMake(total, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace

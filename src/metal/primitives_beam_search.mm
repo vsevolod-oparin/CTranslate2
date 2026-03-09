@@ -38,9 +38,8 @@ static void dispatch_penalize(const char* kernel_name,
                                uint32_t vocab_size) {
   if (batch_size == 0 || length == 0) return;
   id<MTLComputePipelineState> pso = get_beam_search_pso(kernel_name);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_s = 0, off_ps = 0, off_pi = 0;
   [enc setBuffer:ctranslate2::metal_buffer_for_ptr(scores,          &off_s)
@@ -57,6 +56,7 @@ static void dispatch_penalize(const char* kernel_name,
   [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(batch_size), 1, 1)
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace
@@ -91,9 +91,8 @@ namespace ctranslate2 {
     CT2_COMMIT_AND_WAIT();
 
     id<MTLComputePipelineState> pso = get_beam_search_pso("prepare_length_mask");
-    id<MTLCommandBuffer> cmd = metal::get_current_command_buffer();
     id<MTLComputeCommandEncoder> enc =
-        [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+        metal::create_compute_encoder();
     [enc setComputePipelineState:pso];
 
     NSUInteger off_l = 0, off_m = 0;
@@ -113,6 +112,7 @@ namespace ctranslate2 {
     [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(batch_size), total_items, 1)
         threadsPerThreadgroup:MTLSizeMake(1, tg_y, 1)];
     [enc endEncoding];
+    [enc release];
   }
 
   // -------------------------------------------------------------------------

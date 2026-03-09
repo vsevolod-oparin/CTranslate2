@@ -52,9 +52,8 @@ static void dispatch_fused_ln_gemm(const char* kname,
   uint32_t has_beta  = (beta != nullptr) ? 1u : 0u;
 
   id<MTLComputePipelineState> pso = get_fused_norm_gemm_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_x = 0, off_g = 0, off_b = 0, off_W = 0, off_y = 0;
@@ -75,6 +74,7 @@ static void dispatch_fused_ln_gemm(const char* kname,
   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)outer_size, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(kFusedBlock, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +96,8 @@ static void dispatch_fused_rms_gemm(const char* kname,
   uint32_t N_u32 = ct2_u32(N);
 
   id<MTLComputePipelineState> pso = get_fused_norm_gemm_pso(kname);
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
   id<MTLComputeCommandEncoder> enc =
-      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+      ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
 
   NSUInteger off_x = 0, off_g = 0, off_W = 0, off_y = 0;
@@ -116,6 +115,7 @@ static void dispatch_fused_rms_gemm(const char* kname,
   [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)outer_size, 1, 1)
       threadsPerThreadgroup:MTLSizeMake(kFusedBlock, 1, 1)];
   [enc endEncoding];
+  [enc release];
 }
 
 }  // anonymous namespace

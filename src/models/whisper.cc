@@ -824,8 +824,7 @@ namespace ctranslate2 {
 #ifdef CT2_WITH_METAL
           if (log_probs.device() == Device::METAL) {
             // M11.17 fused GPU path: check + write -inf in one kernel, no sync.
-            // Eliminates should_sample_timestamps_metal readback AND the
-            // subsequent disable_tokens.add() loop + indexed_fill sync.
+            // Replaces CPU should_sample_timestamp + disable_tokens.add() loop.
             DEVICE_AND_FLOAT_DISPATCH(
               "ApplyTimestampRules", log_probs.device(), log_probs.dtype(),
               (metal::fuse_timestamp_check_and_disable_metal<T>(

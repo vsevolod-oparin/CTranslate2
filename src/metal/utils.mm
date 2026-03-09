@@ -73,6 +73,9 @@ namespace ctranslate2 {
 
 
     // Debug tracing: global map of caller → commit count.
+    // Note: _trace_mutex is accessed from an atexit handler (dump_commit_trace).
+    // Static destruction order is technically unspecified relative to atexit,
+    // but std::mutex is trivially destructible on Apple/glibc, so safe in practice.
     static std::mutex _trace_mutex;
     static std::unordered_map<std::string, uint64_t> _trace_counts;
     static bool _trace_enabled = false;

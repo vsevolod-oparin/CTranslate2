@@ -63,17 +63,8 @@ namespace ctranslate2 {
     void increment_pso_hits();
     void increment_pso_misses();
 
-    // Fused should_sample_timestamp for Whisper ApplyTimestampRules.
-    // One GPU dispatch for all batch_ids, single CT2_COMMIT_AND_WAIT().
-    template <typename T>
-    void should_sample_timestamps_metal(
-        const T* log_probs, dim_t vocab_size,
-        dim_t num_text_tokens, dim_t num_ts_tokens,
-        const std::vector<dim_t>& batch_ids,
-        std::vector<bool>& results);
-
     // Fused timestamp check + disable (M11.17).
-    // Same reduction as should_sample_timestamps_metal, but writes -inf
+    // Performs should_sample_timestamps reduction AND writes -inf
     // directly to logits[batch_id][0..num_text) on the GPU.
     // Encode-only — no CT2_COMMIT_AND_WAIT().
     template <typename T>

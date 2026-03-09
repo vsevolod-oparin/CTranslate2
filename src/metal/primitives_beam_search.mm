@@ -7,13 +7,10 @@
 //   Sequential within a thread guarantees correct semantics when the same
 //   token ID appears multiple times (last write wins, matching CPU behaviour).
 //
-// prepare_length_mask: CPU-side with a prior GPU flush.
-//   Mask creation is O(batch × heads × queries) — typically small (e.g.
-//   8 × 8 × 512 = 32K integers).  GPU launch overhead dominates at these
-//   sizes; CPU is the correct implementation.
+// prepare_length_mask: GPU kernel (M11.16) with a prior GPU flush.
 //   `lengths` may have been written by a prior GPU op (e.g. a gather over a
 //   padded-batch tensor).  commit_and_wait() ensures those writes are visible
-//   to the CPU before the loop reads them.
+//   before the mask kernel reads them.
 
 #include "metal/primitives_infra.h"
 

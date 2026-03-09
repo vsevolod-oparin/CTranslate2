@@ -152,25 +152,27 @@ Note: MPS batched GEMM itself produces garbled output for float16 m=1 (verified 
 2. Dispatch as encode-only from `gemm_batch_strided` for float16 m=1
 3. Call `protect_buffer(a)`, `protect_buffer(b)`, `protect_buffer(c)` after dispatch
 
-### Medium Impact
+### Medium Impact (Reassessed: No Real Impact)
 
-#### `primitives<METAL>::max_element` Still Syncs
+Investigation confirmed these are all dead code paths or irreducible for current Metal workloads:
+
+#### `primitives<METAL>::max_element` — NOT CALLED
 
 **File:** `src/metal/primitives_reduction.mm:253-291`
 
-Uses two-phase GPU reduction + `CT2_COMMIT_AND_WAIT()`. Could reuse M11.6's encode-only argmax kernel (`dispatch_argmax` in the same file's anonymous namespace), eliminating syncs from beam search scoring.
+`primitives<Device::METAL>::max_element` is instantiated but never called during Whisper or translation inference. The audit incorrectly assumed it was used in beam search scoring. Additionally, since it returns a scalar `dim_t`, it inherently requires 1 sync (minimum) — already optimal.
 
-#### BF16 Batched GEMM: Sequential Synchronous MPSGraph
+#### BF16 Batched GEMM — EXPLICIT OPT-IN ONLY
 
-**File:** `src/metal/primitives_gemm.mm:1109-1118`
+**File:** `src/metal/primitives_gemm.mm`
 
-`batch_size=8` (multi-head attention) runs 8 sequential synchronous MPSGraph calls. A single MPSGraph with batch dimensions could eliminate redundant graph compilation overhead.
+Only triggered with `compute_type="bfloat16"`. Default Whisper uses float16 (auto-converted from saved model); default translation uses float32. Trace confirms zero BF16 GEMM syncs in standard workloads.
 
-#### `logsumexp` CPU with Forced Sync
+#### `logsumexp` — DEAD CODE FOR METAL
 
 **File:** `src/metal/primitives_reduction.mm:356-367`
 
-Called from beam search log-probability scoring. Could be fused with surrounding operations (same pattern as M11.17's timestamp fusion).
+Only called from `should_sample_timestamp()` in `whisper.cc`, which is replaced by M11.17's `fuse_timestamp_check_and_disable_metal()` for the Metal device path. CPU path still uses it but Metal never hits this code. Additionally, already 1 sync (minimum for scalar return).
 
 ### Low Impact
 
@@ -220,8 +222,8 @@ Superseded by M11.17's fused kernel `fuse_timestamp_check_and_disable_metal`. St
 | **P2** | Fused norm-GEMM threadgroup memory | Latent bug | Low | Future-proof Metal compliance | **FIXED** (use host-allocated scratch) |
 | **P2** | `_env_checked` thread safety | Bug fix | Low | Eliminate data race | **FIXED** (`std::call_once`) |
 | **P2** | `gpu_time_elapsed` thread-local inconsistency | Design bug | Low | Cross-thread visibility | **FIXED** (`std::atomic<double>`) |
-| **P2** | Remove dead `should_sample_timestamps_metal` | Cleanup | Low | Reduce confusion | Open |
-| **P2** | Update stale comments/docs (5 items above) | Documentation | Low | Maintainability | Open |
-| **P3** | `max_element` encode-only via argmax | Optimization | Low | Minor sync reduction | Open |
-| **P3** | BF16 batched MPSGraph | Optimization | Medium | Latency improvement | Open |
-| **P3** | `logsumexp` fusion | Optimization | Medium | Minor sync reduction | Open |
+| **P2** | Remove dead `should_sample_timestamps_metal` | Cleanup | Low | Reduce confusion | **DONE** (removed MSL, function, declaration) |
+| **P2** | Update stale comments/docs (5 items above) | Documentation | Low | Maintainability | **DONE** (all 5 + atexit comment) |
+| **P3** | `max_element` encode-only via argmax | Optimization | Low | **No impact** — not called during Metal inference; already 1 sync (minimum for scalar return) | N/A |
+| **P3** | BF16 batched MPSGraph | Optimization | Medium | **No impact** — only with explicit `compute_type="bfloat16"`; defaults use float32/float16 | N/A |
+| **P3** | `logsumexp` fusion | Optimization | Medium | **No impact** — only in `should_sample_timestamp` which M11.17 replaced with fused GPU kernel for Metal; already 1 sync | N/A |

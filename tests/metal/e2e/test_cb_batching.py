@@ -102,9 +102,10 @@ def main():
         print(f"  Total output tokens: {total_tokens}")
         print(f"  Commits/token:      {commits_per_token:.2f}")
 
-        # With batching, we expect far fewer commits than before.
+        # With batching + M11.19 GEMV, we expect far fewer commits than before.
         # Before M11.1: ~12 commits per decode step (6 layers × 2 KV caches) + others
         # After M11.1:  ~1 commit per decode step for gathers + others
+        # After M11.19: float16 m=1 GEMMs no longer sync (custom GEMV kernel)
         # A rough threshold: commits/token should be < 5 (was ~15+ before)
         total += 1
         if commits_per_token < 5:

@@ -35,7 +35,7 @@ The Metal backend has a two-layer caching system:
 ### Non-PSO Cached Objects
 
 - **BF16 GEMM MPSGraph**: 4 graph instances cached by `(trans_a, trans_b)` in `get_bf16_graph()` — already cached since M4.4.
-- **MPS objects** (`MPSMatrixMultiplication`): Created per-call for FP32/FP16 GEMM. These are lightweight MPS framework wrappers, not custom shaders. Apple's MPS runtime may internally cache the underlying PSOs.
+- **MPS objects** (`MPSMatrixMultiplication`): Created per-call for FP32/FP16 GEMM. These are lightweight MPS framework wrappers, not custom shaders. MPS objects are NOT cached by the runtime — they are recreated each call. M11.7 introduced batched MPS dispatch to amortize this overhead.
 
 ## Changes
 

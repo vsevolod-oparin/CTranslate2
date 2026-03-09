@@ -105,6 +105,12 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
   // -----------------------------------------------------------------------
   // CPU GEMM fast-path for tiny padded matrices (e.g. 3×3 attention scores).
   // For these, cblas is faster than MPS kernel launch + sync overhead.
+  //
+  // NOTE: This threshold is also a **correctness boundary** for float16.
+  // MPS batched GEMM produces incorrect results for float16 with m=1 and
+  // small n (verified in M11.18).  For float16, m=1 is intercepted earlier
+  // by the custom GEMV kernel (M11.19), but this threshold remains as a
+  // safety net for any other tiny float16 padded GEMMs.
   // -----------------------------------------------------------------------
   constexpr NSUInteger kCpuGemmThresh = 4096;
   if ((pad_a || pad_b || pad_c) && (rows_c * cols_c <= kCpuGemmThresh)) {

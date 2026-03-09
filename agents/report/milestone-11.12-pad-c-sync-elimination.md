@@ -125,12 +125,12 @@ Currently `amax()` does:
 
 Fix: Add a second GPU reduction pass over the partial results to produce a single scalar. Both passes encode-only, no sync needed. The consumer of `amax()` (quantization) will sync when it reads the result.
 
-### Priority 3: Batched padded GEMM pad_a/pad_b sync (224 syncs → 0)
+### Priority 3: Batched padded GEMM pad_a/pad_b sync (224 syncs → 0) — **RESOLVED in M11.13**
 
 **Effort**: Medium
-**Impact**: Eliminates 224 syncs per transcription
+**Impact**: Eliminated 224 syncs per transcription
 
-`dispatch_mps_gemm_batched_padded<T>()` already uses `dispatch_row_copy` for C unpack but still does `commit_and_wait()` for A and B padding. Could use GPU row_copy for A/B pack as well.
+`dispatch_mps_gemm_batched_padded<T>()` now uses GPU `dispatch_row_copy` for A/B padding as well as C unpack — fully encode-only. Resolved in M11.13.
 
 ### Priority 4: GPU TopK k>1 (268 syncs → 0)
 

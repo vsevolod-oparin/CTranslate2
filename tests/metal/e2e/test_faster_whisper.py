@@ -58,104 +58,99 @@ def main():
     print(f"Model: {model_name}")
     print(f"Path: {whisper_path}")
 
-    # --- 1. Load models ---
-    print("\n=== Loading models ===")
+    import gc
+    audio, _ = librosa.load(audio_file, sr=16000, mono=True)
+    duration_s = len(audio) / 16000
+    perf_beam_size = int(sys.argv[2]) if len(sys.argv) > 2 else 5
+
+    # --- Phase 1: CPU model (load, test, benchmark, then free) ---
+    print("\n=== Loading CPU model ===")
     model_cpu = WhisperModel(whisper_path, device="cpu")
-    model_metal = WhisperModel(whisper_path, device="metal")
-
     cpu_ct = model_cpu.model.compute_type
-    metal_ct = model_metal.model.compute_type
     print(f"  CPU compute_type: {cpu_ct}")
-    print(f"  Metal compute_type: {metal_ct}")
 
-    # --- 2. Check n_mels ---
-    print("\n=== Feature extraction ===")
+    print("\n=== Feature extraction (CPU) ===")
     expected_mels = 128 if "large-v3" in model_name else 80
     cpu_mels = model_cpu.model.n_mels
-    metal_mels = model_metal.model.n_mels
     cpu_fe_mels = model_cpu.feature_extractor.mel_filters.shape[0]
-    metal_fe_mels = model_metal.feature_extractor.mel_filters.shape[0]
-
     check(f"CPU n_mels == {expected_mels}", cpu_mels == expected_mels, f"n_mels={cpu_mels}")
-    check(f"Metal n_mels == {expected_mels}", metal_mels == expected_mels, f"n_mels={metal_mels}")
     check(f"CPU FeatureExtractor mel bins == {expected_mels}",
           cpu_fe_mels == expected_mels, f"mel_filters.shape[0]={cpu_fe_mels}")
-    check(f"Metal FeatureExtractor mel bins == {expected_mels}",
-          metal_fe_mels == expected_mels, f"mel_filters.shape[0]={metal_fe_mels}")
 
-    # --- 3. Transcribe without timestamps (most reliable mode) ---
-    print("\n=== Transcription (without_timestamps=True) ===")
+    print("\n=== CPU transcription ===")
     cpu_segments, cpu_info = model_cpu.transcribe(
         audio_file, language="ru", beam_size=5, without_timestamps=True,
     )
     cpu_segments = list(cpu_segments)
     cpu_text = " ".join(s.text for s in cpu_segments).strip()
     print(f"  CPU: {cpu_text[:150]}{'...' if len(cpu_text)>150 else ''}")
-
-    metal_segments, metal_info = model_metal.transcribe(
-        audio_file, language="ru", beam_size=5, without_timestamps=True,
-    )
-    metal_segments = list(metal_segments)
-    metal_text = " ".join(s.text for s in metal_segments).strip()
-    print(f"  Metal: {metal_text[:150]}{'...' if len(metal_text)>150 else ''}")
-
     check("CPU transcription non-empty", len(cpu_text) > 10, f"len={len(cpu_text)}")
-    check("Metal transcription non-empty", len(metal_text) > 10, f"len={len(metal_text)}")
     check("CPU output reasonable length", len(cpu_text) > 50,
           f"len={len(cpu_text)}, expect >50 for 60s audio")
 
-    # Compare CPU vs Metal
-    if cpu_ct == metal_ct:
-        check("CPU == Metal text", cpu_text == metal_text)
-    else:
-        # Different compute types: just check Metal produced substantial output
-        metal_ok = len(metal_text) > len(cpu_text) * 0.5
-        check("Metal output comparable to CPU", metal_ok,
-              f"cpu_len={len(cpu_text)}, metal_len={len(metal_text)}")
-
-    # --- 4. Timestamps mode (informational) ---
-    print("\n=== Timestamps mode (informational) ===")
-    ts_segments, _ = model_cpu.transcribe(
-        audio_file, language="ru", beam_size=5,
-    )
+    # Timestamps mode (CPU only — informational)
+    ts_segments, _ = model_cpu.transcribe(audio_file, language="ru", beam_size=5)
     ts_segments = list(ts_segments)
     ts_text = " ".join(s.text for s in ts_segments).strip()
     info(f"Timestamps mode: {len(ts_segments)} segments, {len(ts_text)} chars")
     for seg in ts_segments[:5]:
         info(f"  [{seg.start:.1f}-{seg.end:.1f}] {seg.text[:80]}")
 
-    # --- 5. Speed benchmark ---
-    print("\n=== Speed benchmark ===")
-    audio, _ = librosa.load(audio_file, sr=16000, mono=True)
-    duration_s = len(audio) / 16000
-
-    # Warmup both backends
-    info("Warming up...")
-    perf_beam_size = int(sys.argv[2]) if len(sys.argv) > 2 else 5
-    for m in (model_cpu, model_metal):
-        segs, _ = m.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)
-        list(segs)  # consume generator
-
-    # Benchmark CPU
+    # CPU benchmark
+    list(model_cpu.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
     t0 = time.monotonic()
-    cpu_segs, _ = model_cpu.transcribe(
-        audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True,
-    )
-    list(cpu_segs)
+    list(model_cpu.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
     cpu_ms = (time.monotonic() - t0) * 1000
 
-    # Benchmark Metal
-    t0 = time.monotonic()
-    metal_segs, _ = model_metal.transcribe(
-        audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True,
+    # Free CPU model before loading Metal
+    del model_cpu
+    gc.collect()
+
+    # --- Phase 2: Metal model (load, test, benchmark, then free) ---
+    print("\n=== Loading Metal model ===")
+    model_metal = WhisperModel(whisper_path, device="metal")
+    metal_ct = model_metal.model.compute_type
+    print(f"  Metal compute_type: {metal_ct}")
+
+    print("\n=== Feature extraction (Metal) ===")
+    metal_mels = model_metal.model.n_mels
+    metal_fe_mels = model_metal.feature_extractor.mel_filters.shape[0]
+    check(f"Metal n_mels == {expected_mels}", metal_mels == expected_mels, f"n_mels={metal_mels}")
+    check(f"Metal FeatureExtractor mel bins == {expected_mels}",
+          metal_fe_mels == expected_mels, f"mel_filters.shape[0]={metal_fe_mels}")
+
+    print("\n=== Metal transcription ===")
+    metal_segments, metal_info = model_metal.transcribe(
+        audio_file, language="ru", beam_size=5, without_timestamps=True,
     )
-    list(metal_segs)
+    metal_segments = list(metal_segments)
+    metal_text = " ".join(s.text for s in metal_segments).strip()
+    print(f"  Metal: {metal_text[:150]}{'...' if len(metal_text)>150 else ''}")
+    check("Metal transcription non-empty", len(metal_text) > 10, f"len={len(metal_text)}")
+
+    # Compare CPU vs Metal
+    if cpu_ct == metal_ct:
+        check("CPU == Metal text", cpu_text == metal_text)
+    else:
+        metal_ok = len(metal_text) > len(cpu_text) * 0.5
+        check("Metal output comparable to CPU", metal_ok,
+              f"cpu_len={len(cpu_text)}, metal_len={len(metal_text)}")
+
+    # Metal benchmark
+    list(model_metal.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
+    t0 = time.monotonic()
+    list(model_metal.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
     metal_ms = (time.monotonic() - t0) * 1000
 
+    del model_metal
+    gc.collect()
+    ctranslate2.clear_device_cache("metal")
+
+    # --- Speed summary ---
+    print("\n=== Speed benchmark ===")
     rtf_cpu = cpu_ms / (duration_s * 1000)
     rtf_metal = metal_ms / (duration_s * 1000)
     speedup = cpu_ms / metal_ms if metal_ms > 0 else float("inf")
-
     info(f"Audio duration: {duration_s:.1f}s at beam_size={perf_beam_size}")
     info(f"CPU:   {cpu_ms:.0f} ms  (RTF={rtf_cpu:.3f})")
     info(f"Metal: {metal_ms:.0f} ms  (RTF={rtf_metal:.3f})")

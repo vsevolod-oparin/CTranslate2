@@ -79,6 +79,7 @@ static inline id<MTLLibrary> compile_library_once(std::once_flag& flag,
     MTLCompileOptions* effective_opts = opts ? opts : default_msl_compile_options();
     lib_out = [ctranslate2::metal::get_metal_device()
         newLibraryWithSource:src options:effective_opts error:&err];
+    if (!opts) [effective_opts release];
     if (lib_out == nil) {
       std::string msg = std::string("Metal: failed to compile ") + label + " library";
       if (err)
@@ -103,6 +104,7 @@ static inline id<MTLComputePipelineState> make_pso(id<MTLLibrary> lib,
   id<MTLComputePipelineState> pso =
       [ctranslate2::metal::get_metal_device()
           newComputePipelineStateWithFunction:fn error:&err];
+  [fn release];
   if (pso == nil) {
     std::string msg = std::string("Metal: PSO creation failed for ") + name;
     if (err)
@@ -154,7 +156,11 @@ static inline uint32_t ct2_u32(ctranslate2::dim_t v) {
 }
 
 // ---------------------------------------------------------------------------
-// Temporary MTLBuffer allocation (Shared mode, ARC-managed)
+// Temporary MTLBuffer allocation (Shared mode, manual release required).
+//
+// Returns +1 retained MTLBuffer.  Caller MUST [buf release] after use.
+// Metal command buffers retain referenced resources, so releasing after
+// encoding is safe — the GPU can still access the data.
 // ---------------------------------------------------------------------------
 
 static inline id<MTLBuffer> alloc_temp_buffer(NSUInteger bytes) {

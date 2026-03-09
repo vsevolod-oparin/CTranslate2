@@ -1,6 +1,6 @@
 # Roadmap: 2x Metal Speed for whisper-large-v3-turbo
 
-## Current State (Post-M11.18)
+## Current State (Post-M11.19)
 
 - **Target**: whisper-large-v3-turbo, beam_size=5, 60s audio, float32
 - **CPU**: ~28s | **Metal**: ~24–27s | **Speedup**: 1.03–1.22x
@@ -25,7 +25,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 ## Phase 1: Sync Elimination (est. -3–5s)
 
-### M11.19 — GPU Multinomial Sampling (756 syncs → 0)
+### M11.20 — GPU Multinomial Sampling (756 syncs → 0)
 
 **Problem**: Each decode step calls `std::discrete_distribution` on CPU, requiring `commit_and_wait()` to read GPU-computed probabilities.
 
@@ -37,7 +37,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: HIGH — 756 syncs, clean isolated operation, no architectural dependencies.
 
-### M11.20 — Reduce synchronize_stream Calls (1,078 → ~200)
+### M11.21 — Reduce synchronize_stream Calls (1,078 → ~200)
 
 **Problem**: `synchronize_stream()` called from data type conversions and framework-level operations. Many are unnecessary when both source and destination are Metal-allocated.
 
@@ -48,7 +48,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: HIGH — largest remaining sync source. Requires careful auditing to avoid breaking correctness.
 
-### M11.21 — GPU TopK for Beam Search (268 syncs → 0)
+### M11.22 — GPU TopK for Beam Search (268 syncs → 0)
 
 **Problem**: `std::partial_sort` on CPU for beam_size=5, requiring sync to read GPU logits.
 
@@ -59,7 +59,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: MEDIUM — only 268 syncs, but enables keeping beam state on GPU (compound benefit).
 
-### M11.22 — Batch indexed_fill Across Decode Steps (1,024 → ~50)
+### M11.23 — Batch indexed_fill Across Decode Steps (1,024 → ~50)
 
 **Problem**: GPU `indexed_fill` kernel is encode-only (M11.17), but `DisableTokens::apply()` is called multiple times per decode step with separate index lists. Each call may trigger a sync from the caller.
 
@@ -71,7 +71,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 ## Phase 2: Compute Optimization (est. -2–4s)
 
-### M11.23 — Persistent Command Encoder
+### M11.24 — Persistent Command Encoder
 
 **Problem**: ~15 compute encoder create/end cycles per decoder layer × 4 layers × ~200 decode steps = ~12,000 transitions at ~10µs each ≈ ~120ms.
 
@@ -79,7 +79,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: LOW — modest savings alone, but improves GPU utilization.
 
-### M11.24 — Float32 Fused LayerNorm+Linear
+### M11.25 — Float32 Fused LayerNorm+Linear
 
 **Problem**: LayerNorm and the following GEMM are separate dispatches with intermediate buffer materialization.
 
@@ -87,7 +87,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: LOW — saves ~100-200ms from reduced memory traffic.
 
-### M11.25 — MPS Object Caching
+### M11.26 — MPS Object Caching
 
 **Problem**: `MPSMatrix` and `MPSMatrixMultiplication` objects recreated per GEMM call (~1-5µs each).
 
@@ -97,7 +97,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 ## Phase 3: Architectural (est. -3–5s)
 
-### M11.26 — Decode-Step Pipeline Fusion
+### M11.27 — Decode-Step Pipeline Fusion
 
 **Problem**: Each decode step has ~15+ separate GPU dispatches (LayerNorm, GEMM×4, SDPA, Add, ...) with encoder transitions and intermediate buffers between them.
 
@@ -108,7 +108,7 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 **Priority**: MEDIUM-HIGH — largest potential savings but highest complexity. Each fusion needs correctness verification.
 
-### M11.27 — Cross-Attention KV Reuse Optimization
+### M11.28 — Cross-Attention KV Reuse Optimization
 
 **Problem**: Cross-attention K/V are cached but the cache lookup and SDPA dispatch still have per-step overhead.
 
@@ -120,25 +120,25 @@ Need to save ~11s. Sync elimination alone (~1.3s direct + pipeline bubble reduct
 
 | Milestone | Est. Savings | Effort | Priority |
 |-----------|-------------|--------|----------|
-| M11.19 GPU Multinomial | -0.3s | Low | **HIGH** |
-| M11.20 Reduce sync_stream | -1–2s | Medium | **HIGH** |
-| M11.21 GPU TopK | -0.1s + compound | Medium | MEDIUM |
-| M11.22 Batch indexed_fill | -0.4s | Medium | MEDIUM |
-| M11.26 Decode Pipeline Fusion | -3–5s | High | **MEDIUM-HIGH** |
-| M11.23 Persistent Encoder | -0.1s | Low | LOW |
-| M11.24 Fused LN+Linear | -0.2s | Medium | LOW |
-| M11.25 MPS Object Cache | -0.02s | Low | LOW |
+| M11.20 GPU Multinomial | -0.3s | Low | **HIGH** |
+| M11.21 Reduce sync_stream | -1–2s | Medium | **HIGH** |
+| M11.22 GPU TopK | -0.1s + compound | Medium | MEDIUM |
+| M11.23 Batch indexed_fill | -0.4s | Medium | MEDIUM |
+| M11.27 Decode Pipeline Fusion | -3–5s | High | **MEDIUM-HIGH** |
+| M11.24 Persistent Encoder | -0.1s | Low | LOW |
+| M11.25 Fused LN+Linear | -0.2s | Medium | LOW |
+| M11.26 MPS Object Cache | -0.02s | Low | LOW |
 
 ## Recommended Execution Order
 
-1. **M11.19** — GPU Multinomial (quick win, isolated)
-2. **M11.20** — synchronize_stream audit (biggest sync source)
-3. **M11.21** — GPU TopK (enables GPU-resident beam state)
-4. **M11.22** — Batch indexed_fill (cleanup remaining scatter syncs)
-5. **M11.26** — Decode pipeline fusion (biggest compute win, do after syncs are minimized)
+1. **M11.20** — GPU Multinomial (quick win, isolated)
+2. **M11.21** — synchronize_stream audit (biggest sync source)
+3. **M11.22** — GPU TopK (enables GPU-resident beam state)
+4. **M11.23** — Batch indexed_fill (cleanup remaining scatter syncs)
+5. **M11.27** — Decode pipeline fusion (biggest compute win, do after syncs are minimized)
 
-After Phase 1 (M11.19–M11.22), expected: ~1.5–2.0x CPU.
-After Phase 3 (M11.26), expected: ~2.0–2.5x CPU.
+After Phase 1 (M11.20–M11.23), expected: ~1.5–2.0x CPU.
+After Phase 3 (M11.27), expected: ~2.0–2.5x CPU.
 
 ## Non-Sync Analysis
 

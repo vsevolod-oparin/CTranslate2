@@ -746,6 +746,117 @@ static void dispatch_row_copy(id<MTLBuffer> src_buf, NSUInteger src_off,
   [enc endEncoding];
 }
 
+// ---------------------------------------------------------------------------
+// M11.19: Custom float16 GEMV kernel for m=1 decode attention GEMMs.
+//
+// MPS batched GEMM produces garbled output for float16 m=1 (verified M11.18).
+// This custom MSL kernel avoids MPS entirely.  Encode-only — zero syncs.
+// Uses protect_buffer (M11.18) to prevent buffer reuse before GPU execution.
+//
+// Grid: [batch_size, 1, 1], threads per group: [256, 1, 1]
+// Each threadgroup computes one batch element's C[1,N] = alpha * A[1,K] * B + beta * C.
+// Each thread handles ceil(N/256) output columns, accumulating in float32.
+// ---------------------------------------------------------------------------
+static const char* kGemvF16MSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void gemv_half(
+    device const half*  A       [[buffer(0)]],
+    device const half*  B       [[buffer(1)]],
+    device       half*  C       [[buffer(2)]],
+    constant     uint&  K       [[buffer(3)]],
+    constant     uint&  N       [[buffer(4)]],
+    constant     uint&  stridea [[buffer(5)]],
+    constant     uint&  strideb [[buffer(6)]],
+    constant     uint&  stridec [[buffer(7)]],
+    constant     uint&  ldb_val [[buffer(8)]],
+    constant     float& alpha   [[buffer(9)]],
+    constant     float& beta    [[buffer(10)]],
+    constant     uint&  tb      [[buffer(11)]],
+    uint batch_id [[threadgroup_position_in_grid]],
+    uint tid      [[thread_index_in_threadgroup]],
+    uint tgs      [[threads_per_threadgroup]])
+{
+    device const half* a_row = A + batch_id * stridea;
+    device const half* b_mat = B + batch_id * strideb;
+    device       half* c_row = C + batch_id * stridec;
+
+    for (uint j = tid; j < N; j += tgs) {
+        float acc = 0.0f;
+        if (tb) {
+            device const half* b_row = b_mat + j * ldb_val;
+            for (uint i = 0; i < K; ++i)
+                acc += (float)a_row[i] * (float)b_row[i];
+        } else {
+            for (uint i = 0; i < K; ++i)
+                acc += (float)a_row[i] * (float)b_mat[i * ldb_val + j];
+        }
+        float old_c = (beta != 0.0f) ? (float)c_row[j] : 0.0f;
+        c_row[j] = (half)(alpha * acc + beta * old_c);
+    }
+}
+)";
+
+static id<MTLLibrary> get_gemv_f16_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kGemvF16MSL, "gemv_f16");
+}
+
+static id<MTLComputePipelineState> get_gemv_f16_pso() {
+  static PSOCache cache;
+  return cache.get(get_gemv_f16_library, "gemv_half");
+}
+
+static void dispatch_gemv_f16_batched(
+    bool transpose_b,
+    ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha, float beta,
+    const ctranslate2::float16_t* a, ctranslate2::dim_t lda, ctranslate2::dim_t stridea,
+    const ctranslate2::float16_t* b, ctranslate2::dim_t ldb, ctranslate2::dim_t strideb,
+    ctranslate2::float16_t* c, ctranslate2::dim_t ldc, ctranslate2::dim_t stridec,
+    ctranslate2::dim_t batch_size) {
+  if (batch_size <= 0 || n == 0 || k == 0) return;
+
+  id<MTLComputePipelineState> pso = get_gemv_f16_pso();
+  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+  id<MTLComputeCommandEncoder> enc =
+      [cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial];
+  [enc setComputePipelineState:pso];
+
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+
+  uint32_t K_u32 = ct2_u32(k);
+  uint32_t N_u32 = ct2_u32(n);
+  uint32_t sa_u32 = ct2_u32(stridea);
+  uint32_t sb_u32 = ct2_u32(strideb);
+  uint32_t sc_u32 = ct2_u32(stridec);
+  uint32_t ldb_u32 = ct2_u32(ldb);
+  uint32_t tb_u32 = transpose_b ? 1u : 0u;
+  [enc setBytes:&K_u32   length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&N_u32   length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&sa_u32  length:sizeof(uint32_t) atIndex:5];
+  [enc setBytes:&sb_u32  length:sizeof(uint32_t) atIndex:6];
+  [enc setBytes:&sc_u32  length:sizeof(uint32_t) atIndex:7];
+  [enc setBytes:&ldb_u32 length:sizeof(uint32_t) atIndex:8];
+  [enc setBytes:&alpha   length:sizeof(float)    atIndex:9];
+  [enc setBytes:&beta    length:sizeof(float)    atIndex:10];
+  [enc setBytes:&tb_u32  length:sizeof(uint32_t) atIndex:11];
+
+  NSUInteger tgs = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)batch_size, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
+  [enc endEncoding];
+
+  // M11.19: Protect original buffers from premature reuse (encode-only).
+  ctranslate2::metal::protect_buffer(a);
+  ctranslate2::metal::protect_buffer(b);
+  ctranslate2::metal::protect_buffer(c);
+}
+
 template <typename T>
 static void dispatch_mps_gemm_batched_padded(
     bool transpose_a, bool transpose_b,
@@ -1096,11 +1207,17 @@ namespace ctranslate2 {
         }
       }
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
+      // M11.19: Route ALL m=1 float16 GEMMs through custom GEMV (encode-only, zero syncs).
+      // MPS batched GEMM produces garbled output for float16 m=1 (MPS bug verified in M11.18).
+      // Custom MSL kernel avoids MPS entirely; protect_buffer prevents buffer-reuse crashes.
+      if (m == 1 && batch_size > 0) {
+        dispatch_gemv_f16_batched(transpose_b, n, k, alpha, beta,
+                                  a, lda, stridea, b, ldb, strideb,
+                                  c, ldc, stridec, batch_size);
+        return;
+      }
       if (batch_size > 0 && needs_padding()) {
         if (m * n > 4096) {
-          // Note: m==1 NOT routed here for float16 — MPS batched GEMM produces
-          // incorrect results for float16 with m=1 small matrices (verified in
-          // M11.18).  float16 m=1 stays on cblas via batch_cpu_gemm_f16.
           dispatch_mps_gemm_batched_padded<float16_t>(
               transpose_a, transpose_b, m, n, k,
               alpha, a, lda, stridea, b, ldb, strideb,

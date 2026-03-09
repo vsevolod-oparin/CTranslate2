@@ -27,7 +27,8 @@ namespace ctranslate2 {
       std::atomic<uint64_t> _commit_count{0};
 
       // M11.4: Accumulated GPU execution time (seconds) since last reset.
-      thread_local double _gpu_time_elapsed = 0.0;
+      // Global (not thread-local) for cross-thread visibility, matching commit_count.
+      std::atomic<double> _gpu_time_elapsed{0.0};
 
     }  // namespace
 
@@ -96,8 +97,13 @@ namespace ctranslate2 {
       [buf waitUntilCompleted];
       CT2_METAL_CHECK_BUFFER(buf);
       _commit_count.fetch_add(1, std::memory_order_relaxed);
-      // M11.4: Accumulate GPU execution time.
-      _gpu_time_elapsed += (buf.GPUEndTime - buf.GPUStartTime);
+      // M11.4: Accumulate GPU execution time (atomic add via CAS loop).
+      {
+        double delta = buf.GPUEndTime - buf.GPUStartTime;
+        double old_val = _gpu_time_elapsed.load(std::memory_order_relaxed);
+        while (!_gpu_time_elapsed.compare_exchange_weak(
+            old_val, old_val + delta, std::memory_order_relaxed)) {}
+      }
       // M11.18: Now that all GPU work has completed, recycle deferred-free
       // buffers back to the allocator pool for reuse.
       flush_pending_frees();
@@ -143,8 +149,8 @@ namespace ctranslate2 {
     uint64_t commit_count() { return _commit_count.load(std::memory_order_relaxed); }
     void reset_commit_count() { _commit_count.store(0, std::memory_order_relaxed); }
 
-    double gpu_time_elapsed() { return _gpu_time_elapsed; }
-    void reset_gpu_time() { _gpu_time_elapsed = 0.0; }
+    double gpu_time_elapsed() { return _gpu_time_elapsed.load(std::memory_order_relaxed); }
+    void reset_gpu_time() { _gpu_time_elapsed.store(0.0, std::memory_order_relaxed); }
 
     // M11.2: global PSO cache statistics (atomics for thread safety).
     namespace {

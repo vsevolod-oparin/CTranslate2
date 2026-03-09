@@ -12,6 +12,10 @@ Review of all 18 milestone reports (M11.1–M11.18) for potential bugs, missed o
 | TopK GPU kernel silent truncation at k>64 | Runtime guard with exception in `dispatch_topk_k` | **FIXED** |
 | `_env_checked` data race in `commit_and_wait_impl` | Replaced with `std::call_once` | **FIXED** |
 | Beam size detection (dim(0) ratio) | **NOT A BUG** — `(batch*beam)/batch = beam` is correct for any batch_size | Verified OK |
+| `protect_buffer` O(n) scan (~48K scans/inference) | Added `protect_buffer_by_base()` with O(1) `_live.find()` lookup; callers pass base ptr from `metal_buffer_for_ptr` | **FIXED** |
+| Fused norm-GEMM implicit threadgroup memory | Replaced `threadgroup float red[FUSED_BLOCK]` with `threadgroup float* red = norm_row + K_dim` — all threadgroup memory now from host-allocated `threadgroup(0)` | **FIXED** |
+| `gpu_time_elapsed` thread-local (invisible cross-thread) | Changed to `std::atomic<double>` with CAS loop for accumulation; matches `commit_count`'s cross-thread visibility | **FIXED** |
+| Float16 m=1 GEMM syncs (~8,700/inference) | Custom MSL GEMV kernel (M11.19) — encode-only with `protect_buffer` | **DONE** |
 
 All 150 e2e tests pass after fixes (39 beam_search + 90 translation + 13 whisper + 8 faster_whisper).
 
@@ -34,9 +38,13 @@ GEMM tests use padded strides with garbage values (999.f, 888.f, 777.f) in paddi
 
 | File | Change |
 |------|--------|
-| `src/metal/primitives_gemm.mm` | Strided widen/narrow in `batch_cpu_gemm_f16`; contiguous leading dims for cblas |
+| `src/metal/primitives_gemm.mm` | Strided widen/narrow in `batch_cpu_gemm_f16`; contiguous leading dims for cblas; M11.19 GEMV kernel + `protect_buffer_by_base` callers |
 | `src/metal/ops_topk.mm` | `kTopKMaxK=64` constant + runtime guard in `dispatch_topk_k` |
-| `src/metal/utils.mm` | `std::call_once` for env var check in `commit_and_wait_impl` |
+| `src/metal/utils.mm` | `std::call_once` for env var check; `std::atomic<double>` for `_gpu_time_elapsed` |
+| `src/metal/utils.h` | Declare `protect_buffer_by_base()` |
+| `src/metal/allocator.mm` | `protect_buffer_by_base()` O(1) method |
+| `src/metal/kernels/fused_norm_gemm.metal` | Use host-allocated threadgroup scratch instead of implicit kernel allocation |
+| `src/metal/msl_strings.h` | Regenerated from .metal sources |
 | `tests/metal/bugfix_test.mm` | New regression test (6 tests) |
 
 ## Potential Bugs
@@ -192,27 +200,28 @@ Superseded by M11.17's fused kernel `fuse_timestamp_check_and_disable_metal`. St
 
 ## Performance Anti-Patterns Still Present
 
-| Sync Source | Count (M11.18, float32) | Notes |
+| Sync Source | Count (M11.19, float16) | Notes |
 |-------------|------------------------|-------|
-| `primitives_gemm.mm` (batch_cpu_gemm_f16) | 16 (f32) / ~8,700 (f16) | Float16 m=1 MPS bug; custom GEMV is viable |
-| `devices.cc:162` (synchronize_stream) | 1,078 | Gathers, type conversions, framework sync |
-| `primitives_memory.mm:80` (indexed_fill) | 1,024 | DisableTokens first apply() — structural |
-| `multinomial_metal.mm:21` (CPU sampling) | 756 | std::discrete_distribution on CPU |
+| `devices.cc:162` (synchronize_stream) | 651 | Gathers, type conversions, framework sync |
+| `primitives_memory.mm:80` (indexed_fill) | 600 | DisableTokens first apply() — structural |
+| `multinomial_metal.mm:21` (CPU sampling) | 332 | std::discrete_distribution on CPU |
 | `topk_metal.mm:44` (CPU sort) | 268 | std::partial_sort for k>1 beam search |
+| `primitives_gemm.mm` (cblas) | 16 | Non-m=1 float16 padded GEMMs |
 
 ## Priority Action Table
 
-| Priority | Item | Type | Effort | Impact |
-|----------|------|------|--------|--------|
-| **P0** | Float16 m=1 GEMV + protect_buffer | Missed optimization | Medium | ~8,700 syncs (default path) |
-| **P0** | `batch_cpu_gemm_f16` stride bug | Bug fix | Low | Correctness for non-contiguous inputs |
-| **P1** | Beam size detection in flash cross-attn | Bug fix | Low | Correctness for batch>1 |
-| **P1** | TopK k>64 runtime guard | Bug fix | Low | Prevent silent truncation |
-| **P1** | `protect_buffer` O(1) optimization | Performance | Low | Reduce ~48K O(n) scans |
-| **P2** | Fused norm-GEMM threadgroup memory | Latent bug | Low | Future-proof Metal compliance |
-| **P2** | `_env_checked` thread safety | Bug fix | Low | Eliminate data race |
-| **P2** | Remove dead `should_sample_timestamps_metal` | Cleanup | Low | Reduce confusion |
-| **P2** | Update stale comments/docs (5 items above) | Documentation | Low | Maintainability |
-| **P3** | `max_element` encode-only via argmax | Optimization | Low | Minor sync reduction |
-| **P3** | BF16 batched MPSGraph | Optimization | Medium | Latency improvement |
-| **P3** | `logsumexp` fusion | Optimization | Medium | Minor sync reduction |
+| Priority | Item | Type | Effort | Impact | Status |
+|----------|------|------|--------|--------|--------|
+| **P0** | Float16 m=1 GEMV + protect_buffer | Missed optimization | Medium | ~8,700 syncs (default path) | **DONE** (M11.19) |
+| **P0** | `batch_cpu_gemm_f16` stride bug | Bug fix | Low | Correctness for non-contiguous inputs | **FIXED** |
+| **P1** | Beam size detection in flash cross-attn | Bug fix | Low | Correctness for batch>1 | **NOT A BUG** (verified) |
+| **P1** | TopK k>64 runtime guard | Bug fix | Low | Prevent silent truncation | **FIXED** |
+| **P1** | `protect_buffer` O(1) optimization | Performance | Low | Reduce ~48K O(n) scans | **FIXED** (`protect_buffer_by_base`) |
+| **P2** | Fused norm-GEMM threadgroup memory | Latent bug | Low | Future-proof Metal compliance | **FIXED** (use host-allocated scratch) |
+| **P2** | `_env_checked` thread safety | Bug fix | Low | Eliminate data race | **FIXED** (`std::call_once`) |
+| **P2** | `gpu_time_elapsed` thread-local inconsistency | Design bug | Low | Cross-thread visibility | **FIXED** (`std::atomic<double>`) |
+| **P2** | Remove dead `should_sample_timestamps_metal` | Cleanup | Low | Reduce confusion | Open |
+| **P2** | Update stale comments/docs (5 items above) | Documentation | Low | Maintainability | Open |
+| **P3** | `max_element` encode-only via argmax | Optimization | Low | Minor sync reduction | Open |
+| **P3** | BF16 batched MPSGraph | Optimization | Medium | Latency improvement | Open |
+| **P3** | `logsumexp` fusion | Optimization | Medium | Minor sync reduction | Open |

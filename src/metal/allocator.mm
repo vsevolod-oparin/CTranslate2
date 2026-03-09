@@ -110,6 +110,9 @@ namespace ctranslate2 {
 
       // Mark a live buffer as GPU-protected: its reclamation will be deferred
       // when free() is called, until after the next commit_and_wait().
+      //
+      // O(n) scan version — finds the enclosing allocation for any sub-pointer.
+      // Prefer protect_buffer_by_base() when the base pointer is already known.
       void protect_buffer(const void* ptr) {
         std::lock_guard<std::mutex> lock(_mutex);
         const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
@@ -122,6 +125,16 @@ namespace ctranslate2 {
         }
         // Not found in _live — might already be freed or not from this allocator.
         // Silently ignore (the buffer might be a temp or stack allocation).
+      }
+
+      // O(1) version — caller supplies the base pointer of the allocation
+      // (e.g. from [MTLBuffer contents] after metal_buffer_for_ptr()).
+      void protect_buffer_by_base(void* base_ptr) {
+        std::lock_guard<std::mutex> lock(_mutex);
+        auto it = _live.find(base_ptr);
+        if (it != _live.end()) {
+          it->second.gpu_protected = true;
+        }
       }
 
       // Move all pending-free buffers to the pool for reuse.
@@ -181,6 +194,12 @@ namespace ctranslate2 {
       static_cast<MetalAllocator&>(
           get_allocator<Device::METAL>())
           .protect_buffer(ptr);
+    }
+
+    void protect_buffer_by_base(void* base_ptr) {
+      static_cast<MetalAllocator&>(
+          get_allocator<Device::METAL>())
+          .protect_buffer_by_base(base_ptr);
     }
   }  // namespace metal
 

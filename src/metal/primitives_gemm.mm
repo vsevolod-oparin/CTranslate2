@@ -825,9 +825,12 @@ static void dispatch_gemv_f16_batched(
   [enc setComputePipelineState:pso];
 
   NSUInteger off_a = 0, off_b = 0, off_c = 0;
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(c, &off_c) offset:off_c atIndex:2];
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+  [enc setBuffer:buf_a offset:off_a atIndex:0];
+  [enc setBuffer:buf_b offset:off_b atIndex:1];
+  [enc setBuffer:buf_c offset:off_c atIndex:2];
 
   uint32_t K_u32 = ct2_u32(k);
   uint32_t N_u32 = ct2_u32(n);
@@ -852,9 +855,10 @@ static void dispatch_gemv_f16_batched(
   [enc endEncoding];
 
   // M11.19: Protect original buffers from premature reuse (encode-only).
-  ctranslate2::metal::protect_buffer(a);
-  ctranslate2::metal::protect_buffer(b);
-  ctranslate2::metal::protect_buffer(c);
+  // Use O(1) protect_buffer_by_base — base pointers already obtained above.
+  ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_c contents]);
 }
 
 template <typename T>
@@ -1185,11 +1189,14 @@ namespace ctranslate2 {
             // M11.18: Protect original buffers from premature reuse.
             // Only needed for m=1 decode attention GEMMs where the caller
             // may free A/B/C before the encode-only GPU work completes.
-            // Large GEMMs (m*n > 4096) don't need this — their buffers
-            // are long-lived and not recycled between syncs.
-            ctranslate2::metal::protect_buffer(a);
-            ctranslate2::metal::protect_buffer(b);
-            ctranslate2::metal::protect_buffer(c);
+            // Use O(1) protect_buffer_by_base via metal_buffer_for_ptr.
+            NSUInteger off_tmp;
+            ctranslate2::metal::protect_buffer_by_base(
+                [ctranslate2::metal_buffer_for_ptr(a, &off_tmp) contents]);
+            ctranslate2::metal::protect_buffer_by_base(
+                [ctranslate2::metal_buffer_for_ptr(b, &off_tmp) contents]);
+            ctranslate2::metal::protect_buffer_by_base(
+                [ctranslate2::metal_buffer_for_ptr(c, &off_tmp) contents]);
           }
         } else {
           batch_cpu_gemm_f32(a, b, c);

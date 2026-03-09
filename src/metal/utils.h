@@ -51,6 +51,8 @@ namespace ctranslate2 {
     // This prevents encode-only GPU kernels from reading/writing a buffer
     // that has been recycled and overwritten by a subsequent allocate().
     void protect_buffer(const void* ptr);
+    // O(1) version — caller supplies the base pointer (e.g. [buf contents]).
+    void protect_buffer_by_base(void* base_ptr);
     void flush_pending_frees();
 
     // M11.2: Global PSO cache hit/miss counters.

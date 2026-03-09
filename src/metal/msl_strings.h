@@ -1526,7 +1526,9 @@ static constexpr const char* kFusedNormGemmMSL = R"msl(
 // Phase 2: Each thread computes ceil(N/256) output columns via dot products.
 //
 // Weight layout: W[N, K] row-major (trans_b=true convention).
-// Threadgroup memory: K floats for the normalized row.
+// Threadgroup memory (host-allocated, threadgroup(0)):
+//   float[K] — normalized row (norm_row)
+//   float[FUSED_BLOCK] — reduction scratch (red)
 //
 // Types: float, half, bfloat (Apple9+ / macOS 14+).
 
@@ -1548,7 +1550,7 @@ constant uint FUSED_BLOCK = 256;
 //   buffer(6): const uint  N_dim     — output dimension
 //   buffer(7): const uint  has_beta  — 1 = apply beta, 0 = zero bias
 //   buffer(8): const float eps       — epsilon
-//   threadgroup(0): float[K_dim]     — normalized row
+//   threadgroup(0): float[K_dim + FUSED_BLOCK]  — normalized row + reduction scratch
 // ============================================================
 #define DEFINE_FUSED_LN_GEMM(T)                                                     \
 kernel void fused_layer_norm_gemm_##T(                                              \
@@ -1571,8 +1573,8 @@ kernel void fused_layer_norm_gemm_##T(                                          
     float s = 0.f;                                                                  \
     for (uint j = tid; j < K_dim; j += FUSED_BLOCK)                                \
         s += (float)x[row_off + j];                                                \
-    /* Reduction for mean */                                                        \
-    threadgroup float red[FUSED_BLOCK];                                             \
+    /* Reduction for mean — use host-allocated scratch at norm_row + K_dim */       \
+    threadgroup float* red = norm_row + K_dim;                                      \
     red[tid] = s;                                                                   \
     threadgroup_barrier(mem_flags::mem_threadgroup);                                \
     for (uint st = FUSED_BLOCK >> 1; st > 0; st >>= 1) {                          \
@@ -1645,7 +1647,7 @@ kernel void fused_rms_norm_gemm_##T(                                            
     for (uint j = tid; j < K_dim; j += FUSED_BLOCK) {                             \
         float v = (float)x[row_off + j]; ss += v * v;                             \
     }                                                                               \
-    threadgroup float red[FUSED_BLOCK];                                             \
+    threadgroup float* red = norm_row + K_dim;                                      \
     red[tid] = ss;                                                                  \
     threadgroup_barrier(mem_flags::mem_threadgroup);                                \
     for (uint st = FUSED_BLOCK >> 1; st > 0; st >>= 1) {                          \

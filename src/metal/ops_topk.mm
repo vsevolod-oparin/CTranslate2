@@ -1,6 +1,6 @@
 // src/metal/ops_topk.mm
 //
-// GPU TopK dispatch — argmax (k=1) and iterative top-k (k>1).
+// GPU TopK dispatch — argmax (k=1) and single-pass fused top-k (k>1).
 //
 // Both paths are encode-only (no commit_and_wait).
 // The caller (Sampler::operator()) syncs via copy_from which
@@ -92,7 +92,7 @@ namespace ctranslate2 {
         std::snprintf(kname, sizeof(kname), "argmax_%s", MetalTypeName<T>::value);
         dispatch_argmax(kname, input, values, indices, batch_size, depth);
       } else {
-        std::snprintf(kname, sizeof(kname), "topk_k_%s", MetalTypeName<T>::value);
+        std::snprintf(kname, sizeof(kname), "topk_fused_%s", MetalTypeName<T>::value);
         dispatch_topk_k(kname, input, values, indices, batch_size, depth, k);
       }
     }

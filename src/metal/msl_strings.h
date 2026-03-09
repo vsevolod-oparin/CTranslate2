@@ -1424,11 +1424,16 @@ DEFINE_ARGMAX(bfloat)
 #endif
 
 // ---------------------------------------------------------------------------
-// TopK kernel for k > 1: iterative argmax with excluded-index list.
+// Single-pass fused TopK kernel for k > 1 — M11.22.
 //
-// Runs k sequential argmax passes within a single kernel launch.
-// After each pass, the found index is recorded in a threadgroup excluded[]
-// array so subsequent passes skip it.
+// Algorithm (two phases):
+//   Phase 1 — Scan: each thread scans ~N/T elements with strided access,
+//     maintaining a sorted (descending) local top-k array in private registers
+//     via insertion sort.  Single memory read of the input.
+//   Phase 2 — K reduction rounds: each round, every thread offers its current
+//     best candidate to shared memory, a tree reduction finds the global best,
+//     thread 0 writes the winner to output, and the winning thread advances
+//     its rank to offer its next-best candidate in the following round.
 //
 // Buffer layout:
 //   buffer(0): const T*      input   — [batch_size, depth]
@@ -1446,8 +1451,8 @@ DEFINE_ARGMAX(bfloat)
 #define TOPK_MAX_K 64
 #endif
 
-#define DEFINE_TOPK_K(T)                                                        \
-kernel void topk_k_##T(                                                         \
+#define DEFINE_TOPK_FUSED(T)                                                    \
+kernel void topk_fused_##T(                                                     \
     device const T*       input   [[buffer(0)]],                              \
     device       T*       values  [[buffer(1)]],                              \
     device       int*     indices [[buffer(2)]],                              \
@@ -1460,58 +1465,79 @@ kernel void topk_k_##T(                                                         
     uint tgs      [[threads_per_threadgroup]])                                  \
 {                                                                               \
     device const T* row = input + batch_id * depth;                           \
-    uint actual_k = min(k, (uint)TOPK_MAX_K);                                 \
-    actual_k = min(actual_k, depth);                                           \
+    uint actual_k = min(k, min(depth, (uint)TOPK_MAX_K));                     \
                                                                                 \
-    /* Excluded indices — lives in thread 0's view, broadcast via barrier */  \
-    threadgroup uint excluded[TOPK_MAX_K];                                     \
+    /* Phase 1: Scan — build local sorted top-k in private registers */        \
+    float priv_vals[TOPK_MAX_K];                                               \
+    uint  priv_idxs[TOPK_MAX_K];                                              \
+    for (uint j = 0; j < actual_k; j++) {                                     \
+        priv_vals[j] = -FLT_MAX;                                              \
+        priv_idxs[j] = 0;                                                     \
+    }                                                                          \
                                                                                 \
-    for (uint iter = 0; iter < actual_k; iter++) {                             \
-        /* Each thread finds its local max, skipping excluded indices */       \
-        float best_val = -FLT_MAX;                                            \
-        uint  best_idx = 0;                                                   \
-        for (uint i = tid; i < depth; i += tgs) {                            \
-            /* Check if this index is excluded */                             \
-            bool skip = false;                                                \
-            for (uint e = 0; e < iter; e++) {                                \
-                if (i == excluded[e]) { skip = true; break; }                \
-            }                                                                 \
-            if (skip) continue;                                               \
-            float v = (float)row[i];                                         \
-            if (v > best_val) {                                              \
-                best_val = v;                                                \
-                best_idx = i;                                                \
-            }                                                                 \
-        }                                                                     \
+    for (uint i = tid; i < depth; i += tgs) {                                 \
+        float v = (float)row[i];                                              \
+        if (v > priv_vals[actual_k - 1]) {                                    \
+            priv_vals[actual_k - 1] = v;                                      \
+            priv_idxs[actual_k - 1] = i;                                      \
+            /* Insertion sort: bubble up to maintain descending order */       \
+            for (int j = (int)actual_k - 2; j >= 0; j--) {                   \
+                if (priv_vals[j + 1] > priv_vals[j]) {                        \
+                    float tv = priv_vals[j];                                  \
+                    priv_vals[j] = priv_vals[j + 1];                          \
+                    priv_vals[j + 1] = tv;                                    \
+                    uint ti = priv_idxs[j];                                   \
+                    priv_idxs[j] = priv_idxs[j + 1];                         \
+                    priv_idxs[j + 1] = ti;                                    \
+                } else {                                                       \
+                    break;                                                     \
+                }                                                              \
+            }                                                                  \
+        }                                                                      \
+    }                                                                          \
                                                                                 \
-        sh_vals[tid] = best_val;                                              \
-        sh_idxs[tid] = best_idx;                                              \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
+    /* Phase 2: K rounds of tree reduction */                                  \
+    uint priv_rank = 0;                                                        \
+    for (uint round = 0; round < actual_k; round++) {                         \
+        float my_val = (priv_rank < actual_k)                                 \
+                           ? priv_vals[priv_rank] : -FLT_MAX;                 \
+        uint  my_idx = (priv_rank < actual_k)                                 \
+                           ? priv_idxs[priv_rank] : 0;                        \
                                                                                 \
-        /* Tree reduction */                                                   \
-        for (uint s = tgs >> 1; s > 0; s >>= 1) {                           \
-            if (tid < s && sh_vals[tid + s] > sh_vals[tid]) {                \
-                sh_vals[tid] = sh_vals[tid + s];                             \
-                sh_idxs[tid] = sh_idxs[tid + s];                             \
-            }                                                                 \
-            threadgroup_barrier(mem_flags::mem_threadgroup);                   \
-        }                                                                     \
+        sh_vals[tid] = my_val;                                                 \
+        sh_idxs[tid] = my_idx;                                                 \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                        \
                                                                                 \
-        /* Thread 0 writes result and records excluded index */               \
-        if (tid == 0) {                                                       \
-            values[batch_id * k + iter]  = (T)sh_vals[0];                    \
-            indices[batch_id * k + iter] = (int)sh_idxs[0];                  \
-            excluded[iter] = sh_idxs[0];                                      \
-        }                                                                     \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                       \
+        /* Tree reduction — find global best */                                \
+        for (uint s = tgs >> 1; s > 0; s >>= 1) {                            \
+            if (tid < s && sh_vals[tid + s] > sh_vals[tid]) {                 \
+                sh_vals[tid] = sh_vals[tid + s];                              \
+                sh_idxs[tid] = sh_idxs[tid + s];                              \
+            }                                                                  \
+            threadgroup_barrier(mem_flags::mem_threadgroup);                    \
+        }                                                                      \
+                                                                                \
+        if (tid == 0) {                                                        \
+            values[batch_id * k + round]  = (T)sh_vals[0];                    \
+            indices[batch_id * k + round] = (int)sh_idxs[0];                  \
+        }                                                                      \
+                                                                                \
+        /* Broadcast winner — sh_idxs[0] valid after reduction */             \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                        \
+        uint winner_idx = sh_idxs[0];                                          \
+                                                                                \
+        /* Winning thread advances rank for next round */                      \
+        if (my_idx == winner_idx && my_val > -FLT_MAX) {                      \
+            priv_rank++;                                                       \
+        }                                                                      \
     }                                                                          \
 }
 
-DEFINE_TOPK_K(float)
-DEFINE_TOPK_K(half)
+DEFINE_TOPK_FUSED(float)
+DEFINE_TOPK_FUSED(half)
 
 #if defined(__HAVE_BFLOAT__)
-DEFINE_TOPK_K(bfloat)
+DEFINE_TOPK_FUSED(bfloat)
 #endif
 )msl";
 

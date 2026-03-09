@@ -161,7 +161,7 @@ namespace ctranslate2 {
                                     float epsilon);
 
     // topk_metal: GPU top-k selection.
-    //   k=1: argmax kernel. k>1: iterative argmax with excluded-index list.
+    //   k=1: argmax kernel. k>1: single-pass fused top-k (local insertion sort + tree merge).
     //   Finds the top-k values and their indices in each row of [batch_size, depth].
     //   Output: values [batch_size, k], indices [batch_size, k].
     //   One threadgroup (256 threads) per batch item; encode-only.

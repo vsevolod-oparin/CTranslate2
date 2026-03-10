@@ -63,7 +63,7 @@
 | 48 | f12d2300 | **1,767** | 1774, 1772, 1755 | 123 | **OPT-1 + OPT-3 (buffer_for_ptr O(logN))** | **23.29x** |
 | 49 | 45c7e08d | 1,765 | 1775, 1773, 1747 | 121-123 | Reports, tests, BUG-1 protect_buffer fix | 23.32x |
 | 50 | 7af87e39 | 1,946 | 1907, 1947, 1986 | 123 | Code review #2: BUG-2 fix (commit_and_wait) | 21.16x |
-| 51 | (HEAD) | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
+| 51 | 47960086 | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*

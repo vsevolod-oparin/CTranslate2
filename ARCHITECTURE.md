@@ -603,10 +603,12 @@ Batch submitted to worker thread
     │
     ├─ DEVICE_DISPATCH(device, statements)
     │  └─ switch(device):
-    │     ├─ Device::CPU  → execute CPU statements
-    │     └─ Device::CUDA → execute CUDA statements
-    │                        (ROCm/HIP uses this same enum value;
-    │                         code compiled with hipcc for AMD GPUs — added v4.7.0)
+    │     ├─ Device::CPU   → execute CPU statements
+    │     ├─ Device::CUDA  → execute CUDA statements
+    │     │                   (ROCm/HIP uses this same enum value;
+    │     │                    code compiled with hipcc for AMD GPUs — added v4.7.0)
+    │     └─ Device::METAL → execute Metal statements (Apple Silicon; CT2_WITH_METAL)
+    │                         See METAL_ARCHITECTURE.md for full details
     │
     ├─ TYPE_DISPATCH(type, statements)
     │  └─ switch(type):
@@ -867,6 +869,13 @@ void LayerNorm::operator()(StorageView& input, StorageView& output)
     │  ├─ Caching: CUDA pool
     │  └─ ScopedDeviceSetter (sets current CUDA device)
     │
+    ├─ MetalAllocator (📦 src/metal/allocator.mm)
+    │  ├─ Uses: [MTLDevice newBufferWithLength:] (StorageModeShared)
+    │  ├─ Caching: size-bucketed pool; clear_cache() releases all + GEMM cache
+    │  ├─ buffer_for_ptr: O(log N) lookup via std::map<uint8_t*>
+    │  ├─ protect_buffer: deferred-free for encode-only GPU kernels
+    │  └─ See METAL_ARCHITECTURE.md for full details
+    │
     └─ StorageView Integration:
        ├─ Owned StorageViews use allocator
        └─ View StorageViews reference external memory
@@ -961,6 +970,8 @@ Maps source tokens to allowed target tokens for constrained decoding:
 | `CT2_CUDA_TRUE_FP16_GEMM` | `1` | Use native FP16 cuBLAS GEMM (vs FP32 accumulation) |
 | `CT2_CUDA_ALLOW_FP16` | `0` | Allow FP16 compute on GPUs without native support |
 | `CT2_CUDA_ALLOW_BF16` | `0` | Allow BF16 compute on older CUDA devices |
+| `CT2_METAL_ALLOW_BF16` | _(auto)_ | Allow BF16 on Metal (auto-detected via MTLGPUFamilyApple9, M3+) |
+| `CT2_METAL_TRACE` | _(off)_ | Enable per-callsite commit_and_wait tracing (dumped at exit) |
 | `OMP_NUM_THREADS` | _(nproc)_ | OpenMP thread count for CPU parallelism |
 
 ### Profiling
@@ -1021,8 +1032,13 @@ include/ctranslate2/ops/*.h               → Op interfaces
 src/ops/*.cc                            → Op dispatchers
 src/ops/*_cpu.cc                        → CPU implementations
 src/ops/*_gpu.cu                        → CUDA implementations
+src/ops/*_metal.mm                      → Metal implementations (Apple Silicon)
 src/cuda/primitives.cu                  → CUDA primitives
 src/cpu/primitives.cc                     → CPU primitives
+src/metal/primitives_*.mm               → Metal primitives (see METAL_ARCHITECTURE.md)
+src/metal/ops_*.mm                      → Metal op helpers (SDPA, norms, gather, etc.)
+src/metal/utils.mm                      → Metal device/queue/CB, encode_barrier, commit tracing
+src/metal/allocator.mm                  → Metal buffer allocator (SharedMode, deferred-free)
 ```
 
 ### Layers Layer
@@ -1365,7 +1381,7 @@ DON'T:
 
 ```
 DO:
-├─ Use Flash Attention when available (CUDA SM80+)
+├─ Use Flash Attention when available (CUDA SM80+, Metal Apple Silicon)
 ├─ Enable quantization for large models
 ├─ Tune batch_size for throughput
 ├─ Use num_inter_threads for CPU

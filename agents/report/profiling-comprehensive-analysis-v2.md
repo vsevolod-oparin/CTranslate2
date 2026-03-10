@@ -1,6 +1,6 @@
 # Comprehensive Metal Performance Analysis v2
 
-**Date**: 2026-03-10 (post M11.28 + audit fixes + OPT implementation)
+**Date**: 2026-03-10 (post M11.29 MTLSharedEvent hybrid barrier)
 **Model**: whisper-large-v3-turbo, float16, Apple M4
 **Audio**: 60s sample (sample.mp3)
 
@@ -8,13 +8,13 @@
 
 ## Executive Summary
 
-The Metal backend achieves **1.9s for 30s audio** (raw API) — a **13.8x improvement** from M11.3 baseline (41s). However, **GPU utilization is only 16%** of wall time. The remaining 84% is CPU-side overhead dominated by:
+The Metal backend achieves **1.86s for 30s audio** (raw API) — a **22.1x improvement** from M11.3 baseline (41s). However, **GPU utilization is only 16%** of wall time. The remaining 84% is CPU-side overhead dominated by:
 
 1. **CTranslate2 ThreadPool architecture** (~960ms OS scheduling per API call)
 2. **Per-token decode overhead** (~12.5ms/tok wall vs ~2.5ms/tok GPU)
 3. **faster_whisper temperature fallback retries** (up to 6x per segment)
 
-**Bottom line**: The Metal GPU kernels are fast. The overhead is in CTranslate2's CPU-side architecture (ThreadPool, beam search on CPU) and faster_whisper's retry logic. Further gains require architectural changes upstream, not Metal kernel optimization.
+**Bottom line**: The Metal GPU kernels are fast. All non-architectural optimizations (#3–#8) have been investigated and closed — combined potential was ~15-30ms (1.5%). The overhead is in CTranslate2's CPU-side architecture (ThreadPool, beam search on CPU) and faster_whisper's retry logic. Further gains require architectural changes upstream (ARCH-1: ThreadPool bypass, ARCH-2: GPU beam search), not Metal kernel optimization.
 
 ---
 
@@ -22,7 +22,7 @@ The Metal backend achieves **1.9s for 30s audio** (raw API) — a **13.8x improv
 
 | Metric | Value |
 |--------|------:|
-| Wall time | 1,887 ms (post-OPT) |
+| Wall time | 1,860 ms (post-M11.29) |
 | GPU time | 309 ms (16.4%) |
 | Non-GPU time | 1,578 ms (83.6%) |
 | Commits | 126 |
@@ -303,18 +303,18 @@ At 0.4ms per commit × 126 commits = ~50ms total (2.6% of wall time), commit ove
 
 ## Section 8: Where Time Goes (Summary)
 
-### Raw API (1,887ms)
+### Raw API (1,860ms — post-M11.29)
 
 | Category | Time (ms) | % | Fixable? |
 |----------|----------:|--:|----------|
-| GPU compute | 309 | 16.4% | Already fast |
-| OS thread scheduling | ~700 | 37% | Requires CT2 architectural change |
-| CPU beam search + tensor setup | ~780 | 41% | Inherent to CPU beam search |
-| commit_and_wait overhead | ~50 | 2.6% | At theoretical minimum |
+| GPU compute | ~309 | 16.6% | Already fast |
+| OS thread scheduling | ~700 | 37.6% | ARCH-1: ThreadPool bypass (~700ms) |
+| CPU beam search + tensor setup | ~750 | 40.3% | ARCH-2: GPU beam search (~450ms) |
+| commit_and_wait overhead | ~50 | 2.7% | At theoretical minimum |
 | Memory ops (bzero, memcpy) | ~24 | 1.3% | Minor |
-| buffer_for_ptr | ~12 | 0.6% | **Fixed (O(log N))** |
+| Non-arch optimizations #3-#8 | ~15-30 | 1.5% | **Closed — not actionable** |
+| buffer_for_ptr | — | — | **Fixed (O(log N), commit 48)** |
 | MPS SHA256 hashing | ~6 | 0.3% | Not fixable (Apple internal) |
-| Other | ~6 | 0.3% | — |
 
 ### faster_whisper Additional Overhead
 
@@ -368,20 +368,45 @@ what has been implemented. Source reports: `roadmap-2x-whisper-large-v3-turbo.md
 | Fused LayerNorm + GEMM | incremental | commit 9 | Minor |
 | Fused ApplyTimestampRules | incremental | M11.14 | Minor |
 | Indexed Fill pre-sync elimination | roadmap | M11.28 (commit 44) | ~30ms savings |
+| Indexed Fill hybrid sync (MTLSharedEvent) | M11.29 | M11.29 (commit 51) | ~86ms recovery (f16 path) |
 | All P0-P2 audit items | review-m11-optimization-audit | All resolved | Various |
 
-### Not Implemented — Still Relevant
+### Not Implemented — Architectural (Still Relevant)
 
 | # | Optimization | Source | Est. Impact | Status |
 |---|---|---|---|---|
-| 1 | **Bypass ThreadPool (single-worker)** | profiling-v2 §7 | **~700ms (40%)** | Architectural change required |
-| 2 | **GPU-side beam search** | profiling-v2 §7 | **Eliminates 124 syncs** | Major architectural change |
-| 3 | **Decode-step pipeline fusion** | roadmap M11.29 | ~100-200ms | Medium effort |
-| 4 | **Persistent command encoder** | roadmap M11.26 (original) | ~50-100ms | Medium effort |
-| 5 | **Fused LayerNorm+Linear (f32 path)** | roadmap M11.27 (original) | Small | Low priority |
-| 6 | **`MTLDispatchTypeConcurrent`** | profiling-v1 §Cat2 | Small | Limited opportunity |
-| 7 | **Cross-attention KV reuse** | roadmap M11.30 | Small | Already partially handled |
-| 8 | **`prepare_length_mask` fence** | audit report | Negligible | Not worth complexity |
+| 1 | **Bypass ThreadPool (single-worker)** | profiling-v2 §10 | **~700ms (38%)** | Architectural change required |
+| 2 | **GPU-side beam search** | profiling-v2 §10 | **Eliminates 124 syncs** | Major architectural change |
+
+These are the only remaining optimizations with meaningful impact potential.
+See Section 10 for detailed implementation plans.
+
+### Not Implemented — Non-Architectural (Investigated, Closed)
+
+Deep-dive analysis (2026-03-10 post-M11.29) of every non-architectural item from the original
+"Still Relevant" list. Each was investigated against the actual codebase, commit traces, and
+profiling data. **Combined potential: ~15-30ms (1.5% of 1,860ms wall time) — not actionable.**
+
+| # | Optimization | Original Est. | Actual Est. | Verdict | Rationale |
+|---|---|---|---|---|---|
+| 3 | Decode-step pipeline fusion | ~100-200ms | **7-15ms (0.8%)** | **Closed — skip** | QKV is **already fused** at model level: single `[d_model, 3*d_model]` weight matrix produces concatenated Q+K+V in one GEMM, then split. FFN has only 2 GEMMs (up+gate, down) with SiLU between — cannot fuse further. Original estimate assumed 3 separate QKV GEMMs. Remaining savings would come only from reducing encoder create/end cycles (~2-5us each). |
+| 4 | Persistent command encoder | ~50-100ms | **3-8ms (0.4%)** | **Closed — skip** | MPS GEMM encodes directly into the CB (no compute encoder). Persistent encoder must be ended before every MPS dispatch and restarted after — only saves encoders between consecutive custom kernels (add→layer_norm), which are few. SDPA creates only 1 encoder (causal mask), not per-head. Engineering complexity exceeds sub-1% gain. |
+| 5 | Fused LayerNorm+Linear (f32) | Small | **<3ms (0.2%)** | **Closed — skip** | f32 is not the production path (f16 is). f32 also requires full `CT2_COMMIT_AND_WAIT()` in indexed_fill due to MPS driver coherency issue (M11.29 finding), making it inherently slower. Fusing LN+Linear saves one encoder dispatch + one memory round-trip per layer per token: 4 layers x 123 tokens x ~5us = ~2.5ms. |
+| 6 | `MTLDispatchTypeConcurrent` | Small | **~0ms** | **Closed — skip** | Nearly all consecutive dispatches have true data dependencies (output feeds next input). GPU is only 16% of wall time — even perfect overlap of independent kernels yields ~0ms wall improvement. MPS f32 coherency issue (M11.29) indicates Metal driver has subtle ordering assumptions, making concurrent dispatch risky. |
+| 7 | Cross-attention KV reuse | Small | **0ms** | **Closed — already done** | `process_cross_attention()` in `src/layers/attention.cc` already caches K/V on first decode step and reuses via `shallow_copy()` on all subsequent steps. No opportunity remains. |
+| 8 | `prepare_length_mask` fence | Negligible | **~2.8ms (0.15%)** | **Closed — not worth risk** | Commit trace shows `primitives_beam_search.mm:91` fires only **7 times** per 30s inference (mask rebuilt only at beam expansion boundaries, not per token). At ~0.4ms/sync = ~2.8ms total. Same encode_barrier pattern as M11.29 would work, but 2.8ms gain does not justify the risk of stale lengths → wrong attention masks → silent correctness bugs. |
+
+#### Key Finding: Original Estimates Were Inflated
+
+The original estimates for items #3 and #4 (~100-200ms and ~50-100ms) were based on assumptions
+that did not hold against the actual codebase:
+
+- **#3 assumed 3 separate QKV GEMMs** — the model actually stores fused `[d_model, 3*d_model]`
+  weights, so only 1 GEMM fires. The "fusion" was already done at model conversion time.
+- **#4 assumed per-head encoder creation in SDPA** — MPS GEMM does not use compute encoders
+  (it encodes directly into the CB via `encodeToCommandBuffer:`). SDPA has only 1 compute encoder
+  (for the causal mask kernel), not per-head.
+- **#8 assumed per-token invocation** — commit tracing shows only 7 calls per inference, not 123.
 
 ### Not Implemented — Obsoleted or Unsafe
 
@@ -397,7 +422,7 @@ what has been implemented. Source reports: `roadmap-2x-whisper-large-v3-turbo.md
 
 ### ARCH-1: Bypass ThreadPool for Single-Worker Inference
 
-**Estimated savings**: ~700ms per API call (40% of current 1,767ms)
+**Estimated savings**: ~700ms per API call (38% of current 1,860ms)
 **Effort**: Medium — localized to `ReplicaPool::post()` and `ReplicaPool::post_batch()`
 **Risk**: Low — no GPU or model changes, pure CPU control-flow optimization
 
@@ -591,38 +616,33 @@ GPU beam search is the highest-ceiling optimization but also the highest-risk. A
 
 ---
 
-### ARCH-3: Decode-Step Pipeline Fusion
+### ~~ARCH-3: Decode-Step Pipeline Fusion~~ — CLOSED (2026-03-10)
 
-**Estimated savings**: ~100-200ms (reduces per-dispatch overhead)
-**Effort**: Medium
-**Risk**: Low
+**Original estimate**: ~100-200ms
+**Actual estimate**: ~7-15ms (0.8%)
+**Status**: Closed — not actionable
 
-#### Current State
+#### Why the Original Estimate Was Wrong
 
-Each decoder layer dispatches individual operations:
+The original analysis assumed three separate QKV GEMM dispatches per layer. In reality:
 
-```
-Per layer (current):  LN → Q_proj → K_proj → V_proj → SDPA → O_proj → Add → LN → FFN_gate → FFN_up → SiLU → Mul → FFN_down → Add
-```
+1. **QKV is already fused at model level**: The weight matrix is `[d_model, 3*d_model]` — one
+   GEMM call produces concatenated Q+K+V, then split. No dispatch savings possible.
 
-Each dispatch calls `computeCommandEncoderWithDispatchType:` → `setComputePipelineState:` →
-`setBuffer:` → `dispatchThreadgroups:` → `endEncoding`. Even encode-only, the encoder
-create/end cycle has measurable overhead at ~2-5µs per dispatch × ~15 dispatches/layer × 32
-layers × 123 tokens = ~6-15ms.
+2. **FFN gate+up cannot be fused further**: The gating variant uses `_ff1` (with activation) and
+   `_ff1_noact` (linear), then `SiLU(gate) * up`. The element-wise product between the two GEMM
+   outputs prevents fusion into a single GEMM.
 
-#### Proposed Fusions
+3. **Persistent command encoder blocked by MPS**: MPS GEMM encodes directly into the CB via
+   `[gemm_op encodeToCommandBuffer:]` — not through a compute encoder. A persistent compute
+   encoder must be ended before every MPS dispatch. Since GEMMs dominate each layer, the encoder
+   would only survive between consecutive custom kernels (add→layer_norm), saving ~3-8ms total.
 
-1. **Fuse Q/K/V projections**: Three separate GEMM dispatches → one batched GEMM with
-   `[3*d_model, d_model]` weight matrix. Output is sliced into Q, K, V. Saves 2 dispatches/layer.
+4. **SDPA encoder overhead is minimal**: Only 1 `create_compute_encoder()` call per SDPA
+   (for the causal mask kernel). MPS attention GEMMs encode directly into the CB.
 
-2. **Fuse FFN gate+up**: Two GEMM dispatches → one batched GEMM with
-   `[2*d_ff, d_model]` weight matrix. Output sliced, then SiLU(gate) * up. Saves 1 dispatch/layer.
-
-3. **Persistent command encoder**: Keep a single `MTLComputeCommandEncoder` open across multiple
-   kernel dispatches within a decode step, rather than creating/ending per operation. This requires
-   refactoring `get_current_command_buffer()` to support encoder reuse.
-
-These are safe, incremental optimizations that don't change the beam search architecture.
+The remaining overhead is ~2-5us per encoder create/end × ~20 custom dispatches/token × 123
+tokens = **~7-15ms**. Not worth the refactoring effort.
 
 ---
 
@@ -642,21 +662,23 @@ model.transcribe(
 )
 ```
 
-### For CTranslate2 Upstream (Architectural) — Priority Order
+### For CTranslate2 Upstream — Priority Order
+
+**Only architectural changes remain impactful.** All non-architectural items (#3–#8) were
+investigated and closed — combined potential was ~15-30ms (1.5%). See Section 9 for details.
 
 1. **ARCH-1: Bypass ThreadPool** (Section 10) — **~700ms savings, medium effort, low risk**.
    Add direct-call fast path in `ReplicaPool::post()` when `num_replicas() == 1`. No GPU changes.
-   Expected: 1,767ms → ~1,070ms.
+   Expected: 1,860ms → ~1,160ms.
 
-2. **ARCH-3: Decode-step pipeline fusion** (Section 10) — **~100-200ms, medium effort, low risk**.
-   Fuse Q/K/V projections and FFN gate+up into batched GEMMs. Persistent command encoder.
-   Expected: ~1,070ms → ~900ms.
-
-3. **ARCH-2: GPU beam search** (Section 10) — **~450ms, very high effort, high risk**.
+2. **ARCH-2: GPU beam search** (Section 10) — **~450ms, very high effort, high risk**.
    Move beam state to GPU, sync only on EOS. Phased implementation recommended.
-   Expected: ~900ms → ~500ms.
+   Expected: ~1,160ms → ~700ms.
 
-Combined potential: **1,767ms → ~500ms (3.5x improvement, 82x vs original baseline)**.
+~~3. **ARCH-3: Decode-step pipeline fusion** — CLOSED. QKV already fused at model level,
+   persistent encoder blocked by MPS, actual savings ~7-15ms.~~
+
+Combined realistic potential: **1,860ms → ~700ms (2.7x improvement, 59x vs original baseline)**.
 
 ### For faster_whisper Upstream
 

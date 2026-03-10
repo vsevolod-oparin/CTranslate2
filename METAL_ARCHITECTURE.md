@@ -1,6 +1,6 @@
 # Metal Backend Architecture
 
-**Branch:** `metal-backend` | **Last updated:** 2026-02-26 | **Status:** M9.2 complete
+**Branch:** `metal-backend` | **Last updated:** 2026-03-10 | **Status:** M11.29 complete (22.1x speedup)
 
 ---
 
@@ -21,8 +21,31 @@ Every Metal op **encodes only** — it never commits its own command buffer.
 - **One MTLDevice** per process (singleton, lazy init in `device.mm`).
 - **One MTLCommandQueue per thread** (`thread_local`, created on first use in `utils.mm`).
 - **One MTLCommandBuffer per thread** (also `thread_local`; reset after each commit).
+- **One MTLSharedEvent per thread** (`thread_local`, for GPU-side cross-CB ordering — M11.29).
 - `synchronize_stream(Device::METAL)` / `synchronize_device(Device::METAL)` → calls `commit_and_wait()`.
 - `metal::commit_and_wait()` must be called before any CPU reads from Metal buffers.
+
+### GPU-side barriers (M11.29)
+
+When a non-blocking `commit_command_buffer()` splits the command buffer (e.g. MPS padded GEMM
+CB split in `primitives_gemm.mm`), subsequent encode-only kernels in the **new** CB may need to
+read data written by the **prior** CB. Two mechanisms handle this:
+
+- **`commit_and_wait()`** (CPU-blocking): full barrier, guarantees all prior GPU work complete.
+  Required for f32 `indexed_fill` due to MPS driver coherency issue.
+- **`encode_barrier()`** (GPU-side, non-blocking): encodes `[cb encodeWaitForEvent:value:]` into
+  the current CB. GPU serializes; CPU continues encoding freely. Sufficient for f16/bf16 paths.
+
+`commit_command_buffer()` signals a `MTLSharedEvent` with an incrementing counter. `encode_barrier()`
+encodes a wait on the latest counter. A `_last_waited` tracker makes `encode_barrier()` a no-op when
+`commit_and_wait()` already drained all prior GPU work.
+
+### Deferred-free mechanism (M11.18)
+
+Encode-only GPU kernels may read buffers that are freed before `commit_and_wait()` runs.
+`protect_buffer(ptr)` marks a live allocation as GPU-referenced. When freed, the buffer goes to
+a deferred queue instead of the reuse pool. `flush_pending_frees()` (called from `commit_and_wait()`)
+moves deferred buffers back to the pool after all GPU work completes.
 
 ### Memory model
 
@@ -44,8 +67,10 @@ The result is immediately visible to the next GPU op encoded into the fresh comm
 ```
 src/metal/
 ├── device.mm                  # MTLDevice singleton, init/teardown
-├── utils.mm / utils.h         # get_metal_device/queue/cmd_buffer, commit_and_wait
-├── allocator.mm               # MetalAllocator: newBufferWithLength (Shared mode), free
+├── utils.mm / utils.h         # get_metal_device/queue/cmd_buffer, commit_and_wait,
+│                              #   encode_barrier (MTLSharedEvent), commit tracing
+├── allocator.mm               # MetalAllocator: newBufferWithLength (Shared mode), free,
+│                              #   protect_buffer, flush_pending_frees, buffer_for_ptr O(log N)
 ├── primitives_infra.h         # Shared internal header: compile_library_once, PSOCache,
 │                              #   ct2_u32, alloc_temp_buffer, MetalTypeName, METAL_STUB
 ├── msl_strings.h              # AUTO-GENERATED — all MSL kernels as C++ string constants
@@ -54,14 +79,15 @@ src/metal/
 ├── ops_conv1d.mm              # metal::conv1d_metal (im2col + GEMM)
 ├── ops_quantize.mm            # metal::quantize_int8_metal, dequantize_int8_metal,
 │                              #   dequantize_gemm_output_metal
-├── primitives_memory.mm       # at, fill, copy, convert, cross_device_copy
+├── primitives_memory.mm       # at, fill, copy, convert, indexed_fill (GPU), cross_device_copy
 ├── primitives_elementwise.mm  # add/sub/mul/min/max (scalar+vec and vec+vec),
 │                              #   activations (relu/gelu/gelu_tanh/gelu_sigmoid/sigmoid/swish),
 │                              #   broadcast variants (batch/depth/block)
 ├── primitives_reduction.mm    # sum, max, amax, max_element, logsumexp
-├── primitives_gemm.mm         # gemm, gemm_batch_strided (MPS for f32/f16; MPSGraph for bf16)
+├── primitives_gemm.mm         # gemm, gemm_batch_strided (MPS for f32/f16; MPSGraph for bf16),
+│                              #   MPSMatrixMultiplication cache, f16 GEMV kernel
 ├── primitives_transpose.mm    # transpose_2d/3d/4d (GPU kernels, 6 types each)
-├── primitives_beam_search.mm  # penalize_previous_tokens (GPU), prepare_length_mask (CPU)
+├── primitives_beam_search.mm  # penalize_previous_tokens (GPU), prepare_length_mask (GPU)
 ├── ops_norm_gather.mm         # metal:: wrappers: layer_norm, rms_norm, softmax, gather
 ├── ops_sdpa.mm                # metal::sdpa_metal (MPS + MPSGraph; handles KV-cache offset)
 ├── ops_rotary.mm              # metal::rotary_metal (GPU prefill kernel)
@@ -78,7 +104,8 @@ src/metal/
     ├── gather.metal
     ├── sdpa.metal
     ├── conv1d.metal
-    └── quantize.metal
+    ├── quantize.metal
+    └── indexed_fill.metal
 
 src/ops/                       # Op::compute<Device::METAL> specializations
 ├── normalization_metal.mm     # LayerNorm, RMSNorm, SoftMax → delegates to ops_norm_gather
@@ -135,7 +162,7 @@ Primitives: primitives<Device::METAL>::gemm / add / relu / ...
 | dtype | API used | Notes |
 |-------|---------|-------|
 | float32 | `MPSMatrixMultiplication` | Eager, encode-only |
-| float16 | `MPSMatrixMultiplication` | Eager, encode-only |
+| float16 | `MPSMatrixMultiplication` (or custom GEMV for m=1) | Eager, encode-only; cached MPSMatrixMultiplication objects (M11.27) |
 | bfloat16 | `MPSGraph` matmul | **Commits immediately** (MPSGraph limitation) |
 | int8→int32 | CPU int8→f32 + `MPSMatrixMultiplication` + CPU f32→int32 | No native MPS INT8; dequantize-before-GEMM workaround (M9.2) |
 
@@ -157,7 +184,7 @@ corresponding `primitives_*.mm` or `ops_*.mm` file.
 | `kElementwiseMSL` | `elementwise.metal` | `add_T`, `sub_T`, `mul_T`, `min_T`, `max_T` (binary), `*_scalar_T` (scalar) |
 | `kActivationMSL` | `activation.metal` | `relu_T`, `gelu_T`, `gelu_tanh_T`, `gelu_sigmoid_T`, `sigmoid_T`, `swish_T`, `exp_T`, `log_T`, `cos_T`, `sin_T`, `tanh_T` |
 | `kBroadcastMSL` | `broadcast.metal` | `add_batch_broadcast_T`, `add_depth_broadcast_T`, `add_block_broadcast_T`, `mul_batch_broadcast_T`, `mul_block_broadcast_T` |
-| `kBeamSearchMSL` | `beam_search.metal` | `penalize_previous_tokens_T` |
+| `kBeamSearchMSL` | `beam_search.metal` | `penalize_previous_tokens_T`, `prepare_length_mask` |
 | `kTransposeMSL` | `transpose.metal` | `transpose_2d_T`, `transpose_3d_T`, `transpose_4d_T` (all 6 types) |
 | `kReductionMSL` | `reduction.metal` | `reduce_sum_T`, `reduce_max_T`, `reduce_amax_T`, `reduce_max_element_T` |
 | `kNormalizationMSL` | `normalization.metal` | `layer_norm_T`, `rms_norm_T`, `softmax_T` |
@@ -165,6 +192,7 @@ corresponding `primitives_*.mm` or `ops_*.mm` file.
 | `kSdpaMSL` | `sdpa.metal` | `causal_mask_float/half/bfloat`, MPS-driven SDPA (no MSL matmul) |
 | `kConv1dMSL` | `conv1d.metal` | `im2col_float`, `im2col_half`, `im2col_bfloat` |
 | `kQuantizeMSL` | `quantize.metal` | `quantize_T`, `dequantize_T`, `dequantize_gemm_output_T` |
+| `kIndexedFillMSL` | `indexed_fill.metal` | `indexed_fill_T` (GPU scatter) |
 | `kRotaryMSL` (inline) | `ops_rotary.mm` | `rotary_T` — not in gen_msl_strings.py |
 | `kAlibiMSL` (inline) | `ops_alibi.mm` | `alibi_add_T` — not in gen_msl_strings.py |
 
@@ -269,3 +297,13 @@ Only `float`, `float16_t`, `bfloat16_t` are dispatched by `DEVICE_AND_FLOAT_DISP
 | M9.2 | INT8 GEMM: CPU int8→f32, float32 MPS GEMM, CPU f32→int32; 9/9 pass, norm error 0.43% |
 | M9.3 | gemm_pack_b returns 0 (was already done in M4.4) |
 | M9.4 | compute_u8_compensation changed from METAL_STUB to no-op |
+| M10 | E2E validation: Seq2Seq, LM, Whisper; beam_size>1 gather fix; GEMM padding hazard fix |
+| M11.1–4 | CB batching, PSO caching, BF16 inference (M3+), GPU-native profiling |
+| M11.5–11 | General optimization: CPU GEMM tiny, MPS batched/padded GEMM, GPU blit, flash cross-attn, fused LN+GEMM, GPU TopK |
+| M11.12–17 | Pad-C sync elim, fused timestamp rules, batch beam gather, GPU prepare_length_mask |
+| M11.18–21 | Encode-only MPS padded GEMM, f16 GEMV kernel, GPU multinomial, gather sync elimination |
+| M11.22 | **Memory leak fix**: 6 MPS object leak categories; RSS 5GB→800MB; 2.7x speedup |
+| M11.23–25 | GPU fused TopK (268 syncs→0), GPU indexed_fill scatter kernel |
+| M11.26 | **Sync elimination**: encode-only patterns, batched sampling sync; 2,977→1,941ms = 1.53x |
+| M11.27–28 | MPSMatrixMultiplication cache, indexed_fill pre-sync elimination (f16) |
+| M11.29 | **MTLSharedEvent encode_barrier**: hybrid sync (f32 CPU-block, f16/bf16 GPU-barrier); **final: 1,860ms = 22.1x** |

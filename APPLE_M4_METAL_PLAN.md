@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
-**Revised:** 2026-02-25
-**Status:** In progress — Milestone 5.1 complete (dispatch macro Metal FP16/BF16 update)
+**Revised:** 2026-03-10
+**Status:** In progress — M11.29 complete (22.1x speedup on Whisper large-v3-turbo, Apple M4)
 
 ---
 
@@ -933,6 +933,88 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - faster_whisper whisper-large-v3-turbo beam=5: 0.58× → **1.06×** Metal/CPU
 - Native API whisper-large-v3-turbo greedy: **1.45×** Metal/CPU
 - Report: `agents/report/milestone-11.11-batched-padded-gemm.md`
+
+**11.12 Pad-C sync elimination** ✅
+- Eliminate `commit_and_wait()` for pad_c unpack in padded GEMM; use GPU `row_copy` kernel instead
+- Report: `agents/report/milestone-11.12-pad-c-sync-elimination.md`
+
+**11.13 Batched padded GEMM row_copy** ✅
+- MSL `row_copy` kernel for batched padded GEMM C-unpack (encode-only, zero syncs)
+- Report: `agents/report/milestone-11.13-batched-padded-gemm-row-copy.md`
+
+**11.14 Fused ApplyTimestampRules** ✅
+- GPU kernel fuses `should_sample_timestamps` reduction + logits disable in a single dispatch
+- Report: `agents/report/milestone-11.14-fused-timestamp-rules.md`
+
+**11.15 Batch beam search gathers** ✅
+- Batch multiple gather operations in beam search into fewer GPU dispatches
+- Report: `agents/report/milestone-11.15-batch-beam-gather.md`
+
+**11.16 BeamSearch GPU acceleration** ✅
+- GPU `prepare_length_mask` kernel replacing CPU loop (M4.7 was CPU-only)
+- Report: `agents/report/milestone-11.16-beam-search-gpu.md`
+
+**11.17 Fused timestamp check + disable** ✅
+- `fuse_timestamp_check_and_disable_metal`: GPU reduction + scatter in single encode-only dispatch
+- Report: `agents/report/milestone-11.17-reduction-optimization.md`
+
+**11.18 Encode-only MPS padded GEMM** ✅
+- Moved 8,728 CPU GEMM fallbacks for m=1 to encode-only MPS padded GEMM path
+- Report: `agents/report/milestone-11.18-mps-padded-gemm.md`
+
+**11.19 Float16 m=1 custom GEMV kernel** ✅
+- MSL `gemv_half` kernel for m=1 FP16 GEMM; faster than MPS for small matrices
+- Report: `agents/report/milestone-11.19-f16-gemv-kernel.md`
+
+**11.20 GPU Multinomial sampling** ✅
+- GPU kernel for multinomial sampling; fixed strided→sequential kernel bug
+- Report: `agents/report/milestone-11.20-gpu-multinomial.md`
+
+**11.21 Gather sync elimination** ✅
+- `protect_buffer` pattern: ~1200 fewer syncs per inference; encode-only gather
+- Report: `agents/report/milestone-11.21-gather-sync-elimination.md`
+
+**11.22 Metal memory management** ✅
+- Fixed 6 MPS object leak categories (MPSMatrix, MPSMatrixMultiplication, MPSGraphTensorData)
+- RSS 5GB → 800MB; speed variance collapsed; 2.7x transformative improvement
+- Report: `agents/report/milestone-11.22-metal-memory-management.md`
+
+**11.23 GPU Fused TopK** ✅
+- Single-pass kernel: local top-k + tree merge; 268 syncs → 0
+- Report: `agents/report/milestone-11.23-gpu-topk-fused.md`
+
+**11.25 GPU Indexed Fill kernel** ✅
+- MSL `indexed_fill_<T>` scatter kernel; encode-only
+- Report: `agents/report/milestone-11.25-gpu-indexed-fill.md`
+
+**11.26 Sync Elimination: cblas + Sampler** ✅
+- Third transformative improvement: replaced hundreds of per-op `commit_and_wait()` with encode-only
+- cblas GEMM fallback encode-only; sampler batches GPU→CPU into single `synchronize_stream()`
+- 2,977 → 1,941 ms = **1.53x** speedup
+- Report: `agents/report/milestone-11.26-sync-elimination.md`
+
+**11.27 MPSMatrixMultiplication cache** ✅
+- Global cache for `MPSMatrixMultiplication` objects keyed by `(trans_a, trans_b, m, n, k, alpha, beta, batch)`
+- `clear_gemm_cache()` called from `MetalAllocator::clear_cache()`
+- Report: `agents/report/milestone-11.27-mps-gemm-cache.md`
+
+**11.28 Indexed Fill pre-sync elimination** ✅
+- Eliminated `CT2_COMMIT_AND_WAIT()` before indexed_fill for FP16 path
+- Report: `agents/report/milestone-11.28-indexed-fill-sync-elimination.md`
+
+**11.29 MTLSharedEvent encode_barrier (hybrid sync)** ✅
+- GPU-side cross-CB ordering via `MTLSharedEvent` (`encodeSignalEvent` / `encodeWaitForEvent`)
+- Hybrid sync: f32 keeps `CT2_COMMIT_AND_WAIT()` (MPS driver coherency); f16/bf16 use `encode_barrier()`
+- `_last_waited` tracker skips redundant barriers after `commit_and_wait()` drains prior GPU work
+- Recovered BUG-2 regression: 1,946 → 1,860 ms (f16 whisper-large-v3-turbo)
+- All correctness: f32 13/13, f16 8/8, bf16 13/13, beam 39/39, unit 43/43 PASS
+- Performance sweep: `agents/report/milestone-11.performance-sweep.md`
+
+**M11 Final result: 41,169 → 1,860 ms = 22.1x speedup** (whisper-large-v3-turbo, float16, Apple M4, 30s audio)
+
+**Remaining optimizations investigated and closed** (Section 9 of `profiling-comprehensive-analysis-v2.md`):
+- Non-architectural items #3–#8: combined potential ~15-30ms (1.5%) — not actionable
+- Only architectural changes remain impactful: ARCH-1 ThreadPool bypass (~700ms), ARCH-2 GPU beam search (~450ms)
 
 ---
 

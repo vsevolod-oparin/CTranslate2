@@ -1,0 +1,345 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>M11 Performance Sweep — Whisper Large-v3-Turbo on Apple M4</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Helvetica Neue', sans-serif;
+    background: #0a0a0f;
+    color: #e0e0e8;
+    padding: 32px;
+  }
+  h1 {
+    font-size: 22px;
+    font-weight: 600;
+    color: #f0f0f8;
+    margin-bottom: 4px;
+  }
+  .subtitle {
+    font-size: 13px;
+    color: #888;
+    margin-bottom: 28px;
+  }
+  .chart-container {
+    background: #12121a;
+    border: 1px solid #222;
+    border-radius: 12px;
+    padding: 28px 24px 16px 24px;
+    margin-bottom: 24px;
+  }
+  .legend {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 16px;
+    font-size: 12px;
+    color: #aaa;
+  }
+  .legend-item { display: flex; align-items: center; gap: 6px; }
+  .legend-dot {
+    width: 10px; height: 10px; border-radius: 50%;
+  }
+  .legend-line {
+    width: 20px; height: 3px; border-radius: 2px;
+  }
+  svg { display: block; }
+  .axis text { fill: #666; font-size: 11px; }
+  .axis path, .axis line { stroke: #333; }
+  .grid line { stroke: #1a1a24; stroke-dasharray: 2,3; }
+  .grid path { stroke: none; }
+  .tooltip {
+    position: absolute;
+    pointer-events: none;
+    background: #1e1e2a;
+    border: 1px solid #444;
+    border-radius: 8px;
+    padding: 10px 14px;
+    font-size: 12px;
+    line-height: 1.6;
+    color: #ccc;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.5);
+    opacity: 0;
+    transition: opacity 0.15s;
+    max-width: 340px;
+  }
+  .tooltip .hash { color: #7aa2f7; font-family: 'SF Mono', monospace; }
+  .tooltip .msg { color: #e0e0e8; font-weight: 500; }
+  .tooltip .val { color: #9ece6a; }
+  .tooltip .warn { color: #e0af68; }
+  .phase-label {
+    font-size: 10px;
+    fill: #555;
+    text-anchor: middle;
+  }
+  .annotation {
+    font-size: 10px;
+    fill: #7aa2f7;
+  }
+  .summary-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+    gap: 12px;
+    margin-bottom: 24px;
+  }
+  .summary-card {
+    background: #12121a;
+    border: 1px solid #222;
+    border-radius: 10px;
+    padding: 16px;
+    text-align: center;
+  }
+  .summary-card .value {
+    font-size: 28px;
+    font-weight: 700;
+    color: #9ece6a;
+  }
+  .summary-card .label {
+    font-size: 11px;
+    color: #888;
+    margin-top: 4px;
+  }
+  .summary-card.highlight .value { color: #7aa2f7; }
+  .summary-card.warn .value { color: #e0af68; }
+</style>
+</head>
+<body>
+
+<h1>M11 Performance Sweep</h1>
+<div class="subtitle">Whisper Large-v3-Turbo &middot; Apple M4 &middot; Float16 &middot; 30s audio &middot; 3 runs per commit</div>
+
+<div class="summary-grid" id="summary"></div>
+
+<div class="chart-container">
+  <div class="legend">
+    <div class="legend-item"><div class="legend-dot" style="background:#555"></div> Individual runs</div>
+    <div class="legend-item"><div class="legend-line" style="background:#7aa2f7"></div> Mean time</div>
+    <div class="legend-item"><div class="legend-dot" style="background:#f7768e"></div> Correctness issue</div>
+  </div>
+  <div id="chart" style="position:relative"></div>
+</div>
+
+<div class="chart-container">
+  <div class="legend">
+    <div class="legend-item"><div class="legend-line" style="background:#9ece6a"></div> Speedup vs baseline (41.2s)</div>
+  </div>
+  <div id="speedup-chart" style="position:relative"></div>
+</div>
+
+<div class="tooltip" id="tip"></div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script>
+const raw = [
+  {i:1, hash:"edd78dd9", msg:"M11.1 Command Buffer Batching", status:"fail"},
+  {i:2, hash:"c01a7719", msg:"M11.2 Metal Pipeline State Caching", status:"fail"},
+  {i:3, hash:"18b14643", msg:"M11.3 BF16 inference", times:[42531.7,41154.6,39821.8], tokens:[126,126,126], mean:41169.4},
+  {i:4, hash:"20146667", msg:"M11.4 CPU/Metal profiling", times:[43206.9,40973.8,41231.1], tokens:[126,126,126], mean:41803.9},
+  {i:5, hash:"5f1f0cd9", msg:"General optimization (CPU GEMM, MPS, batched)", times:[6610.9,6642.7,6528.2], tokens:[126,126,126], mean:6593.9},
+  {i:6, hash:"3e55f874", msg:"Eliminate Gather/TopK Syncs", times:[6661.2,6545.4,6783.9], tokens:[126,126,126], mean:6663.5},
+  {i:7, hash:"d61b961e", msg:"Batched MPS GEMM non-padded attention", times:[6160.0,6392.9,6057.9], tokens:[126,126,126], mean:6203.6},
+  {i:8, hash:"261dacf4", msg:"M11.6 Flash Cross-Attention", times:[6088.8,6167.5,6089.6], tokens:[126,126,126], mean:6115.3},
+  {i:9, hash:"b13e134c", msg:"Fused LayerNorm + GEMM kernel", times:[6333.0,6240.7,6069.9], tokens:[126,126,126], mean:6214.5},
+  {i:10, hash:"aef5bb97", msg:"Fix test_whisper issue", times:[6046.7,6368.4,6097.4], tokens:[126,126,126], mean:6170.8},
+  {i:11, hash:"1d87c537", msg:"Faster-whisper test", times:[6334.0,6094.1,6004.3], tokens:[126,126,126], mean:6144.1},
+  {i:12, hash:"7600aa1b", msg:"GPU TopK kernel for k>1", times:[6082.7,6105.1,6110.7], tokens:[126,126,126], mean:6099.5},
+  {i:13, hash:"e528112a", msg:"Pass beam_size into cross attention", times:[6200.1,6061.5,6047.0], tokens:[126,126,126], mean:6102.9},
+  {i:14, hash:"1591cd97", msg:"Add reports", times:[6035.5,6045.8,6072.7], tokens:[126,126,126], mean:6051.3},
+  {i:15, hash:"b19b9128", msg:"Fix: GPU Page Fault in MSL row_copy", times:[3261.7,2874.9,3209.4], tokens:[8,10,9], mean:3115.3, warn:true},
+  {i:16, hash:"5e434b71", msg:"Reports updated", times:[3392.3,3316.0,2608.9], tokens:[10,10,6], mean:3105.7, warn:true},
+  {i:17, hash:"c89b6b80", msg:"Per-element dispatch small padded batches", times:[13688.5,10296.9,10955.4], tokens:[126,126,126], mean:11646.9},
+  {i:18, hash:"56381aaa", msg:"Eliminate logits GEMM pad_c sync", times:[11664.0,13625.6,10574.3], tokens:[126,126,126], mean:11954.6},
+  {i:19, hash:"621e1f1c", msg:"Optimization report", times:[11543.3,9173.7,10015.9], tokens:[126,126,126], mean:10244.3},
+  {i:20, hash:"1b8ba36c", msg:"GPU kernel (1012 syncs → 0)", times:[8278.0,11601.0,7983.1], tokens:[126,126,126], mean:9287.4},
+  {i:21, hash:"1f067b6b", msg:"M11.14 Fused ApplyTimestampRules", times:[9537.2,6669.8,11294.2], tokens:[126,126,126], mean:9167.1},
+  {i:22, hash:"43f5c17f", msg:"Investigate suspicious memory pattern", times:[6167.2,8406.6,10170.4], tokens:[126,126,126], mean:8248.1},
+  {i:23, hash:"08084ddf", msg:"Batch Beam Search Gathers", times:[5804.5,9058.2,9872.6], tokens:[126,126,126], mean:8245.1},
+  {i:24, hash:"81656a19", msg:"M11.16 BeamSearch GPU Acceleration", times:[9946.4,8555.0,9184.3], tokens:[126,126,126], mean:9228.6},
+  {i:25, hash:"418bdbda", msg:"M11.17 Fused Timestamp Check + Disable", times:[5568.9,8052.3,10315.4], tokens:[126,126,126], mean:7978.9},
+  {i:26, hash:"ec6d8f6f", msg:"Fixed ttypes in faster_whisper test", times:[9437.7,8859.8,5933.3], tokens:[126,126,126], mean:8076.9},
+  {i:27, hash:"7ed10164", msg:"M11.18 Encode-Only MPS Padded GEMM", times:[8935.6,8876.2,10221.1], tokens:[126,126,126], mean:9344.3},
+  {i:28, hash:"35623567", msg:"Optimization audit", times:[9459.3,7786.6,9520.9], tokens:[126,126,126], mean:8922.3},
+  {i:29, hash:"841f0a55", msg:"Fixing critical bugs", times:[9858.3,7573.0,8999.1], tokens:[126,126,126], mean:8810.1},
+  {i:30, hash:"cac5b700", msg:"M11.19 Float16 m=1 Custom GEMV", times:[10392.3,7149.8,9835.8], tokens:[126,126,126], mean:9126.0},
+  {i:31, hash:"17f48aa5", msg:"Fix medium level bugs", times:[5491.4,7611.5,8460.2], tokens:[126,126,126], mean:7187.7},
+  {i:32, hash:"84df6dab", msg:"Finish audit part", times:[5031.3,9454.8,10007.9], tokens:[126,126,126], mean:8164.7},
+  {i:33, hash:"a4b950dc", msg:"M11.20 GPU Multinomial Sampling", times:[6017.7,9803.6,10010.5], tokens:[126,126,126], mean:8610.6},
+  {i:34, hash:"36a2ee0d", msg:"M11.21 Gather Sync Elimination", times:[9815.9,9313.7,8251.1], tokens:[126,126,126], mean:9126.9},
+  {i:35, hash:"7189e668", msg:"M11.22 Memory Management", times:[5799.9,9806.6,18194.4], tokens:[126,126,126], mean:11267.0},
+  {i:36, hash:"de03168d", msg:"Update e2e tests + fix memory overload", times:[5282.1,5310.7,9938.1], tokens:[126,126,126], mean:6843.6},
+  {i:37, hash:"a48122b6", msg:"Great improve over memory leaks", times:[3036.9,2886.9,3050.8], tokens:[126,126,126], mean:2991.5},
+  {i:38, hash:"712f909a", msg:"Memory afix audit and report", times:[2948.5,2835.4,2920.2], tokens:[126,126,126], mean:2901.4},
+  {i:39, hash:"e27bd2fa", msg:"M11.23 GPU Fused TopK", times:[2949.8,3166.2,3024.3], tokens:[126,126,126], mean:3046.8},
+  {i:40, hash:"dc688f36", msg:"Big profile audit with report", times:[2965.7,2965.5,2999.2], tokens:[126,126,126], mean:2976.8},
+];
+
+const data = raw.filter(d => d.times);
+const baseline = 41169.4;
+
+// Summary cards
+const summaryEl = document.getElementById("summary");
+const cards = [
+  {value: "41.2s", label: "Baseline (M11.3)", cls: "warn"},
+  {value: "2.98s", label: "Best mean (commit 40)", cls: ""},
+  {value: "13.8×", label: "Total speedup", cls: "highlight"},
+  {value: "38", label: "Commits benchmarked", cls: ""},
+];
+cards.forEach(c => {
+  const el = document.createElement("div");
+  el.className = "summary-card " + c.cls;
+  el.innerHTML = `<div class="value">${c.value}</div><div class="label">${c.label}</div>`;
+  summaryEl.appendChild(el);
+});
+
+// ── Main chart (absolute times) ──
+const margin = {top: 20, right: 30, bottom: 70, left: 65};
+const width = Math.min(960, window.innerWidth - 100);
+const height = 400;
+const innerW = width - margin.left - margin.right;
+const innerH = height - margin.top - margin.bottom;
+
+const svg = d3.select("#chart").append("svg")
+  .attr("width", width).attr("height", height);
+const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+const x = d3.scaleLinear().domain([3, 40]).range([0, innerW]);
+const y = d3.scaleLinear().domain([0, 45000]).range([innerH, 0]);
+
+// Grid
+g.append("g").attr("class","grid")
+  .call(d3.axisLeft(y).ticks(8).tickSize(-innerW).tickFormat(""));
+
+// Phase backgrounds
+const phases = [
+  {x0:3, x1:4.5, color:"#1a1520", label:"Baseline"},
+  {x0:4.5, x1:14.5, color:"#151a18", label:"Optimization"},
+  {x0:14.5, x1:16.5, color:"#1a1515", label:"⚠ Bug"},
+  {x0:16.5, x1:36.5, color:"#1a1818", label:"Memory Leak Era"},
+  {x0:36.5, x1:40.5, color:"#151a18", label:"Stable Fast"},
+];
+phases.forEach(p => {
+  g.append("rect")
+    .attr("x", x(p.x0)).attr("width", x(p.x1) - x(p.x0))
+    .attr("y", 0).attr("height", innerH)
+    .attr("fill", p.color).attr("rx", 4);
+  g.append("text").attr("class","phase-label")
+    .attr("x", x((p.x0+p.x1)/2)).attr("y", innerH + 48)
+    .text(p.label);
+});
+
+// Axes
+g.append("g").attr("class","axis").attr("transform",`translate(0,${innerH})`)
+  .call(d3.axisBottom(x).ticks(20).tickFormat(d => d));
+g.append("g").attr("class","axis")
+  .call(d3.axisLeft(y).ticks(8).tickFormat(d => (d/1000).toFixed(0) + "s"));
+
+// Axis labels
+svg.append("text").attr("x", margin.left + innerW/2).attr("y", height - 4)
+  .attr("text-anchor","middle").attr("fill","#666").attr("font-size","11px")
+  .text("Commit #");
+svg.append("text").attr("transform","rotate(-90)")
+  .attr("x", -(margin.top + innerH/2)).attr("y", 14)
+  .attr("text-anchor","middle").attr("fill","#666").attr("font-size","11px")
+  .text("Inference time");
+
+const tip = d3.select("#tip");
+
+function showTip(event, d) {
+  const runsStr = d.times.map((t,j) => `${(t/1000).toFixed(1)}s (${d.tokens[j]} tok)`).join("<br>");
+  const warnStr = d.warn ? `<div class="warn">⚠ Correctness issue: only ${d.tokens[0]}-${d.tokens[2]} tokens</div>` : "";
+  tip.html(`
+    <div class="msg">${d.msg}</div>
+    <div><span class="hash">${d.hash}</span> &middot; commit #${d.i}</div>
+    <div style="margin-top:4px">Mean: <span class="val">${(d.mean/1000).toFixed(2)}s</span> &middot; ${(baseline/d.mean).toFixed(1)}× speedup</div>
+    <div style="margin-top:2px">${runsStr}</div>
+    ${warnStr}
+  `).style("opacity", 1)
+    .style("left", (event.pageX + 14) + "px")
+    .style("top", (event.pageY - 20) + "px");
+}
+function hideTip() { tip.style("opacity", 0); }
+
+// Individual run dots
+data.forEach(d => {
+  d.times.forEach(t => {
+    g.append("circle")
+      .attr("cx", x(d.i)).attr("cy", y(t)).attr("r", 3)
+      .attr("fill", d.warn ? "#f7768e" : "#444")
+      .attr("opacity", 0.6)
+      .on("mouseover", e => showTip(e, d))
+      .on("mouseout", hideTip);
+  });
+});
+
+// Mean line
+const line = d3.line().x(d => x(d.i)).y(d => y(d.mean))
+  .curve(d3.curveMonotoneX);
+g.append("path").datum(data)
+  .attr("fill","none").attr("stroke","#7aa2f7").attr("stroke-width", 2.5)
+  .attr("d", line);
+
+// Mean dots
+g.selectAll(".mean-dot").data(data).enter().append("circle")
+  .attr("cx", d => x(d.i)).attr("cy", d => y(d.mean)).attr("r", 4.5)
+  .attr("fill", d => d.warn ? "#f7768e" : "#7aa2f7")
+  .attr("stroke", "#0a0a0f").attr("stroke-width", 1.5)
+  .style("cursor","pointer")
+  .on("mouseover", (e,d) => { d3.select(e.target).attr("r",7); showTip(e,d); })
+  .on("mouseout", (e) => { d3.select(e.target).attr("r",4.5); hideTip(); });
+
+// Annotations
+const annotations = [
+  {i:5, label:"6.2× CPU GEMM fallback", dy:-14},
+  {i:37, label:"13.8× Memory leak fix", dy:-14},
+];
+annotations.forEach(a => {
+  const d = data.find(d => d.i === a.i);
+  g.append("text").attr("class","annotation")
+    .attr("x", x(a.i)).attr("y", y(d.mean) + a.dy)
+    .attr("text-anchor","middle").text(a.label);
+});
+
+// ── Speedup chart ──
+const svg2 = d3.select("#speedup-chart").append("svg")
+  .attr("width", width).attr("height", 280);
+const g2 = svg2.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+const innerH2 = 280 - margin.top - 60;
+
+const y2 = d3.scaleLinear().domain([0, 16]).range([innerH2, 0]);
+
+g2.append("g").attr("class","grid")
+  .call(d3.axisLeft(y2).ticks(8).tickSize(-innerW).tickFormat(""));
+
+g2.append("g").attr("class","axis").attr("transform",`translate(0,${innerH2})`)
+  .call(d3.axisBottom(x).ticks(20).tickFormat(d => d));
+g2.append("g").attr("class","axis")
+  .call(d3.axisLeft(y2).ticks(8).tickFormat(d => d + "×"));
+
+// Speedup area
+const speedupData = data.filter(d => !d.warn).map(d => ({...d, speedup: baseline / d.mean}));
+const area = d3.area().x(d => x(d.i)).y0(innerH2).y1(d => y2(d.speedup))
+  .curve(d3.curveMonotoneX);
+g2.append("path").datum(speedupData)
+  .attr("fill","rgba(158,206,106,0.15)").attr("d", area);
+
+const line2 = d3.line().x(d => x(d.i)).y(d => y2(d.speedup))
+  .curve(d3.curveMonotoneX);
+g2.append("path").datum(speedupData)
+  .attr("fill","none").attr("stroke","#9ece6a").attr("stroke-width", 2.5)
+  .attr("d", line2);
+
+g2.selectAll(".sp-dot").data(speedupData).enter().append("circle")
+  .attr("cx", d => x(d.i)).attr("cy", d => y2(d.speedup)).attr("r", 4)
+  .attr("fill","#9ece6a").attr("stroke","#0a0a0f").attr("stroke-width",1.5)
+  .style("cursor","pointer")
+  .on("mouseover", (e,d) => { d3.select(e.target).attr("r",6); showTip(e,d); })
+  .on("mouseout", (e) => { d3.select(e.target).attr("r",4); hideTip(); });
+
+svg2.append("text").attr("x", margin.left + innerW/2).attr("y", 274)
+  .attr("text-anchor","middle").attr("fill","#666").attr("font-size","11px")
+  .text("Commit #");
+
+</script>
+</body>
+</html>

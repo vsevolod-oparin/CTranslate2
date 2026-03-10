@@ -23,6 +23,18 @@ namespace ctranslate2 {
       // commit_and_wait() / commit_command_buffer() may commit it.
       thread_local id<MTLCommandBuffer> _thread_buffer = nil;
 
+      // Per-thread MTLSharedEvent for GPU-side cross-CB ordering.
+      // Signaled in commit_command_buffer() before each non-blocking commit.
+      // encode_barrier() encodes a wait on the latest signal value into the
+      // current CB, ensuring prior CB's GPU work completes before new encodes
+      // execute — without blocking the CPU.
+      thread_local id<MTLSharedEvent> _thread_event = nil;
+      thread_local uint64_t           _event_counter = 0;
+      // Tracks the highest event value for which commit_and_wait() completed.
+      // encode_barrier() is a no-op when _event_counter <= _last_waited,
+      // because the CPU wait already guarantees all prior GPU work finished.
+      thread_local uint64_t           _last_waited = 0;
+
       // Counter for commit_and_wait() calls (global atomic for cross-thread visibility).
       std::atomic<uint64_t> _commit_count{0};
 
@@ -69,13 +81,29 @@ namespace ctranslate2 {
     }
 
 
-    void commit_command_buffer() {
+    // Internal: commit with optional event signaling.
+    // commit_and_wait_impl passes signal=false because waitUntilCompleted
+    // already provides a full CPU+GPU barrier — the extra signal would be
+    // redundant overhead on every sync point.
+    static void commit_command_buffer_impl(bool signal_event) {
       if (_thread_buffer == nil) {
         return;
+      }
+      if (signal_event) {
+        // Signal shared event so encode_barrier() in a later CB can
+        // wait for this CB's GPU work to complete (no CPU block).
+        if (_thread_event == nil) {
+          _thread_event = [get_metal_device() newSharedEvent];
+        }
+        [_thread_buffer encodeSignalEvent:_thread_event value:++_event_counter];
       }
       [_thread_buffer commit];
       [_thread_buffer release];
       _thread_buffer = nil;
+    }
+
+    void commit_command_buffer() {
+      commit_command_buffer_impl(/*signal_event=*/true);
     }
 
 
@@ -105,7 +133,7 @@ namespace ctranslate2 {
       // the thread-local slot.  We need buf alive for waitUntilCompleted
       // and GPUEndTime/GPUStartTime access.
       id<MTLCommandBuffer> buf = [_thread_buffer retain];
-      commit_command_buffer();
+      commit_command_buffer_impl(/*signal_event=*/false);
       @autoreleasepool {
         // Drain autoreleased ObjC temporaries (compute encoders,
         // descriptors, etc.) that accumulated since the last drain.
@@ -121,6 +149,8 @@ namespace ctranslate2 {
             old_val, old_val + delta, std::memory_order_relaxed)) {}
       }
       [buf release];
+      // All prior GPU work (including any signaled events) is now complete.
+      _last_waited = _event_counter;
       // M11.18: Now that all GPU work has completed, recycle deferred-free
       // buffers back to the allocator pool for reuse.
       flush_pending_frees();
@@ -174,6 +204,23 @@ namespace ctranslate2 {
         enc = [[cmd computeCommandEncoderWithDispatchType:MTLDispatchTypeSerial] retain];
       }
       return enc;
+    }
+
+    void encode_barrier() {
+      // GPU-side barrier: ensures all prior committed command buffers have
+      // finished executing before any subsequent encodes in the current CB
+      // begin on the GPU.  Unlike commit_and_wait(), this does NOT block the
+      // CPU — it only serializes GPU execution across CB boundaries.
+      //
+      // No-op if:
+      //   - No prior commit_command_buffer() calls occurred (same CB), or
+      //   - commit_and_wait() already waited past the latest event value
+      //     (all prior GPU work guaranteed complete).
+      if (_event_counter <= _last_waited || _thread_event == nil) {
+        return;
+      }
+      id<MTLCommandBuffer> cb = get_current_command_buffer();
+      [cb encodeWaitForEvent:_thread_event value:_event_counter];
     }
 
     uint64_t commit_count() { return _commit_count.load(std::memory_order_relaxed); }

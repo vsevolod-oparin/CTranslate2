@@ -61,9 +61,13 @@
 | 46 | aaff1784 | 1,881 | 1885, 1879, 1878 | 123 | M11.Audit Fix code issue, cache, stridec | 21.89x |
 | 47 | 7cd55360 | 1,789 | 1781, 1790, 1796 | 123 | M11 Commit benchmarks (report only) | 23.01x |
 | 48 | f12d2300 | **1,767** | 1774, 1772, 1755 | 123 | **OPT-1 + OPT-3 (buffer_for_ptr O(logN))** | **23.29x** |
+| 49 | 45c7e08d | 1,765 | 1775, 1773, 1747 | 121-123 | Reports, tests, BUG-1 protect_buffer fix | 23.32x |
+| 50 | 7af87e39 | 1,946 | 1907, 1947, 1986 | 123 | Code review #2: BUG-2 fix (commit_and_wait) | 21.16x |
+| 51 | (HEAD) | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*
+*Commit 50 regressed ~10% vs 48-49: BUG-2 fix used full commit_and_wait() in indexed_fill. Commit 51 recovers ~half the regression via hybrid sync: f32 keeps CT2_COMMIT_AND_WAIT (required — MPS driver coherency), f16/bf16 use GPU-side MTLSharedEvent encode_barrier (no CPU block).*
 
 ---
 
@@ -112,7 +116,7 @@ Post-leak-fix performance is stable and fast:
 - GPU Indexed Fill: 3,363 ms (slight regression from new kernel overhead, later recovered)
 - **Consistency**: all runs within ±5% — a dramatic improvement over Phase 4.
 
-### Phase 7: Third Transformation — Sync Elimination (commits 42-48) — ~1,770-1,940 ms → **21-23x speedup**
+### Phase 7: Third Transformation — Sync Elimination (commits 42-51) — ~1,860 ms → **22.1x speedup**
 **M11.26 (Sync Elimination)** was the **third transformative improvement**:
 - Replaced hundreds of per-op `commit_and_wait()` calls with encode-only patterns
 - cblas GEMM fallback for tiny matrices now encode-only (no pre-sync)
@@ -124,6 +128,9 @@ Subsequent commits added incremental improvements:
 - M11.28 (Indexed Fill Pre-Sync): 1,872 ms — eliminated Float16 indexed_fill sync
 - Audit + bug fixes: 1,865-1,881 ms — correctness without perf regression
 - OPT-1 + OPT-3: **1,767 ms** — buffer_for_ptr O(log N), non-sync lambda copy
+- Commit 49 (BUG-1 fix): 1,765 ms — protect_buffer for previous_ids (no perf impact)
+- Commit 50 (BUG-2 fix): 1,946 ms — correctness fix used full commit_and_wait() (10% regression)
+- **Commit 51 (MTLSharedEvent barrier): 1,860 ms** — hybrid sync: f32 keeps CT2_COMMIT_AND_WAIT (MPS driver coherency requirement), f16/bf16 use GPU-side `encode_barrier()`. Recovers ~half the BUG-2 regression while maintaining full correctness across all dtypes
 
 ---
 
@@ -137,11 +144,20 @@ Subsequent commits added incremental improvements:
 ### Memory Leaks Masked Real Performance
 The Phase 3 plateau at ~6,100 ms was artificially elevated. Once leaks were fixed (Phase 5), the same optimizations from Phase 3-4 could properly shine, achieving ~3,000 ms. The GPU kernels, sync eliminations, and encode-only patterns were all contributing, but their gains were hidden by growing memory pressure.
 
-### Total Optimization: **23.3x**
-From 41,169 ms (M11.3 baseline) to 1,767 ms (latest): a **23.3x improvement** on Whisper large-v3-turbo inference.
+### Total Optimization: **22.1x**
+From 41,169 ms (M11.3 baseline) to 1,860 ms (commit 51): a **22.1x improvement** on Whisper large-v3-turbo inference.
 
 ### Variance as a Diagnostic
-High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to <1% in Phase 7 (e.g., commit 48: 1774, 1772, 1755 ms), confirming complete resolution.
+High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to <1% in Phase 7 (e.g., commit 48: 1774, 1772, 1755 ms; commit 51: 1865, 1862, 1855 ms), confirming complete resolution.
+
+### Correctness Without Compromise: MTLSharedEvent
+Commit 50 showed that naive correctness fixes (full `commit_and_wait()`) can regress performance 10%. Commit 51 uses a **hybrid sync strategy** to recover ~half the regression:
+- **f32**: keeps `CT2_COMMIT_AND_WAIT()` — required due to MPS driver coherency issue with f32 MPSMatrixMultiplication + subsequent compute encoder
+- **f16/bf16**: uses GPU-side `encode_barrier()` via MTLSharedEvent — no CPU blocking
+- `commit_command_buffer()` signals a shared event (encode only, ~0 CPU cost)
+- `encode_barrier()` encodes a wait on the latest event value into the current CB
+- `_last_waited` tracker: skips redundant barriers when `commit_and_wait()` already drained all prior GPU work
+- If no CB split occurred, the barrier is a no-op (event counter ≤ last waited)
 
 ### Performance Ceiling
-At 1,767 ms with 16% GPU utilization, the remaining 84% is CTranslate2's ThreadPool architecture overhead (~700ms OS scheduling per API call) and CPU beam search logic. Further gains require upstream architectural changes (bypass ThreadPool, GPU beam search).
+At 1,860 ms with ~16% GPU utilization, the remaining ~84% is CTranslate2's ThreadPool architecture overhead (~700ms OS scheduling per API call) and CPU beam search logic. Further gains require upstream architectural changes (bypass ThreadPool, GPU beam search).

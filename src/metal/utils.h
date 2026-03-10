@@ -55,6 +55,13 @@ namespace ctranslate2 {
     void protect_buffer_by_base(void* base_ptr);
     void flush_pending_frees();
 
+    // GPU-side barrier: encodes a wait in the current command buffer for all
+    // prior committed CBs to complete.  Unlike commit_and_wait(), this does
+    // NOT block the CPU.  Use when an encode-only kernel needs to read data
+    // written by a prior CB (e.g. indexed_fill after a padded GEMM that
+    // split command buffers).
+    void encode_barrier();
+
     // Release all cached MPSMatrixMultiplication objects (MPS GEMM cache).
     // Called from MetalAllocator::clear_cache() to prevent unbounded growth.
     void clear_gemm_cache();

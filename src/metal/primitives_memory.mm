@@ -90,22 +90,31 @@ namespace ctranslate2 {
     if (num_indices <= 0)
       return;
 
-    // M11.28: GPU scatter kernel.  protect_buffer defers index buffer
+    // M11.29: GPU scatter kernel.  protect_buffer defers index buffer
     // recycling until the next commit_and_wait().
     //
-    // Pre-sync: flush all pending GPU work before encoding the scatter.
-    // Required because:
-    //   - The x[] buffer may have been written by a prior encode-only GPU op
-    //     (e.g. MPS GEMM for logits) that used commit_command_buffer() internally
-    //     to split row-copy and GEMM into separate command buffers.
-    //   - Metal command queues are concurrent by default — CBs from the same
-    //     queue CAN execute concurrently.  Without a sync, indexed_fill could
-    //     race with an in-flight GEMM writing to x[].
-    //   - Verified: f32 produces garbage without this sync (M11.25).
-    //     f16 appeared safe only because m=1 goes through custom GEMV (no CB
-    //     split), but this is fragile and not guaranteed for all code paths.
+    // Pre-sync strategy depends on dtype:
+    //
+    //   float32: Full CT2_COMMIT_AND_WAIT() required.  Verified: whisper-base
+    //     f32 produces garbage with encode_barrier-only or non-blocking
+    //     commit + encode_barrier.  Root cause unclear (possible MPS driver
+    //     coherency issue with f32 MPSMatrixMultiplication + subsequent
+    //     compute encoder in the same queue).  Cost: ~1.5ms per call.
+    //
+    //   float16 / bfloat16: GPU-side encode_barrier() is sufficient.
+    //     Unlike the original M11.28 approach (which simply skipped sync for
+    //     f16), encode_barrier() properly handles CB splits if they occur —
+    //     making this robust against future code changes that might introduce
+    //     commit_command_buffer() calls in the f16 GEMM path.
+    //     BF16 GEMMs use MPSGraph which commits internally, so indexed_fill
+    //     always gets a fresh CB; the barrier is a safety net.
+    //     Cost: ~0 (GPU-side only, no CPU block).
     metal::protect_buffer(indices);
-    CT2_COMMIT_AND_WAIT();
+    if constexpr (std::is_same_v<T, float>) {
+      CT2_COMMIT_AND_WAIT();
+    } else {
+      metal::encode_barrier();
+    }
 
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "indexed_fill_%s",

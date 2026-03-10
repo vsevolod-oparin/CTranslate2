@@ -33,7 +33,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/reduce_sum_precision_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -74,10 +74,10 @@ static void report(bool ok, const char* name) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Helper: run sum<T> and report relative error.
@@ -93,7 +93,7 @@ static bool measure_sum_error(const char* type_name,
   double result = 0.0;
   bool threw = false;
   try {
-    T r = primitives<Device::METAL>::sum(array, n);
+    T r = primitives<Device::MPS>::sum(array, n);
     result = static_cast<double>(static_cast<float>(r));
   } catch (const std::exception& e) {
     std::printf("    exception: %s\n", e.what());

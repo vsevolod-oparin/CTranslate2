@@ -1,6 +1,6 @@
 // src/metal/primitives_gemm.mm
 //
-// M4.4 — GEMM primitives for Device::METAL.
+// M4.4 — GEMM primitives for Device::MPS.
 //
 // Three paths depending on element type:
 //
@@ -517,7 +517,7 @@ static void dispatch_bf16_gemm(bool trans_a, bool trans_b,
   // Apply alpha scaling post-GEMM if needed.
   if (alpha != 1.0f) {
     const ctranslate2::dim_t size = m * n;
-    ctranslate2::primitives<ctranslate2::Device::METAL>::mul(
+    ctranslate2::primitives<ctranslate2::Device::MPS>::mul(
         static_cast<ctranslate2::bfloat16_t>(alpha), c, c, size);
   }
 }
@@ -1170,14 +1170,14 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  dim_t primitives<Device::METAL>::gemm_pack_b(
+  dim_t primitives<Device::MPS>::gemm_pack_b(
       const T*, bool, dim_t, dim_t, float, T*) {
     return 0;  // Packing not supported on Metal.
   }
 
   template<>
   template <typename In, typename Out>
-  void primitives<Device::METAL>::gemm(
+  void primitives<Device::MPS>::gemm(
       bool a_is_packed, bool b_is_packed,
       bool transpose_a, bool transpose_b,
       dim_t m, dim_t n, dim_t k,
@@ -1207,7 +1207,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename In, typename Out>
-  void primitives<Device::METAL>::gemm_batch_strided(
+  void primitives<Device::MPS>::gemm_batch_strided(
       bool transpose_a, bool transpose_b,
       dim_t m, dim_t n, dim_t k,
       float alpha,
@@ -1316,7 +1316,7 @@ namespace ctranslate2 {
       if (alpha != 1.0f) {
         const dim_t elems_per_batch = m * n;
         for (dim_t i = 0; i < batch_size; ++i)
-          primitives<Device::METAL>::mul(
+          primitives<Device::MPS>::mul(
               static_cast<bfloat16_t>(alpha),
               c + i * stridec, c + i * stridec, elems_per_batch);
       }
@@ -1415,45 +1415,45 @@ namespace ctranslate2 {
   // Explicit instantiations
   // -------------------------------------------------------------------------
 
-  template dim_t primitives<Device::METAL>::gemm_pack_b(
+  template dim_t primitives<Device::MPS>::gemm_pack_b(
       const float*, bool, dim_t, dim_t, float, float*);
-  template dim_t primitives<Device::METAL>::gemm_pack_b(
+  template dim_t primitives<Device::MPS>::gemm_pack_b(
       const float16_t*, bool, dim_t, dim_t, float, float16_t*);
-  template dim_t primitives<Device::METAL>::gemm_pack_b(
+  template dim_t primitives<Device::MPS>::gemm_pack_b(
       const bfloat16_t*, bool, dim_t, dim_t, float, bfloat16_t*);
-  template dim_t primitives<Device::METAL>::gemm_pack_b(
+  template dim_t primitives<Device::MPS>::gemm_pack_b(
       const int8_t*, bool, dim_t, dim_t, float, int8_t*);
 
-  template void primitives<Device::METAL>::gemm<float, float>(
+  template void primitives<Device::MPS>::gemm<float, float>(
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
       float, const float*, dim_t, const float*, dim_t,
       float, float*, dim_t, const float*);
-  template void primitives<Device::METAL>::gemm<float16_t, float16_t>(
+  template void primitives<Device::MPS>::gemm<float16_t, float16_t>(
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
       float, const float16_t*, dim_t, const float16_t*, dim_t,
       float, float16_t*, dim_t, const float16_t*);
-  template void primitives<Device::METAL>::gemm<bfloat16_t, bfloat16_t>(
+  template void primitives<Device::MPS>::gemm<bfloat16_t, bfloat16_t>(
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
       float, const bfloat16_t*, dim_t, const bfloat16_t*, dim_t,
       float, bfloat16_t*, dim_t, const bfloat16_t*);
-  template void primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  template void primitives<Device::MPS>::gemm<int8_t, int32_t>(
       bool, bool, bool, bool, dim_t, dim_t, dim_t,
       float, const int8_t*, dim_t, const int8_t*, dim_t,
       float, int32_t*, dim_t, const int32_t*);
 
-  template void primitives<Device::METAL>::gemm_batch_strided<float, float>(
+  template void primitives<Device::MPS>::gemm_batch_strided<float, float>(
       bool, bool, dim_t, dim_t, dim_t,
       float, const float*, dim_t, dim_t, const float*, dim_t, dim_t,
       float, float*, dim_t, dim_t, dim_t);
-  template void primitives<Device::METAL>::gemm_batch_strided<float16_t, float16_t>(
+  template void primitives<Device::MPS>::gemm_batch_strided<float16_t, float16_t>(
       bool, bool, dim_t, dim_t, dim_t,
       float, const float16_t*, dim_t, dim_t, const float16_t*, dim_t, dim_t,
       float, float16_t*, dim_t, dim_t, dim_t);
-  template void primitives<Device::METAL>::gemm_batch_strided<bfloat16_t, bfloat16_t>(
+  template void primitives<Device::MPS>::gemm_batch_strided<bfloat16_t, bfloat16_t>(
       bool, bool, dim_t, dim_t, dim_t,
       float, const bfloat16_t*, dim_t, dim_t, const bfloat16_t*, dim_t, dim_t,
       float, bfloat16_t*, dim_t, dim_t, dim_t);
-  template void primitives<Device::METAL>::gemm_batch_strided<int8_t, int32_t>(
+  template void primitives<Device::MPS>::gemm_batch_strided<int8_t, int32_t>(
       bool, bool, dim_t, dim_t, dim_t,
       float, const int8_t*, dim_t, dim_t, const int8_t*, dim_t, dim_t,
       float, int32_t*, dim_t, dim_t, dim_t);

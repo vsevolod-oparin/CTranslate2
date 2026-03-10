@@ -42,7 +42,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m7_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm \
@@ -100,12 +100,12 @@ static int g_pass = 0, g_fail = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<std::size_t>(n) * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -196,7 +196,7 @@ static void test_memory_coherency() {
   for (dim_t i = 0; i < N; ++i) { a[i] = float(i); b[i] = 1.f; }
 
   // GPU: c = a + b  (encode-only, not yet committed)
-  primitives<Device::METAL>::add(a, b, c, N);
+  primitives<Device::MPS>::add(a, b, c, N);
 
   // commit_and_wait flushes GPU writes into shared memory
   metal::commit_and_wait();
@@ -868,7 +868,7 @@ static void test_slide_negative_axis() {
 static void test_max_num_classes() {
   std::printf("\n--- Test 24: max_num_classes<METAL> ---\n");
 
-  // max_num_classes<Device::METAL>() is defined in topp_mask_metal.mm as:
+  // max_num_classes<Device::MPS>() is defined in topp_mask_metal.mm as:
   //   return std::numeric_limits<dim_t>::max();
   // This means Metal imposes no artificial vocabulary limit (same as CPU).
   const dim_t max_classes = std::numeric_limits<dim_t>::max();

@@ -8,7 +8,7 @@
 //
 // Build (from repo root):
 //   clang++ -std=c++17 -O2 \
-//     -I include -I src -DCT2_WITH_METAL \
+//     -I include -I src -DCT2_WITH_MPS \
 //     tests/metal/fused_norm_gemm_bench.mm \
 //     src/metal/ops_fused_norm_gemm.mm \
 //     src/metal/ops_norm_gather.mm \
@@ -64,7 +64,7 @@ static std::vector<T> to_type(const std::vector<float>& src) {
 
 template <typename T>
 static T* gpu_alloc(const std::vector<T>& src) {
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   T* ptr = static_cast<T*>(alloc.allocate(src.size() * sizeof(T), 0));
   std::memcpy(ptr, src.data(), src.size() * sizeof(T));
   return ptr;
@@ -72,12 +72,12 @@ static T* gpu_alloc(const std::vector<T>& src) {
 
 template <typename T>
 static T* gpu_alloc_empty(size_t n) {
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   return static_cast<T*>(alloc.allocate(n * sizeof(T), 0));
 }
 
 static void gpu_free(void* ptr) {
-  get_allocator<Device::METAL>().free(ptr, 0);
+  get_allocator<Device::MPS>().free(ptr, 0);
 }
 
 using hrc = std::chrono::high_resolution_clock;
@@ -135,7 +135,7 @@ static void bench_fused_vs_separate(const char* label, dim_t M, dim_t K, dim_t N
       metal::rms_norm_metal(d_x, d_gamma, d_norm, M, K, eps);
     else
       metal::layer_norm_metal(d_x, d_gamma, d_beta, d_norm, M, K, eps);
-    primitives<Device::METAL>::gemm(false, false, false, true, M, N, K, 1.0f,
+    primitives<Device::MPS>::gemm(false, false, false, true, M, N, K, 1.0f,
                                      d_norm, K, d_W, K, 0.0f, d_y, N);
     metal::commit_and_wait();
   }
@@ -146,7 +146,7 @@ static void bench_fused_vs_separate(const char* label, dim_t M, dim_t K, dim_t N
       metal::rms_norm_metal(d_x, d_gamma, d_norm, M, K, eps);
     else
       metal::layer_norm_metal(d_x, d_gamma, d_beta, d_norm, M, K, eps);
-    primitives<Device::METAL>::gemm(false, false, false, true, M, N, K, 1.0f,
+    primitives<Device::MPS>::gemm(false, false, false, true, M, N, K, 1.0f,
                                      d_norm, K, d_W, K, 0.0f, d_y, N);
     metal::commit_and_wait();
   }

@@ -1,6 +1,6 @@
 // src/metal/ops_sdpa.mm
 //
-// M6.1 — Scaled Dot-Product Attention for Device::METAL.
+// M6.1 — Scaled Dot-Product Attention for Device::MPS.
 //
 // Algorithm per (batch b, query head h):
 //   hk = h % num_heads_k               (grouped query attention)

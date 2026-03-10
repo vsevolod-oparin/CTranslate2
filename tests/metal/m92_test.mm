@@ -2,7 +2,7 @@
 //
 // M9.2 — INT8 GEMM on Metal tests.
 //
-// Tests primitives<Device::METAL>::gemm<int8_t, int32_t>() directly.
+// Tests primitives<Device::MPS>::gemm<int8_t, int32_t>() directly.
 // Strategy: dequantize INT8 inputs to FP32, run FP32 MPS GEMM, round → INT32.
 //
 // PASS criteria:
@@ -14,7 +14,7 @@
 // Build command (from repo root):
 //   clang++ -std=c++17 -O0 \
 //       -I include -I src \
-//       -DCT2_WITH_METAL \
+//       -DCT2_WITH_MPS \
 //       tests/metal/m92_test.mm \
 //       src/metal/ops_quantize.mm \
 //       src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -74,10 +74,10 @@ static int g_tests = 0, g_pass = 0, g_fail = 0;
   } while (0)
 
 static void* alloc_metal(size_t n_bytes) {
-  return get_allocator<Device::METAL>().allocate(n_bytes, 0);
+  return get_allocator<Device::MPS>().allocate(n_bytes, 0);
 }
 static void free_metal(void* p) {
-  get_allocator<Device::METAL>().free(p, 0);
+  get_allocator<Device::MPS>().free(p, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,7 +158,7 @@ static void test_int8_gemm_basic() {
   std::memcpy(d_b, hb.data(), k * n);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false,   // a_is_packed, b_is_packed
       false, false,   // trans_a, trans_b
       m, n, k,
@@ -211,7 +211,7 @@ static void test_int8_gemm_transb() {
   std::memcpy(d_b, hb.data(), n * k);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, false, true, m, n, k,
       1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -258,7 +258,7 @@ static void test_int8_gemm_alpha() {
   std::memcpy(d_b, hb.data(), k * n);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, false, false, m, n, k,
       alpha, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -301,7 +301,7 @@ static void test_int8_gemm_large_k() {
   std::memcpy(d_b, hb.data(), k * n);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, false, false, m, n, k,
       1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -343,7 +343,7 @@ static void test_int8_gemm_zero() {
   std::memcpy(d_b, hb.data(), k * n);
   std::memset(d_c, 0xff, m * n * sizeof(int32_t)); // poison
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, false, false, m, n, k,
       1.0f, d_a, k, d_b, n, 0.0f, d_c, n, nullptr);
 
@@ -405,7 +405,7 @@ static void test_int8_pipeline() {
 
   // 3. INT8 GEMM: A [m,k] * B^T [k,n] → int32 C.
   //    B is stored as [n,k]; trans_b=true means it's treated as [k,n].
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false,  // a_is_packed, b_is_packed
       false, true,   // trans_a=false, trans_b=true
       m, n, k,
@@ -483,7 +483,7 @@ static void test_int8_gemm_batch_strided() {
   std::memcpy(d_b, hb.data(), total_b);
   std::memset(d_c, 0, total_c * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm_batch_strided<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm_batch_strided<int8_t, int32_t>(
       false, false, m, n, k,
       1.0f,
       d_a, lda, stridea,
@@ -533,7 +533,7 @@ static void test_int8_gemm_transa() {
   std::memcpy(d_b, hb.data(), k * n);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, true, false, m, n, k,
       1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -576,7 +576,7 @@ static void test_int8_gemm_transa_transb() {
   std::memcpy(d_b, hb.data(), n * k);
   std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-  primitives<Device::METAL>::gemm<int8_t, int32_t>(
+  primitives<Device::MPS>::gemm<int8_t, int32_t>(
       false, false, true, true, m, n, k,
       1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -632,7 +632,7 @@ static void test_int8_gemm_k_boundary() {
     std::memcpy(d_b, hb.data(), k * n);
     std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+    primitives<Device::MPS>::gemm<int8_t, int32_t>(
         false, false, false, false, m, n, k,
         1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -673,7 +673,7 @@ static void test_int8_gemm_k_boundary() {
     std::memcpy(d_b, hb.data(), k * n);
     std::memset(d_c, 0, m * n * sizeof(int32_t));
 
-    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+    primitives<Device::MPS>::gemm<int8_t, int32_t>(
         false, false, false, false, m, n, k,
         1.0f, d_a, lda, d_b, ldb, 0.0f, d_c, ldc, nullptr);
 
@@ -705,7 +705,7 @@ static void test_int8_gemm_beta_rejection() {
 
   bool threw_gemm = false;
   try {
-    primitives<Device::METAL>::gemm<int8_t, int32_t>(
+    primitives<Device::MPS>::gemm<int8_t, int32_t>(
         false, false, false, false, 4, 4, 4,
         1.0f, d_a, 4, d_b, 4, 1.0f, d_c, 4, nullptr);
   } catch (const std::runtime_error&) {
@@ -716,7 +716,7 @@ static void test_int8_gemm_beta_rejection() {
 
   bool threw_batch = false;
   try {
-    primitives<Device::METAL>::gemm_batch_strided<int8_t, int32_t>(
+    primitives<Device::MPS>::gemm_batch_strided<int8_t, int32_t>(
         false, false, 4, 4, 4,
         1.0f, d_a, 4, 16, d_b, 4, 16,
         0.5f, d_c, 4, 16, 2);
@@ -735,7 +735,7 @@ static void test_int8_gemm_beta_rejection() {
 static void test_gemm_pack_b_int8() {
   std::printf("Test 8: gemm_pack_b<int8_t> returns 0\n");
   int8_t dummy = 0;
-  dim_t result = primitives<Device::METAL>::gemm_pack_b<int8_t>(
+  dim_t result = primitives<Device::MPS>::gemm_pack_b<int8_t>(
       &dummy, false, 64, 64, 1.0f, nullptr);
   CHECK(result == 0, "gemm_pack_b<int8_t> returns 0");
 }

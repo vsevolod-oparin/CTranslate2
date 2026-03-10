@@ -36,7 +36,7 @@ def main():
 
     print("Loading models...")
     cpu_f32 = ctranslate2.Translator(f32_path, device="cpu")
-    metal_f16 = ctranslate2.Translator(f16_path, device="metal")
+    metal_f16 = ctranslate2.Translator(f16_path, device="mps")
 
     actual_ct = metal_f16.compute_type
     print(f"  Metal float16 model compute_type: {actual_ct}")

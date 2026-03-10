@@ -522,7 +522,7 @@ namespace ctranslate2 {
       bool prefilling = (_sliding_window > 0 && values_lengths);
 
       if (!_self_attention) {
-        if (_use_flash_cross_attention && device == Device::METAL) {
+        if (_use_flash_cross_attention && device == Device::MPS) {
           process_cross_attention_flash(queries, values, fused_proj, queries_proj, keys_proj,
                                         values_proj, cached_keys, cached_values,
                                         queries_padder, values_padder, beam_size);

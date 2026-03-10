@@ -27,13 +27,13 @@ cpu_ms = (time.monotonic() - t0) * 1000
 del model_cpu
 import gc; gc.collect()
 
-model_metal = WhisperModel(whisper_path, device="metal", compute_type="float32")
+model_metal = WhisperModel(whisper_path, device="mps", compute_type="float32")
 list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 t0 = time.monotonic()
 list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
 metal_ms = (time.monotonic() - t0) * 1000
 del model_metal
 gc.collect()
-import ctranslate2; ctranslate2.clear_device_cache("metal")
+import ctranslate2; ctranslate2.clear_device_cache("mps")
 
 print(f"CPU: {cpu_ms:.0f}ms  Metal: {metal_ms:.0f}ms  Speedup: {cpu_ms/metal_ms:.2f}x")

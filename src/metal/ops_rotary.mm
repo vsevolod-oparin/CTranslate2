@@ -3,7 +3,7 @@
 // M6.3 — metal::rotary_metal<T>() — Metal rotary position embedding kernel.
 //
 // Free function (no StorageView dependency) used by:
-//   - src/ops/rotary_metal.mm  (Rotary::compute<Device::METAL> wrapper)
+//   - src/ops/rotary_metal.mm  (Rotary::compute<Device::MPS> wrapper)
 //   - tests/metal/rotary_test.mm (standalone correctness test)
 //
 // Algorithm:

@@ -17,7 +17,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m52_bench.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
@@ -96,10 +96,10 @@ static int iter_count(dim_t total) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Simple xorshift32 PRNG for reproducible random inputs
@@ -478,7 +478,7 @@ static void bench_bias_add() {
       for (dim_t i = 0; i < s.total;     ++i) val[i]  = next_float(-5.f, 5.f);
 
       // Warmup
-      primitives<Device::METAL>::add_batch_broadcast(bias, val, out, s.bias_size, s.total);
+      primitives<Device::MPS>::add_batch_broadcast(bias, val, out, s.bias_size, s.total);
       metal::commit_and_wait();
 
       std::vector<float> out_cpu(s.total);
@@ -487,7 +487,7 @@ static void bench_bias_add() {
 
       int iters = iter_count(s.total);
       double gpu_us = bench_median_us(iters, [&] {
-        primitives<Device::METAL>::add_batch_broadcast(bias, val, out, s.bias_size, s.total);
+        primitives<Device::MPS>::add_batch_broadcast(bias, val, out, s.bias_size, s.total);
         metal::commit_and_wait();
         return out[0];
       });
@@ -538,7 +538,7 @@ static void bench_bias_add() {
       for (dim_t i = 0; i < total;   ++i) val[i]  = next_float(-5.f, 5.f);
 
       // Warmup
-      primitives<Device::METAL>::add_block_broadcast(bias, val, out, s.w, s.ch, total);
+      primitives<Device::MPS>::add_block_broadcast(bias, val, out, s.w, s.ch, total);
       metal::commit_and_wait();
 
       std::vector<float> out_cpu(total);
@@ -547,7 +547,7 @@ static void bench_bias_add() {
 
       int iters = iter_count(total);
       double gpu_us = bench_median_us(iters, [&] {
-        primitives<Device::METAL>::add_block_broadcast(bias, val, out, s.w, s.ch, total);
+        primitives<Device::MPS>::add_block_broadcast(bias, val, out, s.w, s.ch, total);
         metal::commit_and_wait();
         return out[0];
       });

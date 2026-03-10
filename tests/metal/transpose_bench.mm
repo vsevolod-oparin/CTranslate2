@@ -8,7 +8,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/transpose_bench.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -75,10 +75,10 @@ static double bench_median_us(int iters, Fn fn) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // CPU reference implementations
@@ -143,7 +143,7 @@ static void check_accuracy_2d(dim_t rows, dim_t cols) {
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)(i % 97) - 48.f;
 
-  primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
+  primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
   metal::commit_and_wait();
   cpu_transpose_2d(d_a, dims, cpu_b.data());
 
@@ -165,7 +165,7 @@ static void check_accuracy_3d(const dim_t* dims, const dim_t* perm, const char* 
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)(i % 97) - 48.f;
 
-  primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
   cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
 
@@ -186,7 +186,7 @@ static void check_accuracy_4d(const dim_t* dims, const dim_t* perm, const char* 
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)(i % 97) - 48.f;
 
-  primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
   cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
 
@@ -245,12 +245,12 @@ static void bench_2d(const char* label, dim_t rows, dim_t cols, int iters) {
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)i;
 
   // Warmup + PSO compile
-  primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
+  primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
   metal::commit_and_wait();
   cpu_transpose_2d(d_a, dims, cpu_b.data());
 
   double gpu_us = bench_median_us(iters, [&] {
-    primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
+    primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
     metal::commit_and_wait();
     return d_b[0];
   });
@@ -272,12 +272,12 @@ static void bench_3d(const char* label, const dim_t* dims, const dim_t* perm, in
   std::vector<float> cpu_b(n);
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)i;
 
-  primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
   cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
 
   double gpu_us = bench_median_us(iters, [&] {
-    primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     return d_b[0];
   });
@@ -299,12 +299,12 @@ static void bench_4d(const char* label, const dim_t* dims, const dim_t* perm, in
   std::vector<float> cpu_b(n);
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)i;
 
-  primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
   cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
 
   double gpu_us = bench_median_us(iters, [&] {
-    primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     return d_b[0];
   });

@@ -68,7 +68,7 @@ def test_translation_pso_caching():
     passed = 0
     total = 0
 
-    translator = ctranslate2.Translator(mpath, device="metal")
+    translator = ctranslate2.Translator(mpath, device="mps")
 
     # --- Test 1: PSO miss/hit counts ---
     if fns:
@@ -201,7 +201,7 @@ def test_whisper_pso_caching():
 
     SAMPLE_RATE = 16000
     processor = WhisperProcessor.from_pretrained("openai/whisper-base")
-    model = ctranslate2.models.Whisper(mpath, device="metal")
+    model = ctranslate2.models.Whisper(mpath, device="mps")
 
     audio, _ = librosa.load(apath, sr=SAMPLE_RATE, mono=True)
     # Use first 30 seconds for a single-chunk test

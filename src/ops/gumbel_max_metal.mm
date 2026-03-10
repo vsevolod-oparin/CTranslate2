@@ -39,7 +39,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                   \
     template void                                                         \
-    GumbelMax::add_gumbel_noise<Device::METAL, T>(const StorageView& x,  \
+    GumbelMax::add_gumbel_noise<Device::MPS, T>(const StorageView& x,  \
                                                    StorageView& y) const;
 
     DECLARE_IMPL(float)

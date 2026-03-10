@@ -74,7 +74,7 @@ def test_cli_profiling():
     env["DYLD_LIBRARY_PATH"] = CT2_LIB_DIR
 
     proc = subprocess.run(
-        [CT2_TRANSLATOR, "--model", mpath, "--device", "metal",
+        [CT2_TRANSLATOR, "--model", mpath, "--device", "mps",
          "--log_profiling", "--beam_size", "2", "--max_decoding_length", "20"],
         input="Hello world\n",
         capture_output=True,
@@ -164,7 +164,7 @@ def test_python_api_profiling():
     tokenizer = load_marian_tokenizer()
     tokens = [tokenize(tokenizer, "The quick brown fox jumps over the lazy dog.")]
 
-    translator = ctranslate2.Translator(mpath, device="metal")
+    translator = ctranslate2.Translator(mpath, device="mps")
 
     # Test 5: GPU time functions are callable via ctypes
     fns = load_ct2_lib()

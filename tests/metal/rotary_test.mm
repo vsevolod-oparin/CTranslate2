@@ -1,6 +1,6 @@
 // tests/metal/rotary_test.mm
 //
-// M6.3 — Rotary::compute<Device::METAL> correctness tests.
+// M6.3 — Rotary::compute<Device::MPS> correctness tests.
 //
 // Tests the Metal GPU rotary embedding kernel against the CPU reference.
 // Calls metal::rotary_metal<T>() directly (same pattern as kv_cache_test.mm).
@@ -18,7 +18,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/rotary_test.mm \
 //     src/metal/ops_rotary.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -59,11 +59,11 @@ using namespace ctranslate2;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<size_t>(n) * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -288,7 +288,7 @@ static void test_interleave_partial_std() {
 // ---------------------------------------------------------------------------
 
 int main() {
-  std::printf("=== M6.3 Rotary::compute<Device::METAL> Correctness Tests ===\n\n");
+  std::printf("=== M6.3 Rotary::compute<Device::MPS> Correctness Tests ===\n\n");
 
   test_float32_non_interleave_fa2();
   test_float32_non_interleave_std();

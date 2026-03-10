@@ -39,7 +39,7 @@ def main():
     print("Loading models...")
     cpu_f32 = ctranslate2.Translator(f32_path, device="cpu")
     cpu_int8 = ctranslate2.Translator(int8_path, device="cpu")
-    metal_int8 = ctranslate2.Translator(int8_path, device="metal")
+    metal_int8 = ctranslate2.Translator(int8_path, device="mps")
 
     test_sentences = [
         "The cat sat on the mat.",

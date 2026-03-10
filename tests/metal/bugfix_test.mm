@@ -6,7 +6,7 @@
 // Build:
 //   cd /path/to/CTranslate2
 //   clang++ -std=c++17 -O2 \
-//     -I include -I src -DCT2_WITH_METAL \
+//     -I include -I src -DCT2_WITH_MPS \
 //     tests/metal/bugfix_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
@@ -56,11 +56,11 @@ static int failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 static inline uint16_t float_to_fp16(float f) {
@@ -176,7 +176,7 @@ static void test_fp16_gemm_strided_lda() {
   }
 
   // Metal GEMM
-  primitives<Device::METAL>::gemm_batch_strided<ct2_f16, ct2_f16>(
+  primitives<Device::MPS>::gemm_batch_strided<ct2_f16, ct2_f16>(
       trans_a, trans_b, m, n, k,
       1.f, A, lda, stridea, B, ldb, strideb,
       0.f, C, ldc, stridec, batch_size);
@@ -257,7 +257,7 @@ static void test_fp16_gemm_strided_ldb_no_trans() {
                  Bf.data() + b * strideb, ldb,
                  0.f, C_ref.data() + b * stridec, ldc);
 
-  primitives<Device::METAL>::gemm_batch_strided<ct2_f16, ct2_f16>(
+  primitives<Device::MPS>::gemm_batch_strided<ct2_f16, ct2_f16>(
       trans_a, trans_b, m, n, k,
       1.f, A, lda, stridea, B, ldb, strideb,
       0.f, C, ldc, stridec, batch_size);
@@ -330,7 +330,7 @@ static void test_fp16_gemm_strided_ldc() {
                  Bf.data() + b * strideb, ldb,
                  0.f, C_ref.data() + b * stridec, ldc);
 
-  primitives<Device::METAL>::gemm_batch_strided<ct2_f16, ct2_f16>(
+  primitives<Device::MPS>::gemm_batch_strided<ct2_f16, ct2_f16>(
       trans_a, trans_b, m, n, k,
       1.f, A, lda, stridea, B, ldb, strideb,
       0.f, C, ldc, stridec, batch_size);

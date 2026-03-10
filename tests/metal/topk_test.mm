@@ -5,7 +5,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/topk_test.mm \
 //     src/metal/ops_topk.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -109,7 +109,7 @@ static void test_argmax(const char* type_label, dim_t batch, dim_t depth, float 
   std::snprintf(label, sizeof(label), "argmax_%s  batch=%lld depth=%lld",
                 type_label, (long long)batch, (long long)depth);
 
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   const size_t in_bytes  = batch * depth * sizeof(T);
   const size_t val_bytes = batch * sizeof(T);
   const size_t idx_bytes = batch * sizeof(int32_t);
@@ -133,7 +133,7 @@ static void test_argmax(const char* type_label, dim_t batch, dim_t depth, float 
   std::memset(idx_ptr, 0, idx_bytes);
 
   metal::topk_metal<T>(in_ptr, val_ptr, idx_ptr, batch, depth, 1);
-  synchronize_stream(Device::METAL);
+  synchronize_stream(Device::MPS);
 
   std::vector<float> ref_vals(batch);
   std::vector<int32_t> ref_idxs(batch);
@@ -168,7 +168,7 @@ static void test_topk(const char* type_label, dim_t batch, dim_t depth, dim_t k,
   std::snprintf(label, sizeof(label), "topk_%s  batch=%lld depth=%lld k=%lld",
                 type_label, (long long)batch, (long long)depth, (long long)k);
 
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   const size_t in_bytes  = batch * depth * sizeof(T);
   const size_t val_bytes = batch * k * sizeof(T);
   const size_t idx_bytes = batch * k * sizeof(int32_t);
@@ -195,7 +195,7 @@ static void test_topk(const char* type_label, dim_t batch, dim_t depth, dim_t k,
   std::memset(idx_ptr, 0, idx_bytes);
 
   metal::topk_metal<T>(in_ptr, val_ptr, idx_ptr, batch, depth, k);
-  synchronize_stream(Device::METAL);
+  synchronize_stream(Device::MPS);
 
   // CPU reference
   std::vector<float> ref_vals(batch * k);
@@ -238,7 +238,7 @@ static void test_topk(const char* type_label, dim_t batch, dim_t depth, dim_t k,
 // ---------------------------------------------------------------------------
 
 static void test_gather_encode_only() {
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   const dim_t depth = 4;
   const dim_t num_rows = 8;
   const dim_t num_indices = 3;
@@ -259,7 +259,7 @@ static void test_gather_encode_only() {
 
   metal::gather_metal<float>(src, dst, indices, depth, num_rows * depth,
                               num_indices, num_indices * depth);
-  synchronize_stream(Device::METAL);
+  synchronize_stream(Device::MPS);
 
   bool ok = true;
   float expected[] = {20, 21, 22, 23, 50, 51, 52, 53, 0, 1, 2, 3};

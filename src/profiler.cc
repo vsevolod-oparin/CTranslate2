@@ -25,7 +25,7 @@ namespace ctranslate2 {
 #include <vector>
 #include <unordered_map>
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #include "metal/utils.h"
 #endif
 
@@ -172,8 +172,8 @@ namespace ctranslate2 {
     _parent = current_scope;
     _name = name;
     synchronize_stream(profiler->device());
-#ifdef CT2_WITH_METAL
-    if (profiler->device() == Device::METAL)
+#ifdef CT2_WITH_MPS
+    if (profiler->device() == Device::MPS)
       _gpu_start = metal::gpu_time_elapsed();
 #endif
     _start = std::chrono::high_resolution_clock::now();
@@ -188,8 +188,8 @@ namespace ctranslate2 {
     auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(diff);
 
     std::chrono::microseconds gpu_elapsed{0};
-#ifdef CT2_WITH_METAL
-    if (profiler->device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+    if (profiler->device() == Device::MPS) {
       double gpu_secs = metal::gpu_time_elapsed() - _gpu_start;
       gpu_elapsed = std::chrono::microseconds(static_cast<int64_t>(gpu_secs * 1e6));
     }

@@ -1,6 +1,6 @@
 // src/ops/flash_attention_metal.mm
 //
-// M6.1 — FlashAttention::compute<Device::METAL>.
+// M6.1 — FlashAttention::compute<Device::MPS>.
 // M6.2 — KV-cache update (offset > 0 path).
 // M6.3 — Rotary embeddings (RoPE) for the decode path.
 //
@@ -267,7 +267,7 @@ namespace ctranslate2 {
       }
     }
 
-    template void FlashAttention::compute<Device::METAL>(
+    template void FlashAttention::compute<Device::MPS>(
         StorageView&, StorageView&, StorageView&, StorageView&,
         StorageView*, StorageView*, StorageView*, bool,
         StorageView*, StorageView*, const bool, StorageView*, dim_t, dim_t) const;

@@ -5,7 +5,7 @@
 // Implemented in src/metal/ops_norm_gather.mm, src/metal/ops_sdpa.mm,
 // src/metal/ops_conv1d.mm, src/metal/ops_quantize.mm.
 //
-// Include only from .mm files compiled with Metal support (CT2_WITH_METAL).
+// Include only from .mm files compiled with Metal support (CT2_WITH_MPS).
 // Part of M5.2 — Metal op specializations.
 // Part of M6.1 — Scaled dot-product attention.
 // Part of M8.3 — Conv1D via im2col + GEMM.

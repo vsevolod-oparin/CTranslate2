@@ -1,6 +1,6 @@
 // src/ops/rotary_metal.mm
 //
-// M6.3 — Rotary::compute<Device::METAL>
+// M6.3 — Rotary::compute<Device::MPS>
 //
 // Thin wrapper: extracts dimensions from StorageView and calls
 // metal::rotary_metal<T>() (implemented in src/metal/ops_rotary.mm).
@@ -38,7 +38,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                    \
     template void                                                          \
-    Rotary::compute<Device::METAL, T>(const StorageView&,                  \
+    Rotary::compute<Device::MPS, T>(const StorageView&,                  \
                                       const StorageView&,                  \
                                       const StorageView&,                  \
                                       StorageView&,                        \

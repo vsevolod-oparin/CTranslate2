@@ -8,7 +8,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/storage_view_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -70,7 +70,7 @@ static int failed = 0;
 static void test_cross_device_primitives() {
   std::printf("\n--- M3.2a: cross_device_primitives (CPU↔Metal) ---\n");
 
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
   const dim_t N = 8;
   float* metal_ptr = static_cast<float*>(alloc.allocate(N * sizeof(float)));
   CHECK("Metal alloc non-null", metal_ptr != nullptr);
@@ -78,7 +78,7 @@ static void test_cross_device_primitives() {
   // 1. CPU → Metal
   float src[8] = {0.f, 1.f, 2.f, 3.f, 4.f, 5.f, 6.f, 7.f};
   CHECK_NOTHROW("CPU→Metal copy — no error",
-    (cross_device_primitives<Device::CPU, Device::METAL>::copy(src, metal_ptr, N))
+    (cross_device_primitives<Device::CPU, Device::MPS>::copy(src, metal_ptr, N))
   );
   bool ok = true;
   for (dim_t i = 0; i < N; ++i) {
@@ -89,7 +89,7 @@ static void test_cross_device_primitives() {
   // 2. Metal → CPU
   float dst[8] = {};
   CHECK_NOTHROW("Metal→CPU copy — no error",
-    (cross_device_primitives<Device::METAL, Device::CPU>::copy(
+    (cross_device_primitives<Device::MPS, Device::CPU>::copy(
         static_cast<const float*>(metal_ptr), dst, N))
   );
   ok = true;
@@ -102,9 +102,9 @@ static void test_cross_device_primitives() {
   int32_t* metal_i32 = static_cast<int32_t*>(
       alloc.allocate(4 * sizeof(int32_t)));
   int32_t src_i32[4] = {10, 20, 30, 40};
-  cross_device_primitives<Device::CPU, Device::METAL>::copy(src_i32, metal_i32, 4);
+  cross_device_primitives<Device::CPU, Device::MPS>::copy(src_i32, metal_i32, 4);
   int32_t dst_i32[4] = {};
-  cross_device_primitives<Device::METAL, Device::CPU>::copy(
+  cross_device_primitives<Device::MPS, Device::CPU>::copy(
       static_cast<const int32_t*>(metal_i32), dst_i32, 4);
   CHECK("int32 round-trip CPU↔Metal", std::memcmp(src_i32, dst_i32, 16) == 0);
 
@@ -120,7 +120,7 @@ static void test_cross_device_primitives() {
 static void test_metal_primitives_at_copy() {
   std::printf("\n--- M3.2b: primitives<METAL>::at and ::copy ---\n");
 
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
   const dim_t N = 4;
   float* src_m = static_cast<float*>(alloc.allocate(N * sizeof(float)));
   float* dst_m = static_cast<float*>(alloc.allocate(N * sizeof(float)));
@@ -130,13 +130,13 @@ static void test_metal_primitives_at_copy() {
 
   // primitives<METAL>::at — direct CPU read of shared-memory pointer
   CHECK("primitives<METAL>::at(0) == 1.f",
-        primitives<Device::METAL>::at(src_m, 0) == 1.f);
+        primitives<Device::MPS>::at(src_m, 0) == 1.f);
   CHECK("primitives<METAL>::at(3) == 4.f",
-        primitives<Device::METAL>::at(src_m, 3) == 4.f);
+        primitives<Device::MPS>::at(src_m, 3) == 4.f);
 
   // primitives<METAL>::copy — memcpy between two Metal (shared) buffers
   CHECK_NOTHROW("primitives<METAL>::copy — no error",
-    primitives<Device::METAL>::copy(
+    primitives<Device::MPS>::copy(
         static_cast<const float*>(src_m), dst_m, N)
   );
   bool copy_ok = true;
@@ -160,14 +160,14 @@ static void test_metal_sync_fence() {
   // Simulate what storage_view.cc::copy_from does for Metal→CPU:
   //   1. synchronize_stream(METAL)  — commit_and_wait(), flushes GPU writes
   //   2. cross_device_primitives<METAL,CPU>::copy
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
   float* metal_ptr = static_cast<float*>(alloc.allocate(4 * sizeof(float)));
   metal_ptr[0] = 9.f; metal_ptr[1] = 8.f; metal_ptr[2] = 7.f; metal_ptr[3] = 6.f;
 
   CHECK_NOTHROW("synchronize_stream(METAL) + Metal→CPU — no error",
-    synchronize_stream(Device::METAL);
+    synchronize_stream(Device::MPS);
     float dst[4] = {};
-    cross_device_primitives<Device::METAL, Device::CPU>::copy(
+    cross_device_primitives<Device::MPS, Device::CPU>::copy(
         static_cast<const float*>(metal_ptr), dst, 4);
     CHECK("fence+copy: dst[0] == 9.f", dst[0] == 9.f);
     CHECK("fence+copy: dst[3] == 6.f", dst[3] == 6.f);

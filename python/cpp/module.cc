@@ -16,8 +16,8 @@ get_supported_devices() {
   std::vector<std::string> devices = {"cpu"};
   if (ctranslate2::get_device_count(ctranslate2::Device::CUDA) > 0)
     devices.push_back("cuda");
-  if (ctranslate2::get_device_count(ctranslate2::Device::METAL) > 0)
-    devices.push_back("metal");
+  if (ctranslate2::get_device_count(ctranslate2::Device::MPS) > 0)
+    devices.push_back("mps");
   return devices;
 }
 
@@ -67,9 +67,9 @@ PYBIND11_MODULE(_ext, m)
   m.def("get_cuda_device_count", &ctranslate2::get_gpu_count,
         "Returns the number of visible CUDA GPU devices.");
 
-  m.def("get_metal_device_count", []() {
-    return ctranslate2::get_device_count(ctranslate2::Device::METAL);
-  }, "Returns the number of visible Metal devices (0 or 1).");
+  m.def("get_mps_device_count", []() {
+    return ctranslate2::get_device_count(ctranslate2::Device::MPS);
+  }, "Returns the number of visible MPS (Metal) devices (0 or 1).");
 
   m.def("clear_device_cache", [](const std::string& device) {
     ctranslate2::Device d = ctranslate2::str_to_device(device);
@@ -77,11 +77,11 @@ PYBIND11_MODULE(_ext, m)
       ctranslate2::get_allocator(d).clear_cache();
   }, py::arg("device"),
      "Releases all cached allocator buffers for the given device back to the system. "
-     "On Metal (unified memory) this directly reduces system RAM pressure.");
+     "On MPS/Metal (unified memory) this directly reduces system RAM pressure.");
 
   m.def("get_supported_devices", &get_supported_devices,
         "Returns the list of devices supported by this build: always includes 'cpu', "
-        "plus 'cuda' and/or 'metal' when at least one such device is available at runtime.");
+        "plus 'cuda' and/or 'mps' when at least one such device is available at runtime.");
 
   m.def("get_supported_compute_types", &get_supported_compute_types,
         py::arg("device"),

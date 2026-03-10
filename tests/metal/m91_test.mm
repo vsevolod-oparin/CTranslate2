@@ -15,7 +15,7 @@
 // Build command (from repo root):
 //   clang++ -std=c++17 -O0 \
 //       -I include -I src \
-//       -DCT2_WITH_METAL \
+//       -DCT2_WITH_MPS \
 //       tests/metal/m91_test.mm \
 //       src/metal/ops_quantize.mm \
 //       src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -77,10 +77,10 @@ static int g_tests = 0, g_pass = 0, g_fail = 0;
 
 // Allocate a Metal-backed buffer via the registered allocator.
 static void* alloc_metal(size_t n_bytes) {
-  return get_allocator<Device::METAL>().allocate(n_bytes, 0);
+  return get_allocator<Device::MPS>().allocate(n_bytes, 0);
 }
 static void free_metal(void* p) {
-  get_allocator<Device::METAL>().free(p, 0);
+  get_allocator<Device::MPS>().free(p, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -712,7 +712,7 @@ static void test_dequantize_gemm_output_typed(const char* label, float tol) {
 // ---------------------------------------------------------------------------
 static void test_gemm_pack_b_zero() {
   std::printf("Test 9: gemm_pack_b returns 0\n");
-  dim_t result = primitives<Device::METAL>::gemm_pack_b<float>(
+  dim_t result = primitives<Device::MPS>::gemm_pack_b<float>(
       nullptr, false, 16, 16, 1.f, nullptr);
   std::printf("  gemm_pack_b = %lld  %s\n", (long long)result,
               result == 0 ? "PASS" : "FAIL");
@@ -730,7 +730,7 @@ static void test_compute_u8_compensation_noop() {
 
   bool threw = false;
   try {
-    primitives<Device::METAL>::compute_u8_compensation(
+    primitives<Device::MPS>::compute_u8_compensation(
         nullptr, false, 4, 4, 1.f, buf);
   } catch (...) {
     threw = true;

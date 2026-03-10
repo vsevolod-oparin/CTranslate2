@@ -9,7 +9,7 @@
 //   "CPU"   = same algorithm on the same Metal-backed buffers, no sync overhead
 //
 // Both paths use Metal-allocated I/O buffers (realistic: all CTranslate2
-// tensors on Device::METAL are Metal-backed).  The only difference is the
+// tensors on Device::MPS are Metal-backed).  The only difference is the
 // commit_and_wait() call in the Metal path.
 //
 // Key insight: commit_and_wait() adds ~0.4 ms fixed overhead.
@@ -21,7 +21,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m7_bench.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm \
@@ -95,11 +95,11 @@ static int iter_count(dim_t total) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<size_t>(n) * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Simple xorshift32 PRNG for reproducible data

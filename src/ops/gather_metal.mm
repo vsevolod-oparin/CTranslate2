@@ -42,7 +42,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                         \
     template void                                               \
-    Gather::compute<Device::METAL, T>(const StorageView& data,  \
+    Gather::compute<Device::MPS, T>(const StorageView& data,  \
                                        const StorageView& input,\
                                        const dim_t axis,        \
                                        const dim_t batch_dims,  \

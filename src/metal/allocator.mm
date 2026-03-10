@@ -224,7 +224,7 @@ namespace ctranslate2 {
 
 
   template<>
-  Allocator& get_allocator<Device::METAL>() {
+  Allocator& get_allocator<Device::MPS>() {
     static metal::MetalAllocator allocator;
     return allocator;
   }
@@ -234,38 +234,38 @@ namespace ctranslate2 {
   // byte offset of ptr within that buffer.
   id<MTLBuffer> metal_buffer_for_ptr(const void* ptr, NSUInteger* offset_out) {
     return static_cast<metal::MetalAllocator&>(
-        get_allocator<Device::METAL>())
+        get_allocator<Device::MPS>())
         .buffer_for_ptr(ptr, offset_out);
   }
 
   namespace metal {
     void flush_pending_frees() {
       static_cast<MetalAllocator&>(
-          get_allocator<Device::METAL>())
+          get_allocator<Device::MPS>())
           .flush_pending_frees();
     }
 
     void protect_buffer(const void* ptr) {
       static_cast<MetalAllocator&>(
-          get_allocator<Device::METAL>())
+          get_allocator<Device::MPS>())
           .protect_buffer(ptr);
     }
 
     void protect_buffer_by_base(void* base_ptr) {
       static_cast<MetalAllocator&>(
-          get_allocator<Device::METAL>())
+          get_allocator<Device::MPS>())
           .protect_buffer_by_base(base_ptr);
     }
 
     size_t pool_bytes() {
       return static_cast<MetalAllocator&>(
-          get_allocator<Device::METAL>())
+          get_allocator<Device::MPS>())
           .pool_bytes();
     }
 
     size_t live_bytes() {
       return static_cast<MetalAllocator&>(
-          get_allocator<Device::METAL>())
+          get_allocator<Device::MPS>())
           .live_bytes();
     }
   }  // namespace metal

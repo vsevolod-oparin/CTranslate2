@@ -3,7 +3,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/sync_scoped_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -124,12 +124,12 @@ template <ctranslate2::Device D> int  get_device_index();
 template <ctranslate2::Device D> void set_device_index(int index);
 
 template<>
-int get_device_index<ctranslate2::Device::METAL>() {
+int get_device_index<ctranslate2::Device::MPS>() {
   return 0;
 }
 
 template<>
-void set_device_index<ctranslate2::Device::METAL>(int index) {
+void set_device_index<ctranslate2::Device::MPS>(int index) {
   if (index != 0) {
     throw std::invalid_argument(
         "Invalid Metal device index: " + std::to_string(index));
@@ -141,26 +141,26 @@ static void test_scoped_device_setter() {
 
   // 1. get_device_index<METAL>() always returns 0.
   CHECK("get_device_index<METAL>() == 0",
-        get_device_index<ctranslate2::Device::METAL>() == 0);
+        get_device_index<ctranslate2::Device::MPS>() == 0);
 
   // 2. set_device_index<METAL>(0) is a no-op — must not throw.
   CHECK_NOTHROW("set_device_index<METAL>(0) — no error",
-    set_device_index<ctranslate2::Device::METAL>(0)
+    set_device_index<ctranslate2::Device::MPS>(0)
   );
 
   // 3. set_device_index<METAL>(1) must throw invalid_argument.
   CHECK_THROWS("set_device_index<METAL>(1) — throws",
-    set_device_index<ctranslate2::Device::METAL>(1)
+    set_device_index<ctranslate2::Device::MPS>(1)
   );
 
   // 4. ScopedDeviceSetter pattern: index 0 → prev == new → no set called.
   //    Simulate the RAII scope manually using the template functions.
-  int prev = get_device_index<ctranslate2::Device::METAL>();
+  int prev = get_device_index<ctranslate2::Device::MPS>();
   CHECK("prev index == 0", prev == 0);
   // Constructor: prev == new (0 == 0), so no set_device_index call.
   // Destructor:  same — no restoration needed.
   CHECK_NOTHROW("ScopedDeviceSetter(METAL, 0) — no error",
-    if (prev != 0) { set_device_index<ctranslate2::Device::METAL>(0); }
+    if (prev != 0) { set_device_index<ctranslate2::Device::MPS>(0); }
   );
 }
 

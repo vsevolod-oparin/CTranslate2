@@ -3,7 +3,7 @@
 //
 // Run from the repository root:
 //   clang++ -std=c++17 -O2 \
-//     -I include -I src -DCT2_WITH_METAL \
+//     -I include -I src -DCT2_WITH_MPS \
 //     tests/metal/m11_review_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
@@ -73,12 +73,12 @@ static int failed = 0;
 template <typename T>
 static T* metal_alloc(dim_t count) {
   return static_cast<T*>(
-      get_allocator<Device::METAL>().allocate(count * sizeof(T)));
+      get_allocator<Device::MPS>().allocate(count * sizeof(T)));
 }
 
 template <typename T>
 static void metal_free(T* ptr) {
-  get_allocator<Device::METAL>().free(ptr);
+  get_allocator<Device::MPS>().free(ptr);
 }
 
 
@@ -87,7 +87,7 @@ static void metal_free(T* ptr) {
 // =========================================================================
 static void test_buffer_for_ptr() {
   std::printf("\n--- TEST-1: buffer_for_ptr O(log N) ---\n");
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
 
   // Allocate 3 buffers of different sizes.
   const size_t sz_a = 256 * sizeof(float);
@@ -152,7 +152,7 @@ static void test_buffer_for_ptr() {
 // =========================================================================
 static void test_protect_buffer() {
   std::printf("\n--- TEST-2: protect_buffer lifecycle ---\n");
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
 
   // Allocate a buffer and protect it.
   const size_t sz = 128 * sizeof(float);
@@ -214,7 +214,7 @@ static void test_indexed_fill_f16() {
   indices[3] = 15;
 
   // Call indexed_fill (should be encode-only for f16).
-  primitives<Device::METAL>::indexed_fill(x, ct2_f16(7.5f), indices, 4);
+  primitives<Device::MPS>::indexed_fill(x, ct2_f16(7.5f), indices, 4);
 
   // Must commit to see results.
   metal::commit_and_wait();
@@ -239,7 +239,7 @@ static void test_indexed_fill_f16_chain() {
   auto* x = metal_alloc<ct2_f16>(N);
 
   // GPU fill (encode-only) — fill all with 1.0
-  primitives<Device::METAL>::fill(x, ct2_f16(1.0f), N);
+  primitives<Device::MPS>::fill(x, ct2_f16(1.0f), N);
 
   // Now scatter -1.0 at specific indices.
   auto* idx = metal_alloc<int32_t>(3);
@@ -247,7 +247,7 @@ static void test_indexed_fill_f16_chain() {
   idx[1] = 10;
   idx[2] = 31;
 
-  primitives<Device::METAL>::indexed_fill(x, ct2_f16(-1.0f), idx, 3);
+  primitives<Device::MPS>::indexed_fill(x, ct2_f16(-1.0f), idx, 3);
   metal::commit_and_wait();
 
   CHECK("f16 chain: x[0] == -1.0",   std::fabs(float(x[0]) + 1.0f) < 0.01f);
@@ -273,7 +273,7 @@ static void test_indexed_fill_f32() {
   indices[1] = 7;
   indices[2] = 14;
 
-  primitives<Device::METAL>::indexed_fill(x, 3.14f, indices, 3);
+  primitives<Device::MPS>::indexed_fill(x, 3.14f, indices, 3);
   metal::commit_and_wait();
 
   CHECK("f32 indexed_fill: x[1] == 3.14",  std::fabs(x[1] - 3.14f) < 0.001f);
@@ -293,7 +293,7 @@ static void test_indexed_fill_zero() {
   for (dim_t i = 0; i < 4; ++i) x[i] = 42.f;
 
   CHECK_NOTHROW("indexed_fill(0 indices) — no crash",
-    primitives<Device::METAL>::indexed_fill(x, 0.f, nullptr, 0)
+    primitives<Device::MPS>::indexed_fill(x, 0.f, nullptr, 0)
   );
 
   // x should be unchanged.
@@ -323,7 +323,7 @@ static void test_indexed_fill_bf16() {
   indices[1] = 8;
   indices[2] = 15;
 
-  primitives<Device::METAL>::indexed_fill(x, ct2_bf16(5.0f), indices, 3);
+  primitives<Device::MPS>::indexed_fill(x, ct2_bf16(5.0f), indices, 3);
   metal::commit_and_wait();
 
   CHECK("bf16 indexed_fill: x[0] == 5.0",  std::fabs(float(x[0]) - 5.0f) < 0.1f);
@@ -354,7 +354,7 @@ static void test_gemm_cache() {
   for (dim_t i = 0; i < M * N; ++i) c[i] = 0.0f;
 
   // First GEMM — cache miss.
-  primitives<Device::METAL>::gemm<float, float>(false, false, false, false,
+  primitives<Device::MPS>::gemm<float, float>(false, false, false, false,
       M, N, K, 1.0f, a, K, b, N, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -368,7 +368,7 @@ static void test_gemm_cache() {
   for (dim_t i = 0; i < M * K; ++i) a[i] = 2.0f;
   for (dim_t i = 0; i < M * N; ++i) c[i] = 0.0f;
 
-  primitives<Device::METAL>::gemm<float, float>(false, false, false, false,
+  primitives<Device::MPS>::gemm<float, float>(false, false, false, false,
       M, N, K, 1.0f, a, K, b, N, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -381,7 +381,7 @@ static void test_gemm_cache() {
   // Third GEMM with alpha=0.5 — different cache key.
   for (dim_t i = 0; i < M * N; ++i) c[i] = 0.0f;
 
-  primitives<Device::METAL>::gemm<float, float>(false, false, false, false,
+  primitives<Device::MPS>::gemm<float, float>(false, false, false, false,
       M, N, K, 0.5f, a, K, b, N, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -399,7 +399,7 @@ static void test_gemm_cache() {
       bt[j * K + i] = b[i * N + j];
   for (dim_t i = 0; i < M * N; ++i) c[i] = 0.0f;
 
-  primitives<Device::METAL>::gemm<float, float>(false, false, false, true,
+  primitives<Device::MPS>::gemm<float, float>(false, false, false, true,
       M, N, K, 1.0f, a, K, bt, K, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -429,7 +429,7 @@ static void test_gemm_cache_f16() {
   for (dim_t i = 0; i < M * N; ++i) c[i] = ct2_f16(0.0f);
 
   // C = A × B = K * 0.5 = 8.0
-  primitives<Device::METAL>::gemm<ct2_f16, ct2_f16>(false, false, false, false,
+  primitives<Device::MPS>::gemm<ct2_f16, ct2_f16>(false, false, false, false,
       M, N, K, 1.0f, a, K, b, N, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -443,7 +443,7 @@ static void test_gemm_cache_f16() {
   for (dim_t i = 0; i < M * K; ++i) a[i] = ct2_f16(2.0f);
   for (dim_t i = 0; i < M * N; ++i) c[i] = ct2_f16(0.0f);
 
-  primitives<Device::METAL>::gemm<ct2_f16, ct2_f16>(false, false, false, false,
+  primitives<Device::MPS>::gemm<ct2_f16, ct2_f16>(false, false, false, false,
       M, N, K, 1.0f, a, K, b, N, 0.0f, c, N, nullptr);
   metal::commit_and_wait();
 
@@ -467,7 +467,7 @@ static void test_gemm_cache_f16() {
 static void test_protect_buffer_race() {
   std::printf("\n--- TEST-5: protect_buffer race simulation ---\n");
 
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
 
   // Allocate source and destination.
   const dim_t N = 64;

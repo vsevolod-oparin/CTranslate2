@@ -6,7 +6,7 @@
 #include "ctranslate2/devices.h"
 #include "dispatch.h"
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #include "metal/ops_metal.h"
 #include "metal/utils.h"
 #endif
@@ -61,11 +61,11 @@ namespace ctranslate2 {
       } else {
         StorageView clone(std::move(data));
         operator()(clone, input, data);
-#ifdef CT2_WITH_METAL
-        if (data.device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+        if (data.device() == Device::MPS) {
           // M11.21: Protect clone and indices from premature reuse.
           metal::protect_buffer(clone.buffer());
-          if (input.device() == Device::METAL)
+          if (input.device() == Device::MPS)
             metal::protect_buffer(input.buffer());
         }
 #endif
@@ -106,8 +106,8 @@ namespace ctranslate2 {
       if (data_views.empty())
         return;
 
-#ifdef CT2_WITH_METAL
-      if (data_views[0]->device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+      if (data_views[0]->device() == Device::MPS) {
         // M11.1: encode all gathers, then one commit.
         // 1. Clone all data views — clones hold the source data.
         std::vector<StorageView> clones;
@@ -149,7 +149,7 @@ namespace ctranslate2 {
         //    by the caller before the next commit_and_wait).
         for (auto& clone : clones)
           metal::protect_buffer(clone.buffer());
-        if (indices.device() == Device::METAL)
+        if (indices.device() == Device::MPS)
           metal::protect_buffer(indices.buffer());
         return;
       }

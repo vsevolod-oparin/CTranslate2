@@ -541,7 +541,7 @@ if(WITH_METAL)
   # Override the global 10.13 minimum: MPSGraph BF16 and Apple9 GPU family require macOS 14+.
   set(CMAKE_OSX_DEPLOYMENT_TARGET "14.0")
   enable_language(OBJCXX)
-  add_definitions(-DCT2_WITH_METAL)
+  add_definitions(-DCT2_WITH_MPS)
   list(APPEND SOURCES ${METAL_SOURCES})
 
   # check_msl_sync — verify src/metal/msl_strings.h matches the canonical

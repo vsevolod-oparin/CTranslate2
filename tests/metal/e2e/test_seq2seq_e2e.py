@@ -68,7 +68,7 @@ def main():
     print(f"  Loaded {len(sources)} source / {len(references)} reference sentences")
 
     cpu_translator = ctranslate2.Translator(mpath, device="cpu")
-    metal_translator = ctranslate2.Translator(mpath, device="metal")
+    metal_translator = ctranslate2.Translator(mpath, device="mps")
 
     passed = 0
     failed = 0

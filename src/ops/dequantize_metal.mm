@@ -1,7 +1,7 @@
 // src/ops/dequantize_metal.mm
 //
-// M9.1 — Dequantize::dequantize<Device::METAL, int8_t, T>
-//      + Dequantize::dequantize_gemm_output<Device::METAL, T>
+// M9.1 — Dequantize::dequantize<Device::MPS, int8_t, T>
+//      + Dequantize::dequantize_gemm_output<Device::MPS, T>
 //
 // Thin wrappers that extract dims from StorageViews and delegate to
 // metal::dequantize_int8_metal<T>() and metal::dequantize_gemm_output_metal<T>()
@@ -79,9 +79,9 @@ namespace ctranslate2 {
     }
 
 #define DECLARE_IMPL(T)                                                        \
-    template void Dequantize::dequantize<Device::METAL, int8_t, T>(           \
+    template void Dequantize::dequantize<Device::MPS, int8_t, T>(           \
         const StorageView&, const StorageView&, StorageView&) const;          \
-    template void Dequantize::dequantize_gemm_output<Device::METAL, T>(       \
+    template void Dequantize::dequantize_gemm_output<Device::MPS, T>(       \
         const StorageView&, const StorageView&, const StorageView&,           \
         const bool, const bool, const StorageView*, StorageView&) const;
 

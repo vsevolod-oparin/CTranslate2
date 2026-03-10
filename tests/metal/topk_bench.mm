@@ -4,7 +4,7 @@
 //
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
-//     -I include -I src -DCT2_WITH_METAL \
+//     -I include -I src -DCT2_WITH_MPS \
 //     tests/metal/topk_bench.mm \
 //     src/metal/ops_topk.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -93,13 +93,13 @@ static double bench_gpu_topk(const T* input, T* values, int32_t* indices,
   // Warmup
   for (int w = 0; w < kWarmup; ++w) {
     metal::topk_metal<T>(input, values, indices, batch, depth, k);
-    synchronize_stream(Device::METAL);
+    synchronize_stream(Device::MPS);
   }
 
   auto t0 = std::chrono::high_resolution_clock::now();
   for (int it = 0; it < kIters; ++it) {
     metal::topk_metal<T>(input, values, indices, batch, depth, k);
-    synchronize_stream(Device::METAL);
+    synchronize_stream(Device::MPS);
   }
   auto t1 = std::chrono::high_resolution_clock::now();
   return std::chrono::duration<double, std::micro>(t1 - t0).count() / kIters;
@@ -111,7 +111,7 @@ static double bench_gpu_topk(const T* input, T* values, int32_t* indices,
 
 template <typename T>
 static void run_bench(const char* type_label, dim_t batch, dim_t depth, dim_t k) {
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   const size_t in_bytes  = batch * depth * sizeof(T);
   const size_t val_bytes = batch * k * sizeof(T);
   const size_t idx_bytes = batch * k * sizeof(int32_t);

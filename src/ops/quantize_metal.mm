@@ -1,6 +1,6 @@
 // src/ops/quantize_metal.mm
 //
-// M9.1 — Quantize::quantize<Device::METAL, T, int8_t>
+// M9.1 — Quantize::quantize<Device::MPS, T, int8_t>
 //
 // Thin wrapper that extracts batch_size/depth from StorageView and delegates
 // to metal::quantize_int8_metal<T>() (src/metal/ops_quantize.mm).
@@ -36,7 +36,7 @@ namespace ctranslate2 {
     }
 
 #define DECLARE_IMPL(T)                                                        \
-    template void Quantize::quantize<Device::METAL, T, int8_t>(               \
+    template void Quantize::quantize<Device::MPS, T, int8_t>(               \
         const StorageView&, StorageView&, StorageView&) const;
 
     DECLARE_IMPL(float)

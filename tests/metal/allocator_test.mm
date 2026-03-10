@@ -3,7 +3,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/allocator_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -63,7 +63,7 @@ static int failed = 0;
 int main() {
   std::printf("=== M3.1: MetalAllocator tests ===\n\n");
 
-  Allocator& alloc = get_allocator<Device::METAL>();
+  Allocator& alloc = get_allocator<Device::MPS>();
 
   // 1. allocate() returns a non-null pointer.
   float* ptr = nullptr;

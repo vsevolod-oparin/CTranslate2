@@ -5,7 +5,7 @@
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #include "metal/utils.h"
 #endif
 
@@ -60,13 +60,13 @@ namespace ctranslate2 {
     StorageView previous_scores(device, dtype);
     ops::Gather(/*axis=*/-1, /*batch_dims=*/1)(logits, previous_ids, previous_scores);
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
     // M11.29: Protect previous_scores from premature reuse.
     // penalize_previous_tokens is encode-only on Metal — the GPU kernel reads
     // previous_scores but apply() frees it on return.  Without protection the
     // buffer returns to the pool and may be overwritten before the GPU executes.
     // (Same class of bug as M10.1 Gather use-after-clone.)
-    if (device == Device::METAL) {
+    if (device == Device::MPS) {
       metal::protect_buffer(previous_scores.buffer());
       metal::protect_buffer(previous_ids.buffer());
     }

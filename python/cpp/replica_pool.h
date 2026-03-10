@@ -134,7 +134,7 @@ namespace ctranslate2 {
         // Clear the allocator cache to further reduce memory after unloading the model.
         // On CUDA this releases CUB cached blocks; on Metal this releases pooled MTLBuffers
         // back to the system (important: unified memory means GPU pool = system RAM).
-        if (_device == Device::CUDA || _device == Device::METAL)
+        if (_device == Device::CUDA || _device == Device::MPS)
           _pool->clear_cache();
 
         _model_is_loaded = false;

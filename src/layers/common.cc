@@ -7,7 +7,7 @@
 #include "cpu/backend.h"
 #include "dispatch.h"
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #include "metal/ops_metal.h"
 #endif
 
@@ -407,7 +407,7 @@ namespace ctranslate2 {
 
         // Metal: flush pending GPU kernels (dequantize_gemm_output reads
         // qoutput/qinput_scale) before these locals are destroyed.
-        if (device == Device::METAL)
+        if (device == Device::MPS)
           synchronize_stream(device);
       } else if (_qzero && _qscale) {
 #ifdef CT2_USE_HIP
@@ -461,8 +461,8 @@ namespace ctranslate2 {
     bool Dense::fused_norm_and_project(const LayerNorm& norm,
                                        const StorageView& input,
                                        StorageView& output) const {
-#ifdef CT2_WITH_METAL
-      if (input.device() != Device::METAL)
+#ifdef CT2_WITH_MPS
+      if (input.device() != Device::MPS)
         return false;
       // Only BF16 benefits — MPSGraph GEMM for BF16 requires commit_and_wait.
       // For f32/f16, MPS GEMM is encode-only and faster than our naive GEMV.

@@ -14,7 +14,7 @@
 //        A = weight    [C_out, CK]     trans_a=false, same for all b
 //        B = im2col[b] [T_out, CK]     trans_b=true  → treat as [CK, T_out]
 //        C = output[b] [C_out, T_out]
-//      Uses primitives<Device::METAL>::gemm<T,T> (MPS for f32/f16;
+//      Uses primitives<Device::MPS>::gemm<T,T> (MPS for f32/f16;
 //      MPSGraph for bf16 — commits synchronously but reads already-flushed data).
 //
 // The im2col buffer is allocated via the Metal allocator (Shared, registered
@@ -127,7 +127,7 @@ namespace ctranslate2 {
       dispatch_im2col(input, p, B, C_in, T_in, T_out, K, stride, padding, dilation);
 
       // Step 2: batched GEMM (stride_a=0: weight is shared across all batches).
-      primitives<Device::METAL>::template gemm_batch_strided<T, T>(
+      primitives<Device::MPS>::template gemm_batch_strided<T, T>(
           false, true,                   // trans_a=false, trans_b=true
           C_out, T_out, CK,              // m, n, k
           1.0f,

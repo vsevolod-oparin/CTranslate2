@@ -4,7 +4,7 @@
 //
 // Uses the same unspecialized template-body pattern as *_gpu.cu files:
 // the template is defined here for all (D, T), but only explicit
-// instantiations for Device::METAL are emitted, so the linker always
+// instantiations for Device::MPS are emitted, so the linker always
 // resolves METAL calls to this TU.
 //
 // Constraints:
@@ -55,7 +55,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                 \
     template void                                                       \
-    LayerNorm::compute<Device::METAL, T>(const StorageView* beta,       \
+    LayerNorm::compute<Device::MPS, T>(const StorageView* beta,       \
                                          const StorageView* gamma,      \
                                          const StorageView& input,      \
                                          const dim_t axis,              \
@@ -89,7 +89,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                         \
     template void                                               \
-    RMSNorm::compute<Device::METAL, T>(const StorageView&,      \
+    RMSNorm::compute<Device::MPS, T>(const StorageView&,      \
                                         const StorageView&,     \
                                         StorageView&) const;
 
@@ -117,7 +117,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                 \
     template void                                                       \
-    SoftMax::compute<Device::METAL, T>(const StorageView& input,        \
+    SoftMax::compute<Device::MPS, T>(const StorageView& input,        \
                                         const StorageView* lengths,     \
                                         StorageView& output) const;
 

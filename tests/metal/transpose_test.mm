@@ -10,7 +10,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/transpose_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -66,10 +66,10 @@ static void check(bool ok, const std::string& name) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // CPU reference implementations (mirror src/cpu/primitives.cc)
@@ -154,7 +154,7 @@ static void test_2d(const std::string& tname) {
 
     for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)i;
 
-    primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
+    primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
     metal::commit_and_wait();
 
     cpu_transpose_2d(d_a, dims, cpu_b.data());
@@ -175,8 +175,8 @@ static void test_2d(const std::string& tname) {
 
     for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)(i + 1);
 
-    primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
-    primitives<Device::METAL>::transpose_2d(d_b, dims_t, d_c);
+    primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
+    primitives<Device::MPS>::transpose_2d(d_b, dims_t, d_c);
     metal::commit_and_wait();
 
     check(arrays_equal(d_a, d_c, n), "2d_roundtrip<" + tname + ">");
@@ -186,7 +186,7 @@ static void test_2d(const std::string& tname) {
   // --- zero-size ---
   {
     const dim_t dims[2] = {0, 5};
-    primitives<Device::METAL>::transpose_2d((T*)nullptr, dims, (T*)nullptr);
+    primitives<Device::MPS>::transpose_2d((T*)nullptr, dims, (T*)nullptr);
     check(true, "2d_zero<" + tname + ">");
   }
 }
@@ -204,7 +204,7 @@ static void test_3d_perm(const dim_t* dims, const dim_t* perm, const std::string
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)i;
 
-  primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
 
   cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
@@ -227,8 +227,8 @@ static void test_3d_roundtrip(const dim_t* dims, const dim_t* perm, const std::s
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)(i + 1);
 
-  primitives<Device::METAL>::transpose_3d(d_a, dims,   perm,     d_b);
-  primitives<Device::METAL>::transpose_3d(d_b, dims_b, inv_perm, d_c);
+  primitives<Device::MPS>::transpose_3d(d_a, dims,   perm,     d_b);
+  primitives<Device::MPS>::transpose_3d(d_b, dims_b, inv_perm, d_c);
   metal::commit_and_wait();
 
   check(arrays_equal(d_a, d_c, n), name);
@@ -255,7 +255,7 @@ static void test_3d(const std::string& tname) {
 
   // zero-size
   const dim_t dims_z[3] = {0, 5, 7};
-  primitives<Device::METAL>::transpose_3d((T*)nullptr, dims_z, perm_021, (T*)nullptr);
+  primitives<Device::MPS>::transpose_3d((T*)nullptr, dims_z, perm_021, (T*)nullptr);
   check(true, "3d_zero<" + tname + ">");
 }
 
@@ -272,7 +272,7 @@ static void test_4d_perm(const dim_t* dims, const dim_t* perm, const std::string
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)i;
 
-  primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
 
   cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
@@ -293,8 +293,8 @@ static void test_4d_roundtrip(const dim_t* dims, const dim_t* perm, const std::s
 
   for (dim_t i = 0; i < n; ++i) d_a[i] = (T)(float)(i + 1);
 
-  primitives<Device::METAL>::transpose_4d(d_a, dims,   perm,     d_b);
-  primitives<Device::METAL>::transpose_4d(d_b, dims_b, inv_perm, d_c);
+  primitives<Device::MPS>::transpose_4d(d_a, dims,   perm,     d_b);
+  primitives<Device::MPS>::transpose_4d(d_b, dims_b, inv_perm, d_c);
   metal::commit_and_wait();
 
   check(arrays_equal(d_a, d_c, n), name);
@@ -329,7 +329,7 @@ static void test_4d(const std::string& tname) {
 
   // zero-size
   const dim_t dims_z[4] = {0, 3, 5, 7};
-  primitives<Device::METAL>::transpose_4d((T*)nullptr, dims_z, perm_0213, (T*)nullptr);
+  primitives<Device::MPS>::transpose_4d((T*)nullptr, dims_z, perm_0213, (T*)nullptr);
   check(true, "4d_zero<" + tname + ">");
 }
 

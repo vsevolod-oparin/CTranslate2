@@ -7,7 +7,7 @@
 //
 // Both paths are encode-only — no commit_and_wait.
 // The caller (Sampler::operator()) syncs via copy_from which
-// calls synchronize_stream(Device::METAL) internally.
+// calls synchronize_stream(Device::MPS) internally.
 
 #include "ctranslate2/ops/topk.h"
 
@@ -31,7 +31,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                 \
     template void                                                       \
-    TopK::compute<Device::METAL, T, int32_t>(const StorageView& x,     \
+    TopK::compute<Device::MPS, T, int32_t>(const StorageView& x,     \
                                               StorageView& values,      \
                                               StorageView& indices) const;
 

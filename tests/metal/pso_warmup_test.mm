@@ -23,7 +23,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/pso_warmup_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -75,10 +75,10 @@ static int g_failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Helper: run a callable; return true if it completes without exception.
@@ -111,7 +111,7 @@ static void test_elementwise_warmup() {
   for (int i = 0; i < 4; ++i) { a[i] = 1.f; b[i] = 2.f; }
 
   bool ok = no_exception([&] {
-    primitives<Device::METAL>::add(a, b, c, 4);
+    primitives<Device::MPS>::add(a, b, c, 4);
     metal::commit_and_wait();
   });
   CHECK("elementwise library compiles (add f32)", ok);
@@ -123,7 +123,7 @@ static void test_elementwise_warmup() {
   for (int i = 0; i < 4; ++i) { x16[i] = ct2_f16(1.f); y16[i] = ct2_f16(2.f); }
 
   ok = no_exception([&] {
-    primitives<Device::METAL>::add(x16, y16, z16, 4);
+    primitives<Device::MPS>::add(x16, y16, z16, 4);
     metal::commit_and_wait();
   });
   CHECK("elementwise library compiles (add f16)", ok);
@@ -144,14 +144,14 @@ static void test_activation_warmup() {
   for (int i = 0; i < 4; ++i) x[i] = float(i) - 1.5f;  // mix of neg and pos
 
   bool ok = no_exception([&] {
-    primitives<Device::METAL>::relu(x, y, 4);
+    primitives<Device::MPS>::relu(x, y, 4);
     metal::commit_and_wait();
   });
   CHECK("activation library compiles (relu f32)", ok);
 
   // GELU exercises the ct2_erf polynomial path.
   ok = no_exception([&] {
-    primitives<Device::METAL>::gelu(x, y, 4);
+    primitives<Device::MPS>::gelu(x, y, 4);
     metal::commit_and_wait();
   });
   CHECK("activation library compiles (gelu f32, ct2_erf path)", ok);
@@ -161,7 +161,7 @@ static void test_activation_warmup() {
   for (int i = 0; i < 4; ++i) xbf[i] = ct2_bf16(float(i) - 1.5f);
 
   ok = no_exception([&] {
-    primitives<Device::METAL>::relu(xbf, ybf, 4);
+    primitives<Device::MPS>::relu(xbf, ybf, 4);
     metal::commit_and_wait();
   });
   CHECK("activation library compiles (relu bf16)", ok);
@@ -185,7 +185,7 @@ static void test_broadcast_warmup() {
   for (int i = 0; i < 4; ++i) b[i] = float(i);
 
   bool ok = no_exception([&] {
-    primitives<Device::METAL>::add_batch_broadcast(a, b, c, 2, 4);
+    primitives<Device::MPS>::add_batch_broadcast(a, b, c, 2, 4);
     metal::commit_and_wait();
   });
   CHECK("broadcast library compiles (add_batch_broadcast f32)", ok);
@@ -197,7 +197,7 @@ static void test_broadcast_warmup() {
   for (int i = 0; i < 4; ++i) bf[i] = ct2_f16(float(i));
 
   ok = no_exception([&] {
-    primitives<Device::METAL>::add_batch_broadcast(af, bf, cf, 2, 4);
+    primitives<Device::MPS>::add_batch_broadcast(af, bf, cf, 2, 4);
     metal::commit_and_wait();
   });
   CHECK("broadcast library compiles (add_batch_broadcast f16)", ok);
@@ -221,7 +221,7 @@ static void test_beam_search_warmup() {
   prev_ids[0] = 0;
 
   bool ok = no_exception([&] {
-    primitives<Device::METAL>::penalize_previous_tokens(
+    primitives<Device::MPS>::penalize_previous_tokens(
         scores, prev_scr, prev_ids,
         /*penalty=*/0.9f,
         /*batch_size=*/1, /*length=*/1, /*vocabulary_size=*/vocab);
@@ -248,7 +248,7 @@ static void test_transpose_warmup() {
   for (int i = 0; i < 8; ++i) a[i] = float(i);
 
   bool ok = no_exception([&] {
-    primitives<Device::METAL>::transpose_2d(a, dims, b);
+    primitives<Device::MPS>::transpose_2d(a, dims, b);
     metal::commit_and_wait();
   });
   CHECK("transpose library compiles (transpose_2d f32)", ok);
@@ -258,7 +258,7 @@ static void test_transpose_warmup() {
   for (int i = 0; i < 8; ++i) af[i] = ct2_f16(float(i));
 
   ok = no_exception([&] {
-    primitives<Device::METAL>::transpose_2d(af, dims, bf);
+    primitives<Device::MPS>::transpose_2d(af, dims, bf);
     metal::commit_and_wait();
   });
   CHECK("transpose library compiles (transpose_2d f16)", ok);
@@ -279,14 +279,14 @@ static void test_reduction_warmup() {
   for (dim_t i = 0; i < N; ++i) x[i] = 1.f;
 
   bool ok = no_exception([&] {
-    float result = primitives<Device::METAL>::sum(x, N);
+    float result = primitives<Device::MPS>::sum(x, N);
     (void)result;  // value correctness is not the focus here
   });
   CHECK("reduction library compiles (sum f32)", ok);
 
   // max_element exercises a distinct kernel with two output buffers.
   ok = no_exception([&] {
-    primitives<Device::METAL>::max_element(x, N);
+    primitives<Device::MPS>::max_element(x, N);
   });
   CHECK("reduction library compiles (max_element f32)", ok);
 

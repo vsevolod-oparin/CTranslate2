@@ -3,7 +3,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/context_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \

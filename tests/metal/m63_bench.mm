@@ -15,7 +15,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m63_bench.mm \
 //     src/metal/ops_rotary.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -57,11 +57,11 @@ using namespace ctranslate2;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<size_t>(n) * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Timing

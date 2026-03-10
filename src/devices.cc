@@ -3,7 +3,7 @@
 #ifdef CT2_WITH_CUDA
 #  include "cuda/utils.h"
 #endif
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #  include "metal/device.h"
 #  include "metal/utils.h"
 #endif
@@ -24,17 +24,17 @@ namespace ctranslate2 {
 #endif
     if (device == "cpu" || device == "CPU")
       return Device::CPU;
-    if (device == "metal" || device == "METAL")
-#ifdef CT2_WITH_METAL
-      return Device::METAL;
+    if (device == "mps" || device == "MPS")
+#ifdef CT2_WITH_MPS
+      return Device::MPS;
 #else
-      throw std::invalid_argument("This CTranslate2 package was not compiled with Metal support");
+      throw std::invalid_argument("This CTranslate2 package was not compiled with MPS support");
 #endif
     if (device == "auto" || device == "AUTO")
 #ifdef CT2_WITH_CUDA
       return cuda::has_gpu() ? Device::CUDA : Device::CPU;
-#elif defined(CT2_WITH_METAL)
-      return metal::get_device_count() > 0 ? Device::METAL : Device::CPU;
+#elif defined(CT2_WITH_MPS)
+      return metal::get_device_count() > 0 ? Device::MPS : Device::CPU;
 #else
       return Device::CPU;
 #endif
@@ -47,8 +47,8 @@ namespace ctranslate2 {
       return "cuda";
     case Device::CPU:
       return "cpu";
-    case Device::METAL:
-      return "metal";
+    case Device::MPS:
+      return "mps";
     }
     return "";
   }
@@ -67,8 +67,8 @@ namespace ctranslate2 {
 #endif
     case Device::CPU:
       return 1;
-    case Device::METAL:
-#ifdef CT2_WITH_METAL
+    case Device::MPS:
+#ifdef CT2_WITH_MPS
       return metal::get_device_count();
 #else
       return 0;
@@ -107,14 +107,14 @@ namespace ctranslate2 {
   }
 #endif
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
   template<>
-  int get_device_index<Device::METAL>() {
+  int get_device_index<Device::MPS>() {
     return 0;  // Apple Silicon has a single unified Metal device.
   }
 
   template<>
-  void set_device_index<Device::METAL>(int index) {
+  void set_device_index<Device::MPS>(int index) {
     if (index != 0)
       throw std::invalid_argument("Invalid Metal device index: " + std::to_string(index));
   }
@@ -137,15 +137,15 @@ namespace ctranslate2 {
       cudaDeviceSynchronize();
     }
 #endif
-#ifdef CT2_WITH_METAL
-    if (device == Device::METAL) {
+#ifdef CT2_WITH_MPS
+    if (device == Device::MPS) {
       // Unified memory: no device-level copy needed.
       // Flush pending GPU work via the stream sync.
       (void)index;
       CT2_COMMIT_AND_WAIT();
     }
 #endif
-#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
+#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_MPS)
     (void)device;
     (void)index;
 #endif
@@ -157,12 +157,12 @@ namespace ctranslate2 {
       cudaStreamSynchronize(cuda::get_cuda_stream());
     }
 #endif
-#ifdef CT2_WITH_METAL
-    if (device == Device::METAL) {
+#ifdef CT2_WITH_MPS
+    if (device == Device::MPS) {
       CT2_COMMIT_AND_WAIT();
     }
 #endif
-#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
+#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_MPS)
     (void)device;
 #endif
   }

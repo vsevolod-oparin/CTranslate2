@@ -1,6 +1,6 @@
 // src/metal/primitives_transpose.mm
 //
-// M4.8 — Transpose primitives for Device::METAL.
+// M4.8 — Transpose primitives for Device::MPS.
 //
 // Algorithm: one GPU thread per output element.
 //   - Decompose flat output index → multi-index via output strides.
@@ -74,7 +74,7 @@ namespace ctranslate2 {
   // transpose_2d: implicit perm = [1, 0].
   template<>
   template <typename T>
-  void primitives<Device::METAL>::transpose_2d(const T* a,
+  void primitives<Device::MPS>::transpose_2d(const T* a,
                                                 const dim_t* dims,
                                                 T* b) {
     char kname[kKernelNameBufSize];
@@ -86,7 +86,7 @@ namespace ctranslate2 {
   // transpose_3d: arbitrary 3D permutation.
   template<>
   template <typename T>
-  void primitives<Device::METAL>::transpose_3d(const T* a,
+  void primitives<Device::MPS>::transpose_3d(const T* a,
                                                 const dim_t* dims,
                                                 const dim_t* perm,
                                                 T* b) {
@@ -111,7 +111,7 @@ namespace ctranslate2 {
   // transpose_4d: arbitrary 4D permutation.
   template<>
   template <typename T>
-  void primitives<Device::METAL>::transpose_4d(const T* a,
+  void primitives<Device::MPS>::transpose_4d(const T* a,
                                                 const dim_t* dims,
                                                 const dim_t* perm,
                                                 T* b) {
@@ -142,16 +142,16 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                          \
   template void                                                                  \
-  primitives<Device::METAL>::transpose_2d(const T* a,                           \
+  primitives<Device::MPS>::transpose_2d(const T* a,                           \
                                            const dim_t* dims,                   \
                                            T* b);                               \
   template void                                                                  \
-  primitives<Device::METAL>::transpose_3d(const T* a,                           \
+  primitives<Device::MPS>::transpose_3d(const T* a,                           \
                                            const dim_t* dims,                   \
                                            const dim_t* perm,                   \
                                            T* b);                               \
   template void                                                                  \
-  primitives<Device::METAL>::transpose_4d(const T* a,                           \
+  primitives<Device::MPS>::transpose_4d(const T* a,                           \
                                            const dim_t* dims,                   \
                                            const dim_t* perm,                   \
                                            T* b);

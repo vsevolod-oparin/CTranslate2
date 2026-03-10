@@ -3,7 +3,7 @@
 // M6.4 — metal::alibi_add_metal<T>() — Metal ALiBi positional bias kernel.
 //
 // Free function (no StorageView dependency) used by:
-//   - src/ops/alibi_add_metal.mm  (AlibiAdd::compute<Device::METAL> wrapper)
+//   - src/ops/alibi_add_metal.mm  (AlibiAdd::compute<Device::MPS> wrapper)
 //   - tests/metal/alibi_test.mm   (standalone correctness test)
 //
 // Algorithm:

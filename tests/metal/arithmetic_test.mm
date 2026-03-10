@@ -3,7 +3,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/arithmetic_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -68,11 +68,11 @@ static int failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // Commit all encoded GPU commands and wait for completion.
@@ -95,7 +95,7 @@ static void test_add_scalar() {
     for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<float>(i); }
 
     CHECK_NOTHROW("add_scalar float — no error",
-      primitives<Device::METAL>::add(10.f, x, out, N)
+      primitives<Device::MPS>::add(10.f, x, out, N)
     );
     gpu_sync();
 
@@ -115,7 +115,7 @@ static void test_add_scalar() {
     ct2_f16* out = metal_alloc<ct2_f16>(N);
     for (dim_t i = 0; i < N; ++i) { x[i] = ct2_f16(static_cast<float>(i)); }
 
-    primitives<Device::METAL>::add(ct2_f16(5.f), x, out, N);
+    primitives<Device::MPS>::add(ct2_f16(5.f), x, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -134,7 +134,7 @@ static void test_add_scalar() {
     int32_t* out = metal_alloc<int32_t>(N);
     for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<int32_t>(i); }
 
-    primitives<Device::METAL>::add(int32_t(100), x, out, N);
+    primitives<Device::MPS>::add(int32_t(100), x, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -164,7 +164,7 @@ static void test_add_vec() {
     for (dim_t i = 0; i < N; ++i) { a[i] = static_cast<float>(i); b[i] = 1.f; }
 
     CHECK_NOTHROW("add_vec float — no error",
-      primitives<Device::METAL>::add(
+      primitives<Device::MPS>::add(
           static_cast<const float*>(a),
           static_cast<const float*>(b),
           out, N)
@@ -192,7 +192,7 @@ static void test_add_vec() {
       b[i] = ct2_f16(2.f);
     }
 
-    primitives<Device::METAL>::add(
+    primitives<Device::MPS>::add(
         static_cast<const ct2_f16*>(a),
         static_cast<const ct2_f16*>(b),
         out, N);
@@ -229,7 +229,7 @@ static void test_sub_vec() {
     }
 
     CHECK_NOTHROW("sub_vec float — no error",
-      primitives<Device::METAL>::sub(
+      primitives<Device::MPS>::sub(
           static_cast<const float*>(a),
           static_cast<const float*>(b),
           out, N)
@@ -253,7 +253,7 @@ static void test_sub_vec() {
     float* out = metal_alloc<float>(N);
     for (dim_t i = 0; i < N; ++i) { a[i] = static_cast<float>(i) + 1.f; }
 
-    primitives<Device::METAL>::sub(
+    primitives<Device::MPS>::sub(
         static_cast<const float*>(a),
         static_cast<const float*>(a),
         out, N);
@@ -285,7 +285,7 @@ static void test_mul_scalar() {
     for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<float>(i) + 1.f; }
 
     CHECK_NOTHROW("mul_scalar float — no error",
-      primitives<Device::METAL>::mul(3.f, x, out, N)
+      primitives<Device::MPS>::mul(3.f, x, out, N)
     );
     gpu_sync();
 
@@ -305,7 +305,7 @@ static void test_mul_scalar() {
     ct2_f16* out = metal_alloc<ct2_f16>(N);
     for (dim_t i = 0; i < N; ++i) { x[i] = ct2_f16(static_cast<float>(i) + 1.f); }
 
-    primitives<Device::METAL>::mul(ct2_f16(2.f), x, out, N);
+    primitives<Device::MPS>::mul(ct2_f16(2.f), x, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -324,7 +324,7 @@ static void test_mul_scalar() {
     int32_t* out = metal_alloc<int32_t>(N);
     for (dim_t i = 0; i < N; ++i) { x[i] = static_cast<int32_t>(i) + 1; }
 
-    primitives<Device::METAL>::mul(int32_t(4), x, out, N);
+    primitives<Device::MPS>::mul(int32_t(4), x, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -357,7 +357,7 @@ static void test_mul_vec() {
     }
 
     CHECK_NOTHROW("mul_vec float — no error",
-      primitives<Device::METAL>::mul(
+      primitives<Device::MPS>::mul(
           static_cast<const float*>(a),
           static_cast<const float*>(b),
           out, N)
@@ -385,7 +385,7 @@ static void test_mul_vec() {
       b[i] = ct2_f16(3.f);
     }
 
-    primitives<Device::METAL>::mul(
+    primitives<Device::MPS>::mul(
         static_cast<const ct2_f16*>(a),
         static_cast<const ct2_f16*>(b),
         out, N);
@@ -414,13 +414,13 @@ static void test_zero_size() {
   p[0] = 99.f;
 
   CHECK_NOTHROW("add_scalar size=0 — no error",
-    primitives<Device::METAL>::add(1.f, p, p, 0)
+    primitives<Device::MPS>::add(1.f, p, p, 0)
   );
   gpu_sync();
   CHECK("add_scalar size=0: p[0] unchanged", std::fabs(p[0] - 99.f) < 1e-6f);
 
   CHECK_NOTHROW("mul_vec size=0 — no error",
-    primitives<Device::METAL>::mul(
+    primitives<Device::MPS>::mul(
         static_cast<const float*>(p),
         static_cast<const float*>(p),
         p, 0)

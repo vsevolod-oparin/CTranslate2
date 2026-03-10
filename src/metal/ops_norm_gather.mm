@@ -159,7 +159,7 @@ static id<MTLComputePipelineState> get_gather_pso(const char* name) {
 // in gather.cc.  All other callers either:
 //   (a) feed the gather output to another GPU op (GPU-to-GPU, same CB), or
 //   (b) eventually call copy_from / .to(CPU) which internally calls
-//       synchronize_stream(Device::METAL) (storage_view.cc:417).
+//       synchronize_stream(Device::MPS) (storage_view.cc:417).
 //
 // batch_gather_in_place (M11.1) continues to call gather_metal + explicit sync.
 static void dispatch_gather(const char* kname,

@@ -38,7 +38,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                           \
     template void                                                 \
-    Tile::compute<Device::METAL, T>(const StorageView& input,    \
+    Tile::compute<Device::MPS, T>(const StorageView& input,    \
                                      const dim_t outer_size,     \
                                      const dim_t inner_size,     \
                                      StorageView& output) const;

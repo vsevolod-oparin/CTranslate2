@@ -8,7 +8,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/beam_search_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -70,17 +70,17 @@ static bool near(float a, float b, float tol = 1e-3f) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // Read a Metal buffer element (always uses primitives::at which flushes GPU).
 template <typename T>
 static float read_metal(const T* ptr, dim_t idx) {
-  return static_cast<float>(primitives<Device::METAL>::at(ptr, idx));
+  return static_cast<float>(primitives<Device::MPS>::at(ptr, idx));
 }
 
 // ---------------------------------------------------------------------------
@@ -140,7 +140,7 @@ static void test_penalize_basic(const std::string& tname) {
   for (dim_t i = 0; i < batch * len; ++i)
     d_prev_ids[i] = prev_ids[i];
 
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       d_scores, d_prev_scores, d_prev_ids,
       (T)penalty, batch, len, vocab);
   metal::commit_and_wait();  // flush GPU before reading back
@@ -167,12 +167,12 @@ static void test_penalize_basic(const std::string& tname) {
 template <typename T>
 static void test_penalize_zero_size(const std::string& tname) {
   // batch=0
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       (T*)nullptr, (T*)nullptr, (int32_t*)nullptr, (T)1.5f, 0, 8, 100);
   check(true, "penalize_batch0<" + tname + ">");
 
   // len=0
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       (T*)nullptr, (T*)nullptr, (int32_t*)nullptr, (T)1.5f, 4, 0, 100);
   check(true, "penalize_len0<" + tname + ">");
 }
@@ -211,7 +211,7 @@ static void test_penalize_duplicates(const std::string& tname) {
   for (dim_t i = 0; i < len;   ++i) d_prev_scores[i] = (T)prev_scores_h[i];
   for (dim_t i = 0; i < len;   ++i) d_ids[i] = prev_ids_h[i];
 
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       d_scores, d_prev_scores, d_ids, (T)penalty, batch, len, vocab);
   metal::commit_and_wait();
 
@@ -244,7 +244,7 @@ static void test_prepare_mask_padded() {
   d_lengths[1] = 5;
   std::memset(d_mask, 0, batch * heads * queries * sizeof(int32_t));
 
-  primitives<Device::METAL>::prepare_length_mask(
+  primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/false,
       /*multi_query=*/false, d_mask);
   // No GPU work needed — CPU fills mask directly.
@@ -273,7 +273,7 @@ static void test_prepare_mask_causal() {
 
   d_lengths[0] = 4;
 
-  primitives<Device::METAL>::prepare_length_mask(
+  primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/false, d_mask);
 
@@ -296,7 +296,7 @@ static void test_prepare_mask_causal_padded() {
   d_lengths[0] = 3;
   d_lengths[1] = 5;
 
-  primitives<Device::METAL>::prepare_length_mask(
+  primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/false, d_mask);
 
@@ -330,7 +330,7 @@ static void test_prepare_mask_multi_query() {
 
   d_lengths[0] = 10;  // no truncation from length
 
-  primitives<Device::METAL>::prepare_length_mask(
+  primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/true, d_mask);
 
@@ -359,10 +359,10 @@ static void test_at_after_gpu_write() {
   for (dim_t i = 0; i < n; ++i) d[i] = 0.f;
 
   // Use add(scalar, x, y) GPU kernel to write 42.0 into all elements.
-  primitives<Device::METAL>::add(42.f, d, d, n);  // GPU encodes this
+  primitives<Device::MPS>::add(42.f, d, d, n);  // GPU encodes this
 
   // at() must flush GPU before reading — should return 42.0.
-  float v = primitives<Device::METAL>::at(d, 2);
+  float v = primitives<Device::MPS>::at(d, 2);
   check(near(v, 42.f, 1e-5f), "at_after_gpu_write");
 
   metal_free(d);
@@ -377,7 +377,7 @@ static void test_logsumexp_float() {
   float* d = metal_alloc<float>(n);
   d[0] = 1.f; d[1] = 2.f; d[2] = 3.f;
 
-  float result = primitives<Device::METAL>::logsumexp(d, n);
+  float result = primitives<Device::MPS>::logsumexp(d, n);
   // Reference: log(exp(1) + exp(2) + exp(3)) ≈ 3.4076
   float ref = std::log(std::exp(1.f) + std::exp(2.f) + std::exp(3.f));
   check(near(result, ref, 1e-5f), "logsumexp_float");
@@ -390,7 +390,7 @@ static void test_logsumexp_half() {
   ct2_f16* d = metal_alloc<ct2_f16>(n);
   d[0] = (ct2_f16)1.f; d[1] = (ct2_f16)2.f; d[2] = (ct2_f16)3.f;
 
-  float result = primitives<Device::METAL>::logsumexp(d, n);
+  float result = primitives<Device::MPS>::logsumexp(d, n);
   float ref = std::log(std::exp(1.f) + std::exp(2.f) + std::exp(3.f));
   // float16 has ~1e-3 relative precision
   check(near(result, ref, 2e-3f), "logsumexp_half");

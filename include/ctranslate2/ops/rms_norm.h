@@ -7,7 +7,7 @@ namespace ctranslate2 {
 
     class RMSNorm : public Op {
     public:
-      // use_residual=true is not supported on Device::METAL and will throw
+      // use_residual=true is not supported on Device::MPS and will throw
       // std::invalid_argument at runtime when that backend is used.
       RMSNorm(const float epsilon = 1e-6, const bool use_residual = false);
 

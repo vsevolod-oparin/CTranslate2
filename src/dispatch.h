@@ -12,7 +12,7 @@
     throw std::invalid_argument(NAME " only supports float types");     \
 
 
-#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_METAL)
+#if !defined(CT2_WITH_CUDA) && !defined(CT2_WITH_MPS)
 
 // CPU-only build: only float32 is supported.
 #  define DEVICE_AND_FLOAT_DISPATCH(NAME, DEVICE, TYPE, STMTS)          \
@@ -31,12 +31,12 @@
   switch (TYPE) {                                                       \
     TYPE_CASE(float, DEVICE_DISPATCH(DEVICE, (STMTS)))                  \
     TYPE_CASE(ctranslate2::float16_t, {                                  \
-      if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
+      if (DEVICE != Device::CUDA && DEVICE != Device::MPS)            \
         throw std::invalid_argument("FP16 " NAME " is only supported on GPU"); \
       DEVICE_DISPATCH(DEVICE, (STMTS));                                 \
     })                                                                  \
     TYPE_CASE(ctranslate2::bfloat16_t, {                                \
-      if (DEVICE != Device::CUDA && DEVICE != Device::METAL)            \
+      if (DEVICE != Device::CUDA && DEVICE != Device::MPS)            \
         throw std::invalid_argument("BF16 " NAME " is only supported on GPU"); \
       DEVICE_DISPATCH(DEVICE, (STMTS));                                 \
     })                                                                  \

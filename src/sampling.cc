@@ -20,13 +20,13 @@ namespace ctranslate2 {
       StorageView sampled_ids_device(DataType::INT32, scores.device());
       StorageView sampled_scores_device(scores.dtype(), scores.device());
       sample(scores, num_samples, sampled_ids_device, sampled_scores_device);
-#ifdef CT2_WITH_METAL
-      if (scores.device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+      if (scores.device() == Device::MPS) {
         // M11.26: Single sync for both GPU→CPU copies.  On Metal with
         // unified memory, after synchronize_stream the shared-memory
         // buffers are CPU-readable.  One sync + two memcpys instead of
         // two separate copy_from calls (each of which would sync).
-        synchronize_stream(Device::METAL);
+        synchronize_stream(Device::MPS);
         sampled_ids.resize_as(sampled_ids_device);
         sampled_scores.resize_as(sampled_scores_device);
         std::memcpy(sampled_ids.data<int32_t>(),

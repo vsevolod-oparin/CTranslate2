@@ -109,7 +109,7 @@ namespace ctranslate2 {
       py::enum_<Device>(m, "Device")
         .value("cpu", Device::CPU)
         .value("cuda", Device::CUDA)
-        .value("metal", Device::METAL)
+        .value("mps", Device::MPS)
         ;
 
       py::class_<StorageView>(

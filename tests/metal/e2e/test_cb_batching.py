@@ -80,7 +80,7 @@ def main():
     beam_size = 4
 
     # Metal translator
-    metal_translator = ctranslate2.Translator(mpath, device="metal")
+    metal_translator = ctranslate2.Translator(mpath, device="mps")
 
     if commit_count_fn and reset_commit_count_fn:
         # Warm up

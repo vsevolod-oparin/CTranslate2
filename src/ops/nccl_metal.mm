@@ -23,9 +23,9 @@ namespace ctranslate2 {
     }
 
 #define DECLARE_NCCL(T) \
-    template void ReduceAll::compute<Device::METAL, T>( \
+    template void ReduceAll::compute<Device::MPS, T>( \
         const StorageView&, StorageView&) const; \
-    template void GatherAll::compute<Device::METAL, T>( \
+    template void GatherAll::compute<Device::MPS, T>( \
         const StorageView&, StorageView&) const;
 
     DECLARE_NCCL(float)

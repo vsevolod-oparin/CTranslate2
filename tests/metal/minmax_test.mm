@@ -9,7 +9,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/minmax_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -58,10 +58,10 @@ static int g_failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 static void gpu_sync() { metal::commit_and_wait(); }
 
@@ -99,7 +99,7 @@ static void run_tests(const char* type_name) {
   // 1. min(vector, vector, out)  →  c[i] = min(a[i], b[i])
   // -------------------------------------------------------------------
   {
-    primitives<Device::METAL>::min(a, b, out, N);
+    primitives<Device::MPS>::min(a, b, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -117,7 +117,7 @@ static void run_tests(const char* type_name) {
   // 2. max(vector, vector, out)  →  c[i] = max(a[i], b[i])
   // -------------------------------------------------------------------
   {
-    primitives<Device::METAL>::max(a, b, out, N);
+    primitives<Device::MPS>::max(a, b, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -137,7 +137,7 @@ static void run_tests(const char* type_name) {
   // -------------------------------------------------------------------
   {
     T scalar = T(3);
-    primitives<Device::METAL>::min(scalar, a, out, N);
+    primitives<Device::MPS>::min(scalar, a, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -157,7 +157,7 @@ static void run_tests(const char* type_name) {
   // -------------------------------------------------------------------
   {
     T scalar = T(0);
-    primitives<Device::METAL>::max(scalar, a, out, N);
+    primitives<Device::MPS>::max(scalar, a, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -176,7 +176,7 @@ static void run_tests(const char* type_name) {
   // -------------------------------------------------------------------
   {
     // c[i] = min(a[i], a[i]) should equal a[i]
-    primitives<Device::METAL>::min(a, a, out, N);
+    primitives<Device::MPS>::min(a, a, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -192,7 +192,7 @@ static void run_tests(const char* type_name) {
   // 6. max(vector, vector) — all elements equal: output == input
   // -------------------------------------------------------------------
   {
-    primitives<Device::METAL>::max(a, a, out, N);
+    primitives<Device::MPS>::max(a, a, out, N);
     gpu_sync();
 
     bool ok = true;
@@ -210,10 +210,10 @@ static void run_tests(const char* type_name) {
   {
     bool ok = true;
     try {
-      primitives<Device::METAL>::min(a, b, out, 0);
-      primitives<Device::METAL>::max(a, b, out, 0);
-      primitives<Device::METAL>::min(T(0), a, out, 0);
-      primitives<Device::METAL>::max(T(0), a, out, 0);
+      primitives<Device::MPS>::min(a, b, out, 0);
+      primitives<Device::MPS>::max(a, b, out, 0);
+      primitives<Device::MPS>::min(T(0), a, out, 0);
+      primitives<Device::MPS>::max(T(0), a, out, 0);
       gpu_sync();
     } catch (...) { ok = false; }
     char label[64];
@@ -262,7 +262,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     for (dim_t i = 0; i < N; ++i) x[i] = T(static_cast<int>(i) + 1);
     T scalar = T(20);
 
-    primitives<Device::METAL>::min(scalar, x, out, N);
+    primitives<Device::MPS>::min(scalar, x, out, N);
     gpu_sync();
     bool ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -271,7 +271,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     std::snprintf(label, sizeof(label), "min(scalar=20, x=1..16)=x [all_below]: %s", type_name);
     CHECK(label, ok);
 
-    primitives<Device::METAL>::max(scalar, x, out, N);
+    primitives<Device::MPS>::max(scalar, x, out, N);
     gpu_sync();
     ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -289,7 +289,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     for (dim_t i = 0; i < N; ++i) x[i] = T(static_cast<int>(i) + 1);
     T scalar = T(0);
 
-    primitives<Device::METAL>::min(scalar, x, out, N);
+    primitives<Device::MPS>::min(scalar, x, out, N);
     gpu_sync();
     bool ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -298,7 +298,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     std::snprintf(label, sizeof(label), "min(scalar=0, x=1..16)=0 [all_above]: %s", type_name);
     CHECK(label, ok);
 
-    primitives<Device::METAL>::max(scalar, x, out, N);
+    primitives<Device::MPS>::max(scalar, x, out, N);
     gpu_sync();
     ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -318,7 +318,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     for (dim_t i = 0; i < N; ++i) x[i] = T(static_cast<int>(i) - 8);
     T scalar = T(-8);  // == x[0], the minimum
 
-    primitives<Device::METAL>::min(scalar, x, out, N);
+    primitives<Device::MPS>::min(scalar, x, out, N);
     gpu_sync();
     bool ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -327,7 +327,7 @@ static void run_scalar_clamp_subcases(const char* type_name) {
     std::snprintf(label, sizeof(label), "min(scalar=min_elem, x)=scalar [edge]: %s", type_name);
     CHECK(label, ok);
 
-    primitives<Device::METAL>::max(scalar, x, out, N);
+    primitives<Device::MPS>::max(scalar, x, out, N);
     gpu_sync();
     ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -372,7 +372,7 @@ static void run_vector_sign_subcases(const char* type_name) {
       b[i] = T(static_cast<int>(i) + 2);
     }
 
-    primitives<Device::METAL>::min(a, b, out, N);
+    primitives<Device::MPS>::min(a, b, out, N);
     gpu_sync();
     bool ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -381,7 +381,7 @@ static void run_vector_sign_subcases(const char* type_name) {
     std::snprintf(label, sizeof(label), "min(a,b)=a [all_positive]: %s", type_name);
     CHECK(label, ok);
 
-    primitives<Device::METAL>::max(a, b, out, N);
+    primitives<Device::MPS>::max(a, b, out, N);
     gpu_sync();
     ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -399,7 +399,7 @@ static void run_vector_sign_subcases(const char* type_name) {
       b[i] = T(-(static_cast<int>(i) + 1));
     }
 
-    primitives<Device::METAL>::min(a, b, out, N);
+    primitives<Device::MPS>::min(a, b, out, N);
     gpu_sync();
     bool ok = true;
     for (dim_t i = 0; i < N; ++i)
@@ -408,7 +408,7 @@ static void run_vector_sign_subcases(const char* type_name) {
     std::snprintf(label, sizeof(label), "min(a,b)=a [all_negative]: %s", type_name);
     CHECK(label, ok);
 
-    primitives<Device::METAL>::max(a, b, out, N);
+    primitives<Device::MPS>::max(a, b, out, N);
     gpu_sync();
     ok = true;
     for (dim_t i = 0; i < N; ++i)

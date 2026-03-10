@@ -6,7 +6,7 @@
 #  include "./cuda/utils.h"
 #endif
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #  include "metal/device.h"
 #endif
 
@@ -106,9 +106,9 @@ namespace ctranslate2 {
       return false;
 #endif
     }
-    case Device::METAL: {
-#ifdef CT2_WITH_METAL
-      static const bool allow_bfloat16 = read_bool_from_env("CT2_METAL_ALLOW_BF16");
+    case Device::MPS: {
+#ifdef CT2_WITH_MPS
+      static const bool allow_bfloat16 = read_bool_from_env("CT2_MPS_ALLOW_BF16");
       return allow_bfloat16 || metal::gpu_supports_bfloat16();
 #else
       (void)device_index;
@@ -131,8 +131,8 @@ namespace ctranslate2 {
       return false;
 #endif
     }
-    case Device::METAL: {
-#ifdef CT2_WITH_METAL
+    case Device::MPS: {
+#ifdef CT2_WITH_MPS
       return metal::gpu_supports_float16();
 #else
       (void)device_index;
@@ -164,7 +164,7 @@ namespace ctranslate2 {
 #endif
     case Device::CPU:
       return cpu::has_gemm_backend(ComputeType::INT8);
-    case Device::METAL:
+    case Device::MPS:
       return true;
     default:
       return false;

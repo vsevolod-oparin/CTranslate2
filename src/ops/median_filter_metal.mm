@@ -59,7 +59,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                     \
     template void                                                           \
-    MedianFilter::compute<Device::METAL, T>(const StorageView& input,      \
+    MedianFilter::compute<Device::MPS, T>(const StorageView& input,      \
                                              const dim_t axis_size,         \
                                              StorageView& output) const;
 

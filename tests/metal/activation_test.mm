@@ -4,7 +4,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/activation_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -50,11 +50,11 @@ static int failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // Flush pending GPU work and read back y[0].
@@ -110,7 +110,7 @@ static bool near(float a, float b, float eps) {
 
 template <typename T>
 static void test_exp(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::exp(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::exp(x, y, n); };
   float e = std::exp(1.f);
   std::string l;
 
@@ -121,7 +121,7 @@ static void test_exp(const char* tag) {
 
 template <typename T>
 static void test_log(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::log(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::log(x, y, n); };
   std::string l;
 
   l = std::string("log<") + tag + "> log(1) == 0";     CHECK(l.c_str(), near(run1<T>(1.f, op), 0.f, tol<T>()));
@@ -131,7 +131,7 @@ static void test_log(const char* tag) {
 
 template <typename T>
 static void test_cos(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::cos(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::cos(x, y, n); };
   std::string l;
 
   l = std::string("cos<") + tag + "> cos(0) == 1";       CHECK(l.c_str(), near(run1<T>(0.f, op), 1.f, tol<T>()));
@@ -141,7 +141,7 @@ static void test_cos(const char* tag) {
 
 template <typename T>
 static void test_sin(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::sin(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::sin(x, y, n); };
   std::string l;
 
   l = std::string("sin<") + tag + "> sin(0) == 0";       CHECK(l.c_str(), near(run1<T>(0.f, op), 0.f, tol<T>()));
@@ -151,7 +151,7 @@ static void test_sin(const char* tag) {
 
 template <typename T>
 static void test_tanh(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::tanh(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::tanh(x, y, n); };
   std::string l;
 
   l = std::string("tanh<") + tag + "> tanh(0) == 0";   CHECK(l.c_str(), near(run1<T>(0.f, op), 0.f, tol<T>()));
@@ -163,7 +163,7 @@ static void test_tanh(const char* tag) {
 
 template <typename T>
 static void test_relu(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::relu(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::relu(x, y, n); };
   std::string l;
 
   l = std::string("relu<") + tag + "> relu(-5) == 0";  CHECK(l.c_str(), near(run1<T>(-5.f, op), 0.f, tol<T>()));
@@ -173,7 +173,7 @@ static void test_relu(const char* tag) {
 
 template <typename T>
 static void test_sigmoid(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::sigmoid(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::sigmoid(x, y, n); };
   std::string l;
 
   l = std::string("sigmoid<") + tag + "> sigmoid(0) == 0.5";
@@ -186,7 +186,7 @@ static void test_sigmoid(const char* tag) {
 
 template <typename T>
 static void test_swish(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::swish(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::swish(x, y, n); };
   std::string l;
 
   // swish(0) = 0 * sigmoid(0) = 0
@@ -205,7 +205,7 @@ static void test_swish(const char* tag) {
 
 template <typename T>
 static void test_gelu(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::gelu(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::gelu(x, y, n); };
   std::string l;
 
   // gelu(0) = 0
@@ -227,7 +227,7 @@ static void test_gelu(const char* tag) {
 
 template <typename T>
 static void test_gelu_tanh(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::gelu_tanh(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::gelu_tanh(x, y, n); };
   std::string l;
 
   l = std::string("gelu_tanh<") + tag + "> gelu_tanh(0) == 0";
@@ -247,7 +247,7 @@ static void test_gelu_tanh(const char* tag) {
 
 template <typename T>
 static void test_gelu_sigmoid(const char* tag) {
-  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::METAL>::gelu_sigmoid(x, y, n); };
+  auto op = [](const T* x, T* y, dim_t n){ primitives<Device::MPS>::gelu_sigmoid(x, y, n); };
   std::string l;
 
   l = std::string("gelu_sigmoid<") + tag + "> gelu_sigmoid(0) == 0";
@@ -272,7 +272,7 @@ static void test_logsumexp(const char* tag) {
   {
     T* x = metal_alloc<T>(1);
     x[0] = T(3.f);
-    float r = primitives<Device::METAL>::logsumexp(x, 1);
+    float r = primitives<Device::MPS>::logsumexp(x, 1);
     l = std::string("logsumexp<") + tag + "> single == 3";
     CHECK(l.c_str(), near(r, 3.f, tol<T>()));
     metal_free(x);
@@ -282,7 +282,7 @@ static void test_logsumexp(const char* tag) {
     T* x = metal_alloc<T>(3);
     x[0] = T(1.f); x[1] = T(2.f); x[2] = T(3.f);
     float ref = std::log(std::exp(1.f) + std::exp(2.f) + std::exp(3.f));
-    float r = primitives<Device::METAL>::logsumexp(x, 3);
+    float r = primitives<Device::MPS>::logsumexp(x, 3);
     l = std::string("logsumexp<") + tag + "> [1,2,3] ≈ ref";
     CHECK(l.c_str(), near(r, ref, tol<T>()));
     metal_free(x);
@@ -291,7 +291,7 @@ static void test_logsumexp(const char* tag) {
   {
     T* x = metal_alloc<T>(1);
     x[0] = T(99.f);
-    float r = primitives<Device::METAL>::logsumexp(x, 0);
+    float r = primitives<Device::MPS>::logsumexp(x, 0);
     l = std::string("logsumexp<") + tag + "> size=0 == 0";
     CHECK(l.c_str(), near(r, 0.f, 1e-6f));
     metal_free(x);
@@ -311,11 +311,11 @@ static void test_zero_size(const char* tag) {
     l = std::string(name) + "<" + tag + "> size=0 no-crash";
     CHECK(l.c_str(), ok);
   };
-  check_nothrow("exp",          [](auto* x, auto* y, dim_t n){ primitives<Device::METAL>::exp(x, y, n); });
-  check_nothrow("log",          [](auto* x, auto* y, dim_t n){ primitives<Device::METAL>::log(x, y, n); });
-  check_nothrow("relu",         [](auto* x, auto* y, dim_t n){ primitives<Device::METAL>::relu(x, y, n); });
-  check_nothrow("gelu",         [](auto* x, auto* y, dim_t n){ primitives<Device::METAL>::gelu(x, y, n); });
-  check_nothrow("sigmoid",      [](auto* x, auto* y, dim_t n){ primitives<Device::METAL>::sigmoid(x, y, n); });
+  check_nothrow("exp",          [](auto* x, auto* y, dim_t n){ primitives<Device::MPS>::exp(x, y, n); });
+  check_nothrow("log",          [](auto* x, auto* y, dim_t n){ primitives<Device::MPS>::log(x, y, n); });
+  check_nothrow("relu",         [](auto* x, auto* y, dim_t n){ primitives<Device::MPS>::relu(x, y, n); });
+  check_nothrow("gelu",         [](auto* x, auto* y, dim_t n){ primitives<Device::MPS>::gelu(x, y, n); });
+  check_nothrow("sigmoid",      [](auto* x, auto* y, dim_t n){ primitives<Device::MPS>::sigmoid(x, y, n); });
   metal_free(p);
 }
 

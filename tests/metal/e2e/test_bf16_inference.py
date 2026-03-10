@@ -54,7 +54,7 @@ def main():
     # --- Load models ---
     print("Loading models...")
     cpu_f32 = ctranslate2.Translator(f32_path, device="cpu")
-    metal_bf16 = ctranslate2.Translator(bf16_path, device="metal")
+    metal_bf16 = ctranslate2.Translator(bf16_path, device="mps")
 
     actual_ct = metal_bf16.compute_type
     print(f"  Metal BF16 model compute_type: {actual_ct}")
@@ -140,7 +140,7 @@ def main():
     has_f16 = os.path.isdir(f16_path)
     if has_f16:
         print("\n=== Speed: Metal-bf16 vs Metal-f16 ===")
-        metal_f16 = ctranslate2.Translator(f16_path, device="metal")
+        metal_f16 = ctranslate2.Translator(f16_path, device="mps")
         f16_ct = metal_f16.compute_type
         print(f"  Metal FP16 model compute_type: {f16_ct}")
 
@@ -193,7 +193,7 @@ def main():
 
             print("\n=== Whisper BF16 inference ===")
             processor = WhisperProcessor.from_pretrained("openai/whisper-base")
-            whisper = ctranslate2.models.Whisper(whisper_path, device="metal",
+            whisper = ctranslate2.models.Whisper(whisper_path, device="mps",
                                                   compute_type="bfloat16")
             w_ct = whisper.compute_type
             print(f"  Whisper compute_type: {w_ct}")

@@ -3,8 +3,8 @@
 // M5.2 — Metal implementation of the BiasAdd op.
 //
 // Reuses the already-implemented Metal broadcast primitives:
-//   primitives<Device::METAL>::add_batch_broadcast  (last-axis bias)
-//   primitives<Device::METAL>::add_block_broadcast  (other axes)
+//   primitives<Device::MPS>::add_batch_broadcast  (last-axis bias)
+//   primitives<Device::MPS>::add_block_broadcast  (other axes)
 
 #include "ctranslate2/ops/bias_add.h"
 #include "ctranslate2/ops/activation.h"
@@ -45,7 +45,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                         \
     template void                                               \
-    BiasAdd::compute<Device::METAL, T>(const StorageView& value,\
+    BiasAdd::compute<Device::MPS, T>(const StorageView& value,\
                                         const StorageView& bias,\
                                         StorageView& output,    \
                                         const StorageView* residual) const;

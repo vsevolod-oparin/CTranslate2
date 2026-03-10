@@ -60,7 +60,7 @@ namespace ctranslate2 {
     id<MTLCommandQueue> get_metal_command_queue() {
       if (_thread_queue == nil) {
         _thread_queue = [get_metal_device() newCommandQueue];
-        CT2_METAL_CHECK_OBJ(_thread_queue, "MTLCommandQueue");
+        CT2_MPS_CHECK_OBJ(_thread_queue, "MTLCommandQueue");
       }
       return _thread_queue;
     }
@@ -75,7 +75,7 @@ namespace ctranslate2 {
         @autoreleasepool {
           _thread_buffer = [[get_metal_command_queue() commandBuffer] retain];
         }
-        CT2_METAL_CHECK_OBJ(_thread_buffer, "MTLCommandBuffer");
+        CT2_MPS_CHECK_OBJ(_thread_buffer, "MTLCommandBuffer");
       }
       return _thread_buffer;
     }
@@ -124,7 +124,7 @@ namespace ctranslate2 {
       // Auto-enable trace via env var on first real commit.
       static std::once_flag _env_flag;
       std::call_once(_env_flag, [] {
-        if (std::getenv("CT2_METAL_TRACE")) {
+        if (std::getenv("CT2_MPS_TRACE")) {
           _trace_enabled = true;
           std::atexit([] { dump_commit_trace(); });
         }
@@ -138,7 +138,7 @@ namespace ctranslate2 {
         // Drain autoreleased ObjC temporaries (compute encoders,
         // descriptors, etc.) that accumulated since the last drain.
         [buf waitUntilCompleted];
-        CT2_METAL_CHECK_BUFFER(buf);
+        CT2_MPS_CHECK_BUFFER(buf);
       }
       _commit_count.fetch_add(1, std::memory_order_relaxed);
       // M11.4: Accumulate GPU execution time (atomic add via CAS loop).

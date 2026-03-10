@@ -9,7 +9,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/activation_bench.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -82,11 +82,11 @@ static double bench_median_us(int iters, Fn fn) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -297,47 +297,47 @@ int main() {
   // clang-format off
   std::vector<OpSpec> ops = {
     { "exp",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::exp(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::exp(x, y, n); },
       [](float v){ return std::exp(v); },
       -4.f, 4.f, 2e-5f },  // MSL exp rounding vs std::exp can differ by ~1.2e-5
     { "log",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::log(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::log(x, y, n); },
       [](float v){ return std::log(v); },
       0.01f, 10.f, 1e-5f },
     { "cos",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::cos(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::cos(x, y, n); },
       [](float v){ return std::cos(v); },
       -3.14159f, 3.14159f, 1e-5f },
     { "sin",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::sin(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::sin(x, y, n); },
       [](float v){ return std::sin(v); },
       -3.14159f, 3.14159f, 1e-5f },
     { "tanh",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::tanh(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::tanh(x, y, n); },
       [](float v){ return std::tanh(v); },
       -4.f, 4.f, 1e-5f },
     { "relu",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::relu(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::relu(x, y, n); },
       cpu_relu,
       -4.f, 4.f, 1e-6f },
     { "sigmoid",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::sigmoid(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::sigmoid(x, y, n); },
       cpu_sigmoid,
       -4.f, 4.f, 1e-6f },
     { "swish",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::swish(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::swish(x, y, n); },
       cpu_swish,
       -4.f, 4.f, 1e-5f },
     { "gelu",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::gelu(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::gelu(x, y, n); },
       cpu_gelu,
       -4.f, 4.f, 2e-6f },  // ct2_erf poly error ≤ 1.5e-7; allow extra for fp32 rounding
     { "gelu_tanh",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::gelu_tanh(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::gelu_tanh(x, y, n); },
       cpu_gelu_tanh,
       -4.f, 4.f, 1e-5f },
     { "gelu_sigmoid",
-      [](const float* x, float* y, dim_t n){ primitives<Device::METAL>::gelu_sigmoid(x, y, n); },
+      [](const float* x, float* y, dim_t n){ primitives<Device::MPS>::gelu_sigmoid(x, y, n); },
       cpu_gelu_sigmoid,
       -4.f, 4.f, 1e-6f },
   };

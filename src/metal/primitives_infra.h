@@ -175,7 +175,7 @@ static inline id<MTLBuffer> alloc_temp_buffer(NSUInteger bytes) {
 // ---------------------------------------------------------------------------
 // RAII allocator-registered temporary buffer.
 //
-// Buffers allocated via get_allocator<Device::METAL>() are tracked in
+// Buffers allocated via get_allocator<Device::MPS>() are tracked in
 // MetalAllocator::_live, so metal_buffer_for_ptr() can find them.
 // Use this (instead of alloc_temp_buffer) when GEMM or other ops need to
 // locate the backing MTLBuffer via metal_buffer_for_ptr().
@@ -187,12 +187,12 @@ struct MetalTempBuf {
   MetalTempBuf() = default;
 
   explicit MetalTempBuf(size_t n_bytes) {
-    ptr = ctranslate2::get_allocator<ctranslate2::Device::METAL>().allocate(n_bytes, 0);
+    ptr = ctranslate2::get_allocator<ctranslate2::Device::MPS>().allocate(n_bytes, 0);
   }
 
   ~MetalTempBuf() {
     if (ptr) {
-      ctranslate2::get_allocator<ctranslate2::Device::METAL>().free(ptr, 0);
+      ctranslate2::get_allocator<ctranslate2::Device::MPS>().free(ptr, 0);
     }
   }
 
@@ -202,7 +202,7 @@ struct MetalTempBuf {
   MetalTempBuf(MetalTempBuf&& o) noexcept : ptr(o.ptr) { o.ptr = nullptr; }
   MetalTempBuf& operator=(MetalTempBuf&& o) noexcept {
     if (this != &o) {
-      if (ptr) ctranslate2::get_allocator<ctranslate2::Device::METAL>().free(ptr, 0);
+      if (ptr) ctranslate2::get_allocator<ctranslate2::Device::MPS>().free(ptr, 0);
       ptr = o.ptr;
       o.ptr = nullptr;
     }
@@ -229,7 +229,7 @@ template<> struct MetalTypeName<int32_t>                            { static con
 static constexpr size_t kKernelNameBufSize = 64;
 
 // ---------------------------------------------------------------------------
-// METAL_STUB — throw for unimplemented primitives<Device::METAL> methods
+// METAL_STUB — throw for unimplemented primitives<Device::MPS> methods
 // ---------------------------------------------------------------------------
 
 #define METAL_STUB(name) \

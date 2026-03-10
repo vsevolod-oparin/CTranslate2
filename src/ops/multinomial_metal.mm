@@ -306,7 +306,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                   \
     template void                                                         \
-    Multinomial::compute<Device::METAL, T>(const StorageView& input,     \
+    Multinomial::compute<Device::MPS, T>(const StorageView& input,     \
                                             StorageView& output) const;
 
     DECLARE_IMPL(float)

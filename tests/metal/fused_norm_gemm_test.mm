@@ -19,7 +19,7 @@
 //
 // Build:
 //   clang++ -std=c++17 -O0 \
-//     -I include -I src -DCT2_WITH_METAL \
+//     -I include -I src -DCT2_WITH_MPS \
 //     tests/metal/fused_norm_gemm_test.mm \
 //     src/metal/ops_fused_norm_gemm.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -161,7 +161,7 @@ static std::vector<float> rand_vec(size_t n, std::mt19937& rng, float lo = -1.f,
 template <typename T>
 static T* gpu_alloc(const std::vector<T>& src) {
   size_t bytes = src.size() * sizeof(T);
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   T* ptr = static_cast<T*>(alloc.allocate(bytes, 0));
   std::memcpy(ptr, src.data(), bytes);
   return ptr;
@@ -169,12 +169,12 @@ static T* gpu_alloc(const std::vector<T>& src) {
 
 template <typename T>
 static T* gpu_alloc_empty(size_t n) {
-  auto& alloc = get_allocator<Device::METAL>();
+  auto& alloc = get_allocator<Device::MPS>();
   return static_cast<T*>(alloc.allocate(n * sizeof(T), 0));
 }
 
 static void gpu_free(void* ptr) {
-  get_allocator<Device::METAL>().free(ptr, 0);
+  get_allocator<Device::MPS>().free(ptr, 0);
 }
 
 // ---------------------------------------------------------------------------

@@ -190,7 +190,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::add(T a, const T* x, T* y, dim_t size) {
+  void primitives<Device::MPS>::add(T a, const T* x, T* y, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_scalar_%s", MetalTypeName<T>::value);
     dispatch_scalar(kname, &a, sizeof(T), x, y, size);
@@ -198,7 +198,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::add(const T* a, const T* b, T* c, dim_t size) {
+  void primitives<Device::MPS>::add(const T* a, const T* b, T* c, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_%s", MetalTypeName<T>::value);
     dispatch_binary(kname, a, b, c, size);
@@ -206,7 +206,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::sub(const T* a, const T* b, T* c, dim_t size) {
+  void primitives<Device::MPS>::sub(const T* a, const T* b, T* c, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "sub_%s", MetalTypeName<T>::value);
     dispatch_binary(kname, a, b, c, size);
@@ -214,7 +214,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::min(T a, const T* x, T* y, dim_t size) {
+  void primitives<Device::MPS>::min(T a, const T* x, T* y, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "min_scalar_%s", MetalTypeName<T>::value);
     dispatch_scalar(kname, &a, sizeof(T), x, y, size);
@@ -222,7 +222,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::min(const T* a, const T* b, T* c, dim_t size) {
+  void primitives<Device::MPS>::min(const T* a, const T* b, T* c, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "min_%s", MetalTypeName<T>::value);
     dispatch_binary(kname, a, b, c, size);
@@ -230,7 +230,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::max(T a, const T* x, T* y, dim_t size) {
+  void primitives<Device::MPS>::max(T a, const T* x, T* y, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "max_scalar_%s", MetalTypeName<T>::value);
     dispatch_scalar(kname, &a, sizeof(T), x, y, size);
@@ -238,7 +238,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::max(const T* a, const T* b, T* c, dim_t size) {
+  void primitives<Device::MPS>::max(const T* a, const T* b, T* c, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "max_%s", MetalTypeName<T>::value);
     dispatch_binary(kname, a, b, c, size);
@@ -246,7 +246,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::mul(T a, const T* x, T* y, dim_t size) {
+  void primitives<Device::MPS>::mul(T a, const T* x, T* y, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "mul_scalar_%s", MetalTypeName<T>::value);
     dispatch_scalar(kname, &a, sizeof(T), x, y, size);
@@ -254,7 +254,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::mul(const T* a, const T* b, T* c, dim_t size) {
+  void primitives<Device::MPS>::mul(const T* a, const T* b, T* c, dim_t size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "mul_%s", MetalTypeName<T>::value);
     dispatch_binary(kname, a, b, c, size);
@@ -271,7 +271,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::add_batch_broadcast(
+  void primitives<Device::MPS>::add_batch_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_batch_broadcast_%s", MetalTypeName<T>::value);
@@ -280,7 +280,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::add_depth_broadcast(
+  void primitives<Device::MPS>::add_depth_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_depth_broadcast_%s", MetalTypeName<T>::value);
@@ -290,7 +290,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::add_block_broadcast(
+  void primitives<Device::MPS>::add_block_broadcast(
       const T* a, const T* b, T* c, dim_t block, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "add_block_broadcast_%s", MetalTypeName<T>::value);
@@ -301,7 +301,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::mul_batch_broadcast(
+  void primitives<Device::MPS>::mul_batch_broadcast(
       const T* a, const T* b, T* c, dim_t a_size, dim_t b_size) {
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "mul_batch_broadcast_%s", MetalTypeName<T>::value);
@@ -315,7 +315,7 @@ namespace ctranslate2 {
 #define METAL_UNARY_OP(cpp_name, kernel_prefix)                           \
   template<>                                                              \
   template <typename T>                                                   \
-  void primitives<Device::METAL>::cpp_name(const T* x, T* y, dim_t size) { \
+  void primitives<Device::MPS>::cpp_name(const T* x, T* y, dim_t size) { \
     char kname[kKernelNameBufSize];                                       \
     std::snprintf(kname, sizeof(kname), kernel_prefix "_%s",             \
                   MetalTypeName<T>::value);                               \
@@ -342,37 +342,37 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                          \
   template void                                                                  \
-  primitives<Device::METAL>::add(T a, const T* x, T* y, dim_t size);            \
+  primitives<Device::MPS>::add(T a, const T* x, T* y, dim_t size);            \
   template void                                                                  \
-  primitives<Device::METAL>::add(const T* a, const T* b, T* c, dim_t size);     \
+  primitives<Device::MPS>::add(const T* a, const T* b, T* c, dim_t size);     \
   template void                                                                  \
-  primitives<Device::METAL>::add_batch_broadcast(const T* a, const T* b,         \
+  primitives<Device::MPS>::add_batch_broadcast(const T* a, const T* b,         \
                                                   T* c, dim_t a_size,            \
                                                   dim_t b_size);                 \
   template void                                                                  \
-  primitives<Device::METAL>::add_depth_broadcast(const T* a, const T* b,         \
+  primitives<Device::MPS>::add_depth_broadcast(const T* a, const T* b,         \
                                                   T* c, dim_t a_size,            \
                                                   dim_t b_size);                 \
   template void                                                                  \
-  primitives<Device::METAL>::add_block_broadcast(const T* a, const T* b,         \
+  primitives<Device::MPS>::add_block_broadcast(const T* a, const T* b,         \
                                                   T* c, dim_t block,             \
                                                   dim_t a_size, dim_t b_size);   \
   template void                                                                  \
-  primitives<Device::METAL>::sub(const T* a, const T* b, T* c, dim_t size);     \
+  primitives<Device::MPS>::sub(const T* a, const T* b, T* c, dim_t size);     \
   template void                                                                  \
-  primitives<Device::METAL>::min(T a, const T* x, T* y, dim_t size);            \
+  primitives<Device::MPS>::min(T a, const T* x, T* y, dim_t size);            \
   template void                                                                  \
-  primitives<Device::METAL>::min(const T* a, const T* b, T* c, dim_t size);     \
+  primitives<Device::MPS>::min(const T* a, const T* b, T* c, dim_t size);     \
   template void                                                                  \
-  primitives<Device::METAL>::max(T a, const T* x, T* y, dim_t size);            \
+  primitives<Device::MPS>::max(T a, const T* x, T* y, dim_t size);            \
   template void                                                                  \
-  primitives<Device::METAL>::max(const T* a, const T* b, T* c, dim_t size);     \
+  primitives<Device::MPS>::max(const T* a, const T* b, T* c, dim_t size);     \
   template void                                                                  \
-  primitives<Device::METAL>::mul(T a, const T* x, T* y, dim_t size);            \
+  primitives<Device::MPS>::mul(T a, const T* x, T* y, dim_t size);            \
   template void                                                                  \
-  primitives<Device::METAL>::mul(const T* a, const T* b, T* c, dim_t size);     \
+  primitives<Device::MPS>::mul(const T* a, const T* b, T* c, dim_t size);     \
   template void                                                                  \
-  primitives<Device::METAL>::mul_batch_broadcast(const T* a, const T* b,         \
+  primitives<Device::MPS>::mul_batch_broadcast(const T* a, const T* b,         \
                                                   T* c, dim_t a_size,            \
                                                   dim_t b_size);
 
@@ -381,17 +381,17 @@ namespace ctranslate2 {
 #undef DECLARE_IMPL
 
 #define DECLARE_FLOAT_IMPL(T)                                                    \
-  template void primitives<Device::METAL>::exp(const T*, T*, dim_t);            \
-  template void primitives<Device::METAL>::log(const T*, T*, dim_t);            \
-  template void primitives<Device::METAL>::cos(const T*, T*, dim_t);            \
-  template void primitives<Device::METAL>::sin(const T*, T*, dim_t);            \
-  template void primitives<Device::METAL>::tanh(const T*, T*, dim_t);           \
-  template void primitives<Device::METAL>::relu(const T*, T*, dim_t);           \
-  template void primitives<Device::METAL>::sigmoid(const T*, T*, dim_t);        \
-  template void primitives<Device::METAL>::swish(const T*, T*, dim_t);          \
-  template void primitives<Device::METAL>::gelu(const T*, T*, dim_t);           \
-  template void primitives<Device::METAL>::gelu_tanh(const T*, T*, dim_t);      \
-  template void primitives<Device::METAL>::gelu_sigmoid(const T*, T*, dim_t);
+  template void primitives<Device::MPS>::exp(const T*, T*, dim_t);            \
+  template void primitives<Device::MPS>::log(const T*, T*, dim_t);            \
+  template void primitives<Device::MPS>::cos(const T*, T*, dim_t);            \
+  template void primitives<Device::MPS>::sin(const T*, T*, dim_t);            \
+  template void primitives<Device::MPS>::tanh(const T*, T*, dim_t);           \
+  template void primitives<Device::MPS>::relu(const T*, T*, dim_t);           \
+  template void primitives<Device::MPS>::sigmoid(const T*, T*, dim_t);        \
+  template void primitives<Device::MPS>::swish(const T*, T*, dim_t);          \
+  template void primitives<Device::MPS>::gelu(const T*, T*, dim_t);           \
+  template void primitives<Device::MPS>::gelu_tanh(const T*, T*, dim_t);      \
+  template void primitives<Device::MPS>::gelu_sigmoid(const T*, T*, dim_t);
 
   DECLARE_FLOAT_IMPL(float)
   DECLARE_FLOAT_IMPL(float16_t)

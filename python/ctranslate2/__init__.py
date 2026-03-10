@@ -41,7 +41,7 @@ try:
         contains_model,
         clear_device_cache,
         get_cuda_device_count,
-        get_metal_device_count,
+        get_mps_device_count,
         get_supported_compute_types,
         get_supported_devices,
         set_random_seed,

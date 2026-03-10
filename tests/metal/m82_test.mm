@@ -30,7 +30,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m82_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm \
@@ -81,12 +81,12 @@ static int g_pass = 0, g_fail = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<std::size_t>(n) * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // Upload host float data into a new Metal Shared buffer.
@@ -462,13 +462,13 @@ static void test_full_decoder_prefill() {
   metal::layer_norm_metal<float>(x_m, gamma1_m, beta1_m, norm1_m, DEC_T, D, eps);
 
   // Step 2: Self-attn Q/K/V projections  (norm1 × W^T)
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       norm1_m, D, W_Qs_m, D, 0.f, Q_s_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       norm1_m, D, W_Ks_m, D, 0.f, K_s_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       norm1_m, D, W_Vs_m, D, 0.f, V_s_m, D);
 
@@ -477,22 +477,22 @@ static void test_full_decoder_prefill() {
                             B, DEC_T, DEC_T, NH, NH, HD, scale, true);
 
   // Step 4: Self-attn output projection + residual → h1
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       self_m, D, W_os_m, D, 0.f, proj_s_m, D);
-  primitives<Device::METAL>::add<float>(x_m, proj_s_m, h1_m, DEC_T * D);
+  primitives<Device::MPS>::add<float>(x_m, proj_s_m, h1_m, DEC_T * D);
 
   // Step 5: Pre-cross-attn LayerNorm
   metal::layer_norm_metal<float>(h1_m, gamma2_m, beta2_m, norm2_m, DEC_T, D, eps);
 
   // Step 6: Cross-attn Q from decoder, K/V from encoder context
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       norm2_m, D, W_Qc_m, D, 0.f, Q_c_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, ENC_T, D, D, 1.f,
       enc_m, D, W_Kc_m, D, 0.f, K_c_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, ENC_T, D, D, 1.f,
       enc_m, D, W_Vc_m, D, 0.f, V_c_m, D);
 
@@ -501,23 +501,23 @@ static void test_full_decoder_prefill() {
                             B, DEC_T, ENC_T, NH, NH, HD, scale, false);
 
   // Step 8: Cross-attn output projection + residual → h2
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, D, 1.f,
       cross_m, D, W_oc_m, D, 0.f, proj_c_m, D);
-  primitives<Device::METAL>::add<float>(h1_m, proj_c_m, h2_m, DEC_T * D);
+  primitives<Device::MPS>::add<float>(h1_m, proj_c_m, h2_m, DEC_T * D);
 
   // Step 9: Pre-FFN LayerNorm
   metal::layer_norm_metal<float>(h2_m, gamma3_m, beta3_m, norm3_m, DEC_T, D, eps);
 
   // Step 10: FFN
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, FFN, D, 1.f,
       norm3_m, D, W1_m, D, 0.f, ffn1_m, FFN);
-  primitives<Device::METAL>::relu<float>(ffn1_m, ffn1a_m, DEC_T * FFN);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::relu<float>(ffn1_m, ffn1a_m, DEC_T * FFN);
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, DEC_T, D, FFN, 1.f,
       ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
-  primitives<Device::METAL>::add<float>(h2_m, ffn2_m, out_m, DEC_T * D);
+  primitives<Device::MPS>::add<float>(h2_m, ffn2_m, out_m, DEC_T * D);
 
   // Compare output
   auto out_metal = metal_to_host(out_m, DEC_T * D);
@@ -723,13 +723,13 @@ static void test_full_decoder_decode() {
   metal::layer_norm_metal<float>(x_new_m, gamma1_m, beta1_m, norm1_m, 1, D, eps);
 
   // Step 2: Q/K/V projections for new token
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       norm1_m, D, W_Qs_m, D, 0.f, Q_s_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       norm1_m, D, W_Ks_m, D, 0.f, K_s_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       norm1_m, D, W_Vs_m, D, 0.f, V_s_m, D);
 
@@ -750,45 +750,45 @@ static void test_full_decoder_decode() {
                             B, 1, sk_eff, NH, NK, HD, scale, false);
 
   // Step 5: Self-attn output projection + residual → h1
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       self_m, D, W_os_m, D, 0.f, proj_s_m, D);
-  primitives<Device::METAL>::add<float>(x_new_m, proj_s_m, h1_m, 1 * D);
+  primitives<Device::MPS>::add<float>(x_new_m, proj_s_m, h1_m, 1 * D);
 
   // Step 6: Pre-cross-attn LayerNorm
   metal::layer_norm_metal<float>(h1_m, gamma2_m, beta2_m, norm2_m, 1, D, eps);
 
   // Step 7: Cross-attn (Q from decoder sq=1, KV from encoder sk=ENC_T=6)
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       norm2_m, D, W_Qc_m, D, 0.f, Q_c_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, ENC_T, D, D, 1.f,
       enc_m, D, W_Kc_m, D, 0.f, K_c_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, ENC_T, D, D, 1.f,
       enc_m, D, W_Vc_m, D, 0.f, V_c_m, D);
   metal::sdpa_metal<float>(Q_c_m, K_c_m, V_c_m, cross_m,
                             B, 1, ENC_T, NH, NK, HD, scale, false);
 
   // Step 8: Cross-attn output projection + residual → h2
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, D, 1.f,
       cross_m, D, W_oc_m, D, 0.f, proj_c_m, D);
-  primitives<Device::METAL>::add<float>(h1_m, proj_c_m, h2_m, 1 * D);
+  primitives<Device::MPS>::add<float>(h1_m, proj_c_m, h2_m, 1 * D);
 
   // Step 9: Pre-FFN LayerNorm
   metal::layer_norm_metal<float>(h2_m, gamma3_m, beta3_m, norm3_m, 1, D, eps);
 
   // Step 10: FFN
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, FFN, D, 1.f,
       norm3_m, D, W1_m, D, 0.f, ffn1_m, FFN);
-  primitives<Device::METAL>::relu<float>(ffn1_m, ffn1a_m, 1 * FFN);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::relu<float>(ffn1_m, ffn1a_m, 1 * FFN);
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, 1, D, FFN, 1.f,
       ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
-  primitives<Device::METAL>::add<float>(h2_m, ffn2_m, out_m, 1 * D);
+  primitives<Device::MPS>::add<float>(h2_m, ffn2_m, out_m, 1 * D);
 
   // Compare output
   auto out_metal = metal_to_host(out_m, 1 * D);
@@ -1062,11 +1062,11 @@ static void test_decoder_decode_typed(const char* type_name, float tol) {
 
   // Self-attention
   metal::layer_norm_metal<T>(x_new_m, gamma1_m, beta1_m, norm1_m, 1, D, eps);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Qs_m, D, 0.f, Q_s_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Ks_m, D, 0.f, K_s_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, norm1_m, D, W_Vs_m, D, 0.f, V_s_m, D);
 
   // KV-cache update
@@ -1081,32 +1081,32 @@ static void test_decoder_decode_typed(const char* type_name, float tol) {
   const dim_t kv_bstride = MAX_CACHE * NK * HD;
   metal::sdpa_metal<T>(Q_s_m, k_cache, v_cache, self_m,
                         B, 1, sk_eff, NH, NK, HD, scale, false, kv_bstride);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, self_m, D, W_os_m, D, 0.f, proj_s_m, D);
-  primitives<Device::METAL>::add<T>(x_new_m, proj_s_m, h1_m, 1 * D);
+  primitives<Device::MPS>::add<T>(x_new_m, proj_s_m, h1_m, 1 * D);
 
   // Cross-attention
   metal::layer_norm_metal<T>(h1_m, gamma2_m, beta2_m, norm2_m, 1, D, eps);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, norm2_m, D, W_Qc_m, D, 0.f, Q_c_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, ENC_T, D, D, 1.f, enc_m, D, W_Kc_m, D, 0.f, K_c_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, ENC_T, D, D, 1.f, enc_m, D, W_Vc_m, D, 0.f, V_c_m, D);
   metal::sdpa_metal<T>(Q_c_m, K_c_m, V_c_m, cross_m,
                         B, 1, ENC_T, NH, NK, HD, scale, false);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, D, 1.f, cross_m, D, W_oc_m, D, 0.f, proj_c_m, D);
-  primitives<Device::METAL>::add<T>(h1_m, proj_c_m, h2_m, 1 * D);
+  primitives<Device::MPS>::add<T>(h1_m, proj_c_m, h2_m, 1 * D);
 
   // FFN
   metal::layer_norm_metal<T>(h2_m, gamma3_m, beta3_m, norm3_m, 1, D, eps);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, FFN, D, 1.f, norm3_m, D, W1_m, D, 0.f, ffn1_m, FFN);
-  primitives<Device::METAL>::relu<T>(ffn1_m, ffn1a_m, 1 * FFN);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::relu<T>(ffn1_m, ffn1a_m, 1 * FFN);
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, 1, D, FFN, 1.f, ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
-  primitives<Device::METAL>::add<T>(h2_m, ffn2_m, out_m, 1 * D);
+  primitives<Device::MPS>::add<T>(h2_m, ffn2_m, out_m, 1 * D);
 
   auto out_metal = metal_to_host(out_m, 1 * D);
   float err = max_abs_diff(out_cpu, out_metal);
@@ -1230,11 +1230,11 @@ static void test_multistep_decode_sequence() {
 
     // --- Metal ---
     metal::layer_norm_metal<float>(x_m, gamma_m, beta_m, norm_m, 1, D, eps);
-    primitives<Device::METAL>::gemm<float, float>(
+    primitives<Device::MPS>::gemm<float, float>(
         false, false, false, true, 1, D, D, 1.f, norm_m, D, W_Q_m, D, 0.f, Q_m, D);
-    primitives<Device::METAL>::gemm<float, float>(
+    primitives<Device::MPS>::gemm<float, float>(
         false, false, false, true, 1, D, D, 1.f, norm_m, D, W_K_m, D, 0.f, K_new_m, D);
-    primitives<Device::METAL>::gemm<float, float>(
+    primitives<Device::MPS>::gemm<float, float>(
         false, false, false, true, 1, D, D, 1.f, norm_m, D, W_V_m, D, 0.f, V_new_m, D);
 
     metal::commit_and_wait();
@@ -1245,9 +1245,9 @@ static void test_multistep_decode_sequence() {
 
     metal::sdpa_metal<float>(Q_m, k_cache, v_cache, attn_m,
                               B, 1, sk_eff, NH, NK, HD, scale, false, kv_bstride);
-    primitives<Device::METAL>::gemm<float, float>(
+    primitives<Device::MPS>::gemm<float, float>(
         false, false, false, true, 1, D, D, 1.f, attn_m, D, W_o_m, D, 0.f, proj_m, D);
-    primitives<Device::METAL>::add<float>(x_m, proj_m, out_m, 1 * D);
+    primitives<Device::MPS>::add<float>(x_m, proj_m, out_m, 1 * D);
 
     auto out_metal = metal_to_host(out_m, 1 * D);
     float err = max_abs_diff(out_cpu, out_metal);

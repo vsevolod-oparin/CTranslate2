@@ -19,7 +19,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/large_transpose_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -62,10 +62,10 @@ static void report(bool ok, const char* name) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // CPU reference implementations (mirror transpose_test.mm)
@@ -148,7 +148,7 @@ static void test_2d_large() {
   // Fill with sequential floats — all exactly representable in f32 up to 2^24.
   for (dim_t i = 0; i < n; ++i) d_a[i] = (float)i;
 
-  primitives<Device::METAL>::transpose_2d(d_a, dims, d_b);
+  primitives<Device::MPS>::transpose_2d(d_a, dims, d_b);
   metal::commit_and_wait();
 
   cpu_transpose_2d(d_a, dims, cpu_b.data());
@@ -177,7 +177,7 @@ static void test_3d_large() {
   // perm [2, 0, 1]: [32,128,256] -> [256,32,128]  (attention-style permutation)
   {
     const dim_t perm[3] = {2, 0, 1};
-    primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
     report(check_equal_f32(d_b, cpu_b.data(), n, "3d_201"),
@@ -187,7 +187,7 @@ static void test_3d_large() {
   // perm [0, 2, 1]: [32,128,256] -> [32,256,128]  (swap last two dims)
   {
     const dim_t perm[3] = {0, 2, 1};
-    primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
     report(check_equal_f32(d_b, cpu_b.data(), n, "3d_021"),
@@ -197,7 +197,7 @@ static void test_3d_large() {
   // perm [1, 0, 2]: [32,128,256] -> [128,32,256]  (swap first two dims)
   {
     const dim_t perm[3] = {1, 0, 2};
-    primitives<Device::METAL>::transpose_3d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_3d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     cpu_transpose_3d(d_a, dims, perm, cpu_b.data());
     report(check_equal_f32(d_b, cpu_b.data(), n, "3d_102"),
@@ -226,7 +226,7 @@ static void test_4d_large() {
   // perm [0,2,1,3]: [4,32,64,128] -> [4,64,32,128]  (MHA heads<->seq swap)
   {
     const dim_t perm[4] = {0, 2, 1, 3};
-    primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
     report(check_equal_f32(d_b, cpu_b.data(), n, "4d_0213"),
@@ -236,7 +236,7 @@ static void test_4d_large() {
   // perm [3,2,1,0]: full reversal — exercises maximum cross-stride access.
   {
     const dim_t perm[4] = {3, 2, 1, 0};
-    primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+    primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
     metal::commit_and_wait();
     cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
     report(check_equal_f32(d_b, cpu_b.data(), n, "4d_3210"),
@@ -265,7 +265,7 @@ static void test_4d_decode() {
 
   // perm [0,2,1,3]: [1,16,512,128] -> [1,512,16,128]
   const dim_t perm[4] = {0, 2, 1, 3};
-  primitives<Device::METAL>::transpose_4d(d_a, dims, perm, d_b);
+  primitives<Device::MPS>::transpose_4d(d_a, dims, perm, d_b);
   metal::commit_and_wait();
   cpu_transpose_4d(d_a, dims, perm, cpu_b.data());
   report(check_equal_f32(d_b, cpu_b.data(), n, "4d_decode"),

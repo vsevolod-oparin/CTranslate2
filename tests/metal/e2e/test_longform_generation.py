@@ -24,7 +24,7 @@ def main():
         return 0
 
     gen_cpu = ctranslate2.Generator(gpt2_path, device="cpu")
-    gen_metal = ctranslate2.Generator(gpt2_path, device="metal")
+    gen_metal = ctranslate2.Generator(gpt2_path, device="mps")
 
     prompts = [
         ["Hello", ",", "Ġmy", "Ġname", "Ġis"],

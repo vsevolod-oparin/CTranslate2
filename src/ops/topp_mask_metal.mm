@@ -6,7 +6,7 @@
 // execute the nucleus sampling mask CPU algorithm on shared-memory
 // pointers.  TopPMask is float-only (same constraint as CPU).
 //
-// max_num_classes<Device::METAL> returns numeric_limits<dim_t>::max()
+// max_num_classes<Device::MPS> returns numeric_limits<dim_t>::max()
 // (same as CPU — no artificial vocabulary limit on Metal).
 
 #include "ctranslate2/ops/topp_mask.h"
@@ -55,12 +55,12 @@ namespace ctranslate2 {
     }
 
     template <>
-    dim_t TopPMask::max_num_classes<Device::METAL>() {
+    dim_t TopPMask::max_num_classes<Device::MPS>() {
       return std::numeric_limits<dim_t>::max();
     }
 
 #define DECLARE_IMPL(T)                                                     \
-    template void TopPMask::compute<Device::METAL, T>(const StorageView&,   \
+    template void TopPMask::compute<Device::MPS, T>(const StorageView&,   \
                                                        const StorageView&,   \
                                                        StorageView&) const;
 

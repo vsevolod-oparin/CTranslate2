@@ -17,7 +17,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/truncation_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -66,10 +66,10 @@ static int g_failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Helper: confirm a callable throws std::runtime_error
@@ -105,12 +105,12 @@ static void test_overflow_binary() {
       static_cast<dim_t>(std::numeric_limits<uint32_t>::max()) + 1;
 
   bool threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::add(a, b, c, overflow_size);
+    primitives<Device::MPS>::add(a, b, c, overflow_size);
   });
   CHECK("add(vec,vec) throws on overflow size", threw);
 
   threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::mul(a, b, c, overflow_size);
+    primitives<Device::MPS>::mul(a, b, c, overflow_size);
   });
   CHECK("mul(vec,vec) throws on overflow size", threw);
 
@@ -130,22 +130,22 @@ static void test_overflow_scalar() {
       static_cast<dim_t>(std::numeric_limits<uint32_t>::max()) + 1;
 
   bool threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::add(1.0f, x, y, overflow_size);
+    primitives<Device::MPS>::add(1.0f, x, y, overflow_size);
   });
   CHECK("add(scalar,vec) throws on overflow size", threw);
 
   threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::mul(2.0f, x, y, overflow_size);
+    primitives<Device::MPS>::mul(2.0f, x, y, overflow_size);
   });
   CHECK("mul(scalar,vec) throws on overflow size", threw);
 
   threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::min(0.0f, x, y, overflow_size);
+    primitives<Device::MPS>::min(0.0f, x, y, overflow_size);
   });
   CHECK("min(scalar,vec) throws on overflow size", threw);
 
   threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::max(0.0f, x, y, overflow_size);
+    primitives<Device::MPS>::max(0.0f, x, y, overflow_size);
   });
   CHECK("max(scalar,vec) throws on overflow size", threw);
 
@@ -165,7 +165,7 @@ static void test_negative_dim() {
   float* c = metal_alloc<float>(4);
 
   bool threw = throws_runtime_error([&] {
-    primitives<Device::METAL>::add(a, b, c, static_cast<dim_t>(-1));
+    primitives<Device::MPS>::add(a, b, c, static_cast<dim_t>(-1));
   });
   CHECK("add(vec,vec) throws on negative size", threw);
 
@@ -188,7 +188,7 @@ static void test_normal_dispatch() {
   for (dim_t i = 0; i < N; ++i) { a[i] = float(i); b[i] = float(i) + 1.f; }
 
   // add vec+vec
-  primitives<Device::METAL>::add(a, b, c, N);
+  primitives<Device::MPS>::add(a, b, c, N);
   metal::commit_and_wait();
   bool ok = true;
   for (dim_t i = 0; i < N; ++i) {
@@ -198,7 +198,7 @@ static void test_normal_dispatch() {
   CHECK("add(vec,vec) N=64 still correct", ok);
 
   // mul scalar*vec
-  primitives<Device::METAL>::mul(3.0f, a, c, N);
+  primitives<Device::MPS>::mul(3.0f, a, c, N);
   metal::commit_and_wait();
   ok = true;
   for (dim_t i = 0; i < N; ++i) {

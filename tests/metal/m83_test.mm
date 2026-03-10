@@ -20,7 +20,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m83_test.mm \
 //     src/metal/ops_conv1d.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
@@ -122,7 +122,7 @@ static std::vector<float> rand_vec(size_t n, unsigned seed, float scale = 1.f) {
 // Allocate a float32 Metal buffer, copy data in (Shared memory, direct memcpy).
 static float* make_f32_buf(const std::vector<float>& data) {
   float* p = static_cast<float*>(
-      get_allocator<Device::METAL>().allocate(data.size() * sizeof(float), 0));
+      get_allocator<Device::MPS>().allocate(data.size() * sizeof(float), 0));
   std::memcpy(p, data.data(), data.size() * sizeof(float));
   return p;
 }
@@ -130,12 +130,12 @@ static float* make_f32_buf(const std::vector<float>& data) {
 // Allocate a float32 Metal buffer (output, uninitialized).
 static float* alloc_f32_buf(size_t n) {
   return static_cast<float*>(
-      get_allocator<Device::METAL>().allocate(n * sizeof(float), 0));
+      get_allocator<Device::MPS>().allocate(n * sizeof(float), 0));
 }
 
 // Free a Metal-registered buffer.
 static void free_buf(void* p) {
-  get_allocator<Device::METAL>().free(p, 0);
+  get_allocator<Device::MPS>().free(p, 0);
 }
 
 // Read Metal buffer to std::vector<float> after GPU sync.
@@ -331,14 +331,14 @@ static void test6_f16() {
   float* xf_m  = make_f32_buf(x_f32);
   float* wf_m  = make_f32_buf(w_f32);
   ct2_f16* x_m = static_cast<ct2_f16*>(
-      get_allocator<Device::METAL>().allocate(N_in  * sizeof(ct2_f16), 0));
+      get_allocator<Device::MPS>().allocate(N_in  * sizeof(ct2_f16), 0));
   ct2_f16* w_m = static_cast<ct2_f16*>(
-      get_allocator<Device::METAL>().allocate(N_w   * sizeof(ct2_f16), 0));
+      get_allocator<Device::MPS>().allocate(N_w   * sizeof(ct2_f16), 0));
   ct2_f16* y_m = static_cast<ct2_f16*>(
-      get_allocator<Device::METAL>().allocate(N_out * sizeof(ct2_f16), 0));
+      get_allocator<Device::MPS>().allocate(N_out * sizeof(ct2_f16), 0));
 
-  primitives<Device::METAL>::convert(xf_m, x_m, (dim_t)N_in);
-  primitives<Device::METAL>::convert(wf_m, w_m, (dim_t)N_w);
+  primitives<Device::MPS>::convert(xf_m, x_m, (dim_t)N_in);
+  primitives<Device::MPS>::convert(wf_m, w_m, (dim_t)N_w);
   metal::commit_and_wait();  // flush f32→f16 conversion before conv1d
 
   metal::conv1d_metal<ct2_f16>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
@@ -353,9 +353,9 @@ static void test6_f16() {
   CHECK_CLOSE("f16 conv1d", got, ref, 2e-2f);
 
   free_buf(xf_m); free_buf(wf_m);
-  get_allocator<Device::METAL>().free(x_m, 0);
-  get_allocator<Device::METAL>().free(w_m, 0);
-  get_allocator<Device::METAL>().free(y_m, 0);
+  get_allocator<Device::MPS>().free(x_m, 0);
+  get_allocator<Device::MPS>().free(w_m, 0);
+  get_allocator<Device::MPS>().free(y_m, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -384,14 +384,14 @@ static void test7_bf16() {
   float* xf_m   = make_f32_buf(x_f32);
   float* wf_m   = make_f32_buf(w_f32);
   ct2_bf16* x_m = static_cast<ct2_bf16*>(
-      get_allocator<Device::METAL>().allocate(N_in  * sizeof(ct2_bf16), 0));
+      get_allocator<Device::MPS>().allocate(N_in  * sizeof(ct2_bf16), 0));
   ct2_bf16* w_m = static_cast<ct2_bf16*>(
-      get_allocator<Device::METAL>().allocate(N_w   * sizeof(ct2_bf16), 0));
+      get_allocator<Device::MPS>().allocate(N_w   * sizeof(ct2_bf16), 0));
   ct2_bf16* y_m = static_cast<ct2_bf16*>(
-      get_allocator<Device::METAL>().allocate(N_out * sizeof(ct2_bf16), 0));
+      get_allocator<Device::MPS>().allocate(N_out * sizeof(ct2_bf16), 0));
 
-  primitives<Device::METAL>::convert(xf_m, x_m, (dim_t)N_in);
-  primitives<Device::METAL>::convert(wf_m, w_m, (dim_t)N_w);
+  primitives<Device::MPS>::convert(xf_m, x_m, (dim_t)N_in);
+  primitives<Device::MPS>::convert(wf_m, w_m, (dim_t)N_w);
   metal::commit_and_wait();
 
   metal::conv1d_metal<ct2_bf16>(x_m, w_m, y_m, B, C_in, T_in, C_out, K, T_out,
@@ -406,9 +406,9 @@ static void test7_bf16() {
   CHECK_CLOSE("bf16 conv1d", got, ref, 5e-2f);
 
   free_buf(xf_m); free_buf(wf_m);
-  get_allocator<Device::METAL>().free(x_m, 0);
-  get_allocator<Device::METAL>().free(w_m, 0);
-  get_allocator<Device::METAL>().free(y_m, 0);
+  get_allocator<Device::MPS>().free(x_m, 0);
+  get_allocator<Device::MPS>().free(w_m, 0);
+  get_allocator<Device::MPS>().free(y_m, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -460,12 +460,12 @@ static void test8_f32_bias_gelu() {
 
   // Bias: [C_out] broadcast over [B*C_out, T_out] where bias repeats every C_out rows.
   // add_block_broadcast(bias, y, block=T_out, bias_size=C_out, y_size=B*C_out*T_out)
-  primitives<Device::METAL>::add_block_broadcast<float>(
+  primitives<Device::MPS>::add_block_broadcast<float>(
       bias_m, y_m, static_cast<dim_t>(T_out),
       static_cast<dim_t>(C_out), static_cast<dim_t>(N_out));
 
   // GELU activation
-  primitives<Device::METAL>::gelu<float>(y_m, y_m, static_cast<dim_t>(N_out));
+  primitives<Device::MPS>::gelu<float>(y_m, y_m, static_cast<dim_t>(N_out));
 
   auto got = read_f32(y_m, N_out);
   CHECK_CLOSE("f32 conv1d + bias + GELU", got, ref, 1e-5f);
@@ -581,7 +581,7 @@ static void test_stress_typed(const char* type_name, float tol,
   // Metal in type T
   T* x_m; T* w_m;
   T* y_m = static_cast<T*>(
-      get_allocator<Device::METAL>().allocate(N_out * sizeof(T), 0));
+      get_allocator<Device::MPS>().allocate(N_out * sizeof(T), 0));
 
   if constexpr (std::is_same_v<T, float>) {
     x_m = make_f32_buf(x_f32);
@@ -590,11 +590,11 @@ static void test_stress_typed(const char* type_name, float tol,
     float* xf_m = make_f32_buf(x_f32);
     float* wf_m = make_f32_buf(w_f32);
     x_m = static_cast<T*>(
-        get_allocator<Device::METAL>().allocate(N_in * sizeof(T), 0));
+        get_allocator<Device::MPS>().allocate(N_in * sizeof(T), 0));
     w_m = static_cast<T*>(
-        get_allocator<Device::METAL>().allocate(N_w * sizeof(T), 0));
-    primitives<Device::METAL>::convert(xf_m, x_m, (dim_t)N_in);
-    primitives<Device::METAL>::convert(wf_m, w_m, (dim_t)N_w);
+        get_allocator<Device::MPS>().allocate(N_w * sizeof(T), 0));
+    primitives<Device::MPS>::convert(xf_m, x_m, (dim_t)N_in);
+    primitives<Device::MPS>::convert(wf_m, w_m, (dim_t)N_w);
     metal::commit_and_wait();
     free_buf(xf_m); free_buf(wf_m);
   }
@@ -612,9 +612,9 @@ static void test_stress_typed(const char* type_name, float tol,
                 type_name, (long long)C_in, (long long)C_out, (long long)K, (long long)stride);
   CHECK_CLOSE(label, got, ref, tol);
 
-  get_allocator<Device::METAL>().free(x_m, 0);
-  get_allocator<Device::METAL>().free(w_m, 0);
-  get_allocator<Device::METAL>().free(y_m, 0);
+  get_allocator<Device::MPS>().free(x_m, 0);
+  get_allocator<Device::MPS>().free(w_m, 0);
+  get_allocator<Device::MPS>().free(y_m, 0);
 }
 
 static void test11_stress() {

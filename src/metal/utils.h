@@ -15,8 +15,8 @@ namespace ctranslate2 {
 
     // Commit the current thread's command buffer and block until the GPU
     // finishes all encoded commands.
-    // This is the implementation of synchronize_stream(Device::METAL) and
-    // synchronize_device(Device::METAL).
+    // This is the implementation of synchronize_stream(Device::MPS) and
+    // synchronize_device(Device::MPS).
     // No-op if no commands have been encoded since the last commit.
     void commit_and_wait();
 
@@ -152,7 +152,7 @@ namespace ctranslate2 {
 // ---------------------------------------------------------------------------
 
 // Check command buffer status AFTER [buf waitUntilCompleted].
-#define CT2_METAL_CHECK_BUFFER(buf)                                           \
+#define CT2_MPS_CHECK_BUFFER(buf)                                           \
   do {                                                                        \
     if ((buf).status == MTLCommandBufferStatusError) {                        \
       throw std::runtime_error(                                               \
@@ -162,7 +162,7 @@ namespace ctranslate2 {
   } while (0)
 
 // Check that an Objective-C object was successfully allocated (non-nil).
-#define CT2_METAL_CHECK_OBJ(obj, name)                                        \
+#define CT2_MPS_CHECK_OBJ(obj, name)                                        \
   do {                                                                        \
     if ((obj) == nil) {                                                       \
       throw std::runtime_error("Metal: failed to create " name);              \

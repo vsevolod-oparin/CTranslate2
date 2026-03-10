@@ -18,11 +18,11 @@ namespace ctranslate2 {
     split_batch_beam(data, beam_size);
   }
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
   static void batch_gather_beam_flat(std::vector<StorageView*>& views,
                                      const StorageView& indices,
                                      dim_t beam_size) {
-    if (views.empty() || views[0]->device() != Device::METAL) {
+    if (views.empty() || views[0]->device() != Device::MPS) {
       for (auto* v : views)
         gather_beam_flat(*v, indices, beam_size);
       return;
@@ -702,8 +702,8 @@ namespace ctranslate2 {
 
       gather(gather_indices, active_beams);  // CPU-to-CPU, no sync
 
-#ifdef CT2_WITH_METAL
-      if (topk_ids.device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+      if (topk_ids.device() == Device::MPS) {
         std::vector<StorageView*> beam_views = {&topk_ids, &topk_scores, &alive_seq};
         if (alive_attention)
           beam_views.push_back(&alive_attention);

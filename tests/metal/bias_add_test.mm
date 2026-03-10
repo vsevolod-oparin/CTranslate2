@@ -2,7 +2,7 @@
 //
 // M5.2 review item 4.6 — Metal BiasAdd correctness tests.
 //
-// BiasAdd::compute<Device::METAL> (src/ops/bias_add_metal.mm) is a thin
+// BiasAdd::compute<Device::MPS> (src/ops/bias_add_metal.mm) is a thin
 // routing layer: it calls primitives<D>::add_batch_broadcast for last-axis
 // bias and primitives<D>::add_block_broadcast for other axes.  Both
 // primitives are tested here directly, which exercises the same Metal GPU
@@ -22,7 +22,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/bias_add_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
@@ -79,10 +79,10 @@ static int g_failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // 1. Last-axis bias f32: single row
@@ -103,7 +103,7 @@ static void test_last_axis_single_row() {
   for (int i = 0; i < bias_size;  ++i) bias[i] = float(i + 1);
   for (int i = 0; i < value_size; ++i) val[i]  = float((i + 1) * 10);
 
-  primitives<Device::METAL>::add_batch_broadcast(bias, val, out, bias_size, value_size);
+  primitives<Device::MPS>::add_batch_broadcast(bias, val, out, bias_size, value_size);
   metal::commit_and_wait();
 
   // out[i] = val[i] + bias[i % 4]
@@ -140,7 +140,7 @@ static void test_last_axis_batched() {
     for (int c = 0; c < cols; ++c)
       val[r*cols+c] = float(r*100 + c*10);
 
-  primitives<Device::METAL>::add_batch_broadcast(bias, val, out, bias_size, value_size);
+  primitives<Device::MPS>::add_batch_broadcast(bias, val, out, bias_size, value_size);
   metal::commit_and_wait();
 
   bool ok = true;
@@ -169,7 +169,7 @@ static void test_last_axis_f16() {
   for (int i = 0; i < bias_size;  ++i) bias[i] = ct2_f16(float(i + 1));
   for (int i = 0; i < value_size; ++i) val[i]  = ct2_f16(float((i % 4) * 2));
 
-  primitives<Device::METAL>::add_batch_broadcast(bias, val, out, bias_size, value_size);
+  primitives<Device::MPS>::add_batch_broadcast(bias, val, out, bias_size, value_size);
   metal::commit_and_wait();
 
   bool ok = true;
@@ -203,7 +203,7 @@ static void test_mid_axis_bias() {
   for (int i = 0; i < value_size; ++i) val[i] = float(i);
 
   // add_block_broadcast(bias, val, out, width, bias_size, value_size)
-  primitives<Device::METAL>::add_block_broadcast(bias, val, out, width, bias_size, value_size);
+  primitives<Device::MPS>::add_block_broadcast(bias, val, out, width, bias_size, value_size);
   metal::commit_and_wait();
 
   // Expected: out[b*ch*w + c*w + w_idx] = val[...] + bias[c]
@@ -246,9 +246,9 @@ static void test_residual_add() {
   for (int i = 0; i < value_size; ++i) { val[i] = float(i + 1); res[i] = float((i+1)*100); }
 
   // Step 1: broadcast
-  primitives<Device::METAL>::add_batch_broadcast(bias, val, out, bias_size, value_size);
+  primitives<Device::MPS>::add_batch_broadcast(bias, val, out, bias_size, value_size);
   // Step 2: add residual (in-place)
-  primitives<Device::METAL>::add(out, res, out, value_size);
+  primitives<Device::MPS>::add(out, res, out, value_size);
   metal::commit_and_wait();
 
   bool ok = true;

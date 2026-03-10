@@ -6,7 +6,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/broadcast_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -46,11 +46,11 @@ using namespace ctranslate2;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 static int g_pass = 0, g_fail = 0;
@@ -91,7 +91,7 @@ static void test_add_batch_broadcast(const std::string& tname) {
   a[0] = T(1); a[1] = T(2); a[2] = T(3);
   for (dim_t i = 0; i < b_size; ++i) b[i] = T((i + 1) * 10);
 
-  primitives<Device::METAL>::add_batch_broadcast(a, b, c, a_size, b_size);
+  primitives<Device::MPS>::add_batch_broadcast(a, b, c, a_size, b_size);
   metal::commit_and_wait();
 
   float expected[] = {11.f, 22.f, 33.f, 41.f, 52.f, 63.f};
@@ -103,7 +103,7 @@ static void test_add_batch_broadcast(const std::string& tname) {
   // In-place: b += broadcast(a) with c = b
   T* bip = metal_alloc<T>(b_size);
   for (dim_t i = 0; i < b_size; ++i) bip[i] = T((i + 1) * 10);
-  primitives<Device::METAL>::add_batch_broadcast(a, bip, bip, a_size, b_size);
+  primitives<Device::MPS>::add_batch_broadcast(a, bip, bip, a_size, b_size);
   metal::commit_and_wait();
   bool okip = true;
   for (dim_t i = 0; i < b_size; ++i)
@@ -111,7 +111,7 @@ static void test_add_batch_broadcast(const std::string& tname) {
   check(okip, "add_batch_broadcast/" + tname + " in-place");
 
   // Zero-size: no crash
-  primitives<Device::METAL>::add_batch_broadcast(a, b, c, a_size, dim_t(0));
+  primitives<Device::MPS>::add_batch_broadcast(a, b, c, a_size, dim_t(0));
   metal::commit_and_wait();
   check(true, "add_batch_broadcast/" + tname + " zero-size");
 
@@ -142,7 +142,7 @@ static void test_add_depth_broadcast(const std::string& tname) {
   a[0] = T(100); a[1] = T(200);
   for (dim_t i = 0; i < b_size; ++i) b[i] = T(i + 1);
 
-  primitives<Device::METAL>::add_depth_broadcast(a, b, c, a_size, b_size);
+  primitives<Device::MPS>::add_depth_broadcast(a, b, c, a_size, b_size);
   metal::commit_and_wait();
 
   float expected[] = {101.f, 102.f, 103.f, 204.f, 205.f, 206.f};
@@ -157,7 +157,7 @@ static void test_add_depth_broadcast(const std::string& tname) {
   T* b2 = metal_alloc<T>(N);
   T* c2 = metal_alloc<T>(N);
   for (dim_t i = 0; i < N; ++i) { a2[i] = T(i + 1); b2[i] = T(10); }
-  primitives<Device::METAL>::add_depth_broadcast(a2, b2, c2, N, N);
+  primitives<Device::MPS>::add_depth_broadcast(a2, b2, c2, N, N);
   metal::commit_and_wait();
   bool ok2 = true;
   for (dim_t i = 0; i < N; ++i)
@@ -165,7 +165,7 @@ static void test_add_depth_broadcast(const std::string& tname) {
   check(ok2, "add_depth_broadcast/" + tname + " depth=1");
 
   // Zero-size
-  primitives<Device::METAL>::add_depth_broadcast(a, b, c, a_size, dim_t(0));
+  primitives<Device::MPS>::add_depth_broadcast(a, b, c, a_size, dim_t(0));
   metal::commit_and_wait();
   check(true, "add_depth_broadcast/" + tname + " zero-size");
 
@@ -199,7 +199,7 @@ static void test_add_block_broadcast(const std::string& tname) {
   a[0] = T(10); a[1] = T(20); a[2] = T(30);
   for (dim_t i = 0; i < b_size; ++i) b[i] = T(i + 1);
 
-  primitives<Device::METAL>::add_block_broadcast(a, b, c, block, a_size, b_size);
+  primitives<Device::MPS>::add_block_broadcast(a, b, c, block, a_size, b_size);
   metal::commit_and_wait();
 
   float expected[] = {11.f, 12.f, 23.f, 24.f, 35.f, 36.f, 17.f, 18.f, 29.f, 30.f, 41.f, 42.f};
@@ -215,7 +215,7 @@ static void test_add_block_broadcast(const std::string& tname) {
   T* c3 = metal_alloc<T>(b_size2);
   a3[0] = T(1); a3[1] = T(2); a3[2] = T(3);
   for (dim_t i = 0; i < b_size2; ++i) b3[i] = T((i + 1) * 10);
-  primitives<Device::METAL>::add_block_broadcast(a3, b3, c3, 1, a_size2, b_size2);
+  primitives<Device::MPS>::add_block_broadcast(a3, b3, c3, 1, a_size2, b_size2);
   metal::commit_and_wait();
   float exp3[] = {11.f, 22.f, 33.f, 41.f, 52.f, 63.f};
   bool ok3 = true;
@@ -224,7 +224,7 @@ static void test_add_block_broadcast(const std::string& tname) {
   check(ok3, "add_block_broadcast/" + tname + " block=1");
 
   // Zero-size
-  primitives<Device::METAL>::add_block_broadcast(a, b, c, block, a_size, dim_t(0));
+  primitives<Device::MPS>::add_block_broadcast(a, b, c, block, a_size, dim_t(0));
   metal::commit_and_wait();
   check(true, "add_block_broadcast/" + tname + " zero-size");
 
@@ -251,7 +251,7 @@ static void test_mul_batch_broadcast(const std::string& tname) {
   a[0] = T(2); a[1] = T(3); a[2] = T(4);
   for (dim_t i = 0; i < b_size; ++i) b[i] = T(i + 1);
 
-  primitives<Device::METAL>::mul_batch_broadcast(a, b, c, a_size, b_size);
+  primitives<Device::MPS>::mul_batch_broadcast(a, b, c, a_size, b_size);
   metal::commit_and_wait();
 
   float expected[] = {2.f, 6.f, 12.f, 8.f, 15.f, 24.f};
@@ -261,7 +261,7 @@ static void test_mul_batch_broadcast(const std::string& tname) {
   check(ok, "mul_batch_broadcast/" + tname + " basic");
 
   // Zero-size
-  primitives<Device::METAL>::mul_batch_broadcast(a, b, c, a_size, dim_t(0));
+  primitives<Device::MPS>::mul_batch_broadcast(a, b, c, a_size, dim_t(0));
   metal::commit_and_wait();
   check(true, "mul_batch_broadcast/" + tname + " zero-size");
 

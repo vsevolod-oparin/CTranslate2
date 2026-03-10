@@ -11,7 +11,7 @@
 #  include "cuda/utils.h"
 #endif
 
-#ifdef CT2_WITH_METAL
+#ifdef CT2_WITH_MPS
 #  include "metal/utils.h"
 #endif
 
@@ -832,8 +832,8 @@ namespace ctranslate2 {
           StorageView log_probs(logits.dtype(), logits.device());
           ops::LogSoftMax()(logits, log_probs);
 
-#ifdef CT2_WITH_METAL
-          if (log_probs.device() == Device::METAL) {
+#ifdef CT2_WITH_MPS
+          if (log_probs.device() == Device::MPS) {
             // M11.17 fused GPU path: check + write -inf in one kernel, no sync.
             // Replaces CPU should_sample_timestamp + disable_tokens.add() loop.
             DEVICE_AND_FLOAT_DISPATCH(

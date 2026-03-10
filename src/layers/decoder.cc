@@ -31,8 +31,8 @@ namespace ctranslate2 {
     }
 
     void Decoder::update_state(DecoderState& state, const StorageView& alive_batches) const {
-#ifdef CT2_WITH_METAL
-      if (_device == Device::METAL) {
+#ifdef CT2_WITH_MPS
+      if (_device == Device::MPS) {
         std::vector<StorageView*> to_gather;
         to_gather.reserve(state.size());
         for (auto& pair : state)
@@ -57,8 +57,8 @@ namespace ctranslate2 {
         merge_batch_beam(beam_indices);
       }
 
-#ifdef CT2_WITH_METAL
-      if (_device == Device::METAL) {
+#ifdef CT2_WITH_MPS
+      if (_device == Device::MPS) {
         // Batch all replicate-state gathers into one GPU submission (M11.1).
         std::vector<StorageView*> to_gather;
         to_gather.reserve(state.size());

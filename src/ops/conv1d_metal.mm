@@ -1,6 +1,6 @@
 // src/ops/conv1d_metal.mm
 //
-// M8.3 — Conv1D for Device::METAL.
+// M8.3 — Conv1D for Device::MPS.
 //
 // Thin wrapper that:
 //   1. Validates groups == 1.
@@ -51,7 +51,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                           \
     template void                                                 \
-    Conv1D::compute<Device::METAL, T>(const StorageView& input,  \
+    Conv1D::compute<Device::MPS, T>(const StorageView& input,  \
                                       const StorageView& weight, \
                                       const StorageView* bias,   \
                                       StorageView& output,       \

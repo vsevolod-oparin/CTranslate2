@@ -1,6 +1,6 @@
 // src/metal/primitives_beam_search.mm
 //
-// M4.7 — Beam-search primitives for Device::METAL.
+// M4.7 — Beam-search primitives for Device::MPS.
 //
 // penalize_previous_tokens: GPU kernel — one thread per batch item.
 //   Each thread iterates sequentially over `length` previous IDs.
@@ -65,7 +65,7 @@ namespace ctranslate2 {
 
   template<>
   template <typename T>
-  void primitives<Device::METAL>::penalize_previous_tokens(
+  void primitives<Device::MPS>::penalize_previous_tokens(
       T* scores, const T* previous_scores, const int32_t* previous_ids,
       T penalty, dim_t batch_size, dim_t length, dim_t vocabulary_size) {
     char kname[kKernelNameBufSize];
@@ -80,7 +80,7 @@ namespace ctranslate2 {
   }
 
   template<>
-  void primitives<Device::METAL>::prepare_length_mask(
+  void primitives<Device::MPS>::prepare_length_mask(
       const int32_t* lengths, dim_t batch_size, dim_t num_heads,
       dim_t num_queries, bool mask_future, bool multi_query, int32_t* mask) {
     if (batch_size == 0) return;
@@ -121,7 +121,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                          \
   template void                                                                  \
-  primitives<Device::METAL>::penalize_previous_tokens(T*,                        \
+  primitives<Device::MPS>::penalize_previous_tokens(T*,                        \
                                                        const T*,                 \
                                                        const int32_t*,           \
                                                        T,                        \

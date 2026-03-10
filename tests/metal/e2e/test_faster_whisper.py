@@ -108,7 +108,7 @@ def main():
 
     # --- Phase 2: Metal model (load, test, benchmark, then free) ---
     print("\n=== Loading Metal model ===")
-    model_metal = WhisperModel(whisper_path, device="metal")
+    model_metal = WhisperModel(whisper_path, device="mps")
     metal_ct = model_metal.model.compute_type
     print(f"  Metal compute_type: {metal_ct}")
 
@@ -144,7 +144,7 @@ def main():
 
     del model_metal
     gc.collect()
-    ctranslate2.clear_device_cache("metal")
+    ctranslate2.clear_device_cache("mps")
 
     # --- Speed summary ---
     print("\n=== Speed benchmark ===")

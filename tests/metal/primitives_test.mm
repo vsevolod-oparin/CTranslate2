@@ -3,7 +3,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/primitives_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -62,11 +62,11 @@ static int failed = 0;
 // Allocate N elements of type T from the Metal allocator.
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 
@@ -81,7 +81,7 @@ static void test_fill() {
   {
     float* p = metal_alloc<float>(N);
     CHECK_NOTHROW("fill<float>(3.14f) — no error",
-      primitives<Device::METAL>::fill(p, 3.14f, N)
+      primitives<Device::MPS>::fill(p, 3.14f, N)
     );
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
@@ -94,7 +94,7 @@ static void test_fill() {
   // int32 (zero)
   {
     int32_t* p = metal_alloc<int32_t>(N);
-    primitives<Device::METAL>::fill(p, int32_t(0), N);
+    primitives<Device::MPS>::fill(p, int32_t(0), N);
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
       if (p[i] != 0) { ok = false; break; }
@@ -106,7 +106,7 @@ static void test_fill() {
   // int32 (non-zero sentinel)
   {
     int32_t* p = metal_alloc<int32_t>(N);
-    primitives<Device::METAL>::fill(p, int32_t(42), N);
+    primitives<Device::MPS>::fill(p, int32_t(42), N);
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
       if (p[i] != 42) { ok = false; break; }
@@ -118,7 +118,7 @@ static void test_fill() {
   // float16 (via half_float)
   {
     float16_t* p = metal_alloc<float16_t>(N);
-    primitives<Device::METAL>::fill(p, float16_t(1.5f), N);
+    primitives<Device::MPS>::fill(p, float16_t(1.5f), N);
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(static_cast<float>(p[i]) - 1.5f) > 1e-3f) { ok = false; break; }
@@ -141,7 +141,7 @@ static void test_strided_fill() {
   for (dim_t i = 0; i < N * 2; ++i) { p[i] = 0.f; }
 
   // Fill every other element (stride 2) with 7.f
-  primitives<Device::METAL>::strided_fill(p, 7.f, /*inc_x=*/2, N);
+  primitives<Device::MPS>::strided_fill(p, 7.f, /*inc_x=*/2, N);
 
   bool even_ok = true, odd_zero = true;
   for (dim_t i = 0; i < N; ++i) {
@@ -168,7 +168,7 @@ static void test_indexed_fill() {
   for (dim_t i = 0; i < N; ++i) { p[i] = 0.f; }
   idx[0] = 1; idx[1] = 3; idx[2] = 5;
 
-  primitives<Device::METAL>::indexed_fill(p, 9.f, idx, 3);
+  primitives<Device::MPS>::indexed_fill(p, 9.f, idx, 3);
   metal::commit_and_wait();  // M11.25: indexed_fill is now encode-only
 
   CHECK("indexed_fill: p[1] == 9.f", std::fabs(p[1] - 9.f) < 1e-6f);
@@ -196,8 +196,8 @@ static void test_convert() {
     float16_t* f16 = metal_alloc<float16_t>(N);
     float*     out = metal_alloc<float>(N);
 
-    primitives<Device::METAL>::convert(src_f32, f16, N);
-    primitives<Device::METAL>::convert(static_cast<const float16_t*>(f16), out, N);
+    primitives<Device::MPS>::convert(src_f32, f16, N);
+    primitives<Device::MPS>::convert(static_cast<const float16_t*>(f16), out, N);
 
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
@@ -214,8 +214,8 @@ static void test_convert() {
     bfloat16_t* bf16 = metal_alloc<bfloat16_t>(N);
     float*      out  = metal_alloc<float>(N);
 
-    primitives<Device::METAL>::convert(src_f32, bf16, N);
-    primitives<Device::METAL>::convert(static_cast<const bfloat16_t*>(bf16), out, N);
+    primitives<Device::MPS>::convert(src_f32, bf16, N);
+    primitives<Device::MPS>::convert(static_cast<const bfloat16_t*>(bf16), out, N);
 
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
@@ -235,9 +235,9 @@ static void test_convert() {
     bfloat16_t* bf16   = metal_alloc<bfloat16_t>(N);
     float16_t*  f16out = metal_alloc<float16_t>(N);
 
-    primitives<Device::METAL>::convert(
+    primitives<Device::MPS>::convert(
         static_cast<const float16_t*>(f16_src), bf16, N);
-    primitives<Device::METAL>::convert(
+    primitives<Device::MPS>::convert(
         static_cast<const bfloat16_t*>(bf16), f16out, N);
 
     bool ok = true;

@@ -1,5 +1,5 @@
 // Compile-only test for dispatch macros (M1.1 verification).
-// Tests all four combinations of CT2_WITH_CUDA / CT2_WITH_METAL.
+// Tests all four combinations of CT2_WITH_CUDA / CT2_WITH_MPS.
 //
 // Run from the repository root:
 //   while IFS='|' read -r label flags; do
@@ -8,9 +8,9 @@
 //       2>&1 && echo "OK" || echo "FAIL";
 //   done <<'EOF'
 //   CPU-only            |
-//   Metal-only          |-DCT2_WITH_METAL
+//   Metal-only          |-DCT2_WITH_MPS
 //   CUDA-only           |-DCT2_WITH_CUDA
-//   CUDA+Metal          |-DCT2_WITH_CUDA -DCT2_WITH_METAL
+//   CUDA+Metal          |-DCT2_WITH_CUDA -DCT2_WITH_MPS
 //   EOF
 
 #include <stdexcept>

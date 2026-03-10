@@ -30,7 +30,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/m81_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm \
@@ -82,12 +82,12 @@ static int g_pass = 0, g_fail = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(
       static_cast<std::size_t>(n) * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // Copy host data into a Metal buffer (allocate + copy).
@@ -238,7 +238,7 @@ static std::vector<float> metal_gemm(
   float* B = metal_from<float>(B_host);
   float* C = metal_alloc<float>(m * n);
 
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false,     // a_is_packed, b_is_packed
       false, true,      // transpose_a, transpose_b (B^T)
       m, n, k,
@@ -313,7 +313,7 @@ static void test_relu() {
 
   float* x_m = metal_from<float>(x_h);
   float* y_m = metal_alloc<float>(N);
-  primitives<Device::METAL>::relu<float>(x_m, y_m, N);
+  primitives<Device::MPS>::relu<float>(x_m, y_m, N);
   auto metal_out = metal_to_host(y_m, N);
 
   float err = max_abs_diff(cpu, metal_out);
@@ -337,7 +337,7 @@ static void test_residual_add() {
   float* a_m = metal_from<float>(a_h);
   float* b_m = metal_from<float>(b_h);
   float* c_m = metal_alloc<float>(N);
-  primitives<Device::METAL>::add<float>(a_m, b_m, c_m, N);
+  primitives<Device::MPS>::add<float>(a_m, b_m, c_m, N);
   auto metal_out = metal_to_host(c_m, N);
 
   float err = max_abs_diff(cpu, metal_out);
@@ -463,13 +463,13 @@ static void test_full_encoder_layer() {
 
   // Step 2: Q, K, V projections — norm1 × W^T.
   // B=W stored as [D×D]=[n×k], transpose_b=true → C = A × B^T = [T,D]×[D,D] = [T,D]
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, D, D, 1.f,
       norm1_m, D, W_q_m, D, 0.f, Q_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, D, D, 1.f,
       norm1_m, D, W_k_m, D, 0.f, K_m, D);
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, D, D, 1.f,
       norm1_m, D, W_v_m, D, 0.f, V_m, D);
 
@@ -478,31 +478,31 @@ static void test_full_encoder_layer() {
                             B, T, T, NH, NH, HD, scale, false);
 
   // Step 4: Output projection — attn × W_o^T.
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, D, D, 1.f,
       attn_m, D, W_o_m, D, 0.f, proj_m, D);
 
   // Step 5: Residual add h1 = x + proj.
-  primitives<Device::METAL>::add<float>(x_m, proj_m, h1_m, T * D);
+  primitives<Device::MPS>::add<float>(x_m, proj_m, h1_m, T * D);
 
   // Step 6: LayerNorm (pre-FFN).
   metal::layer_norm_metal<float>(h1_m, gamma2_m, beta2_m, norm2_m, T, D, eps);
 
   // Step 7: FFN W1 — norm2 × W1^T, shape [T, FFN].
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, FFN, D, 1.f,
       norm2_m, D, W1_m, D, 0.f, ffn1_m, FFN);
 
   // Step 8: ReLU.
-  primitives<Device::METAL>::relu<float>(ffn1_m, ffn1a_m, T * FFN);
+  primitives<Device::MPS>::relu<float>(ffn1_m, ffn1a_m, T * FFN);
 
   // Step 9: FFN W2 — relu_out × W2^T, shape [T, D].
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, false, true, T, D, FFN, 1.f,
       ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
 
   // Step 10: Residual add output = h1 + ffn2.
-  primitives<Device::METAL>::add<float>(h1_m, ffn2_m, out_m, T * D);
+  primitives<Device::MPS>::add<float>(h1_m, ffn2_m, out_m, T * D);
 
   // Read output.
   auto out_metal = metal_to_host(out_m, T * D);
@@ -627,30 +627,30 @@ static void test_encoder_layer_typed(const char* type_name, float tol) {
   T* out_m    = metal_alloc<T>(TT * D);
 
   metal::layer_norm_metal<T>(x_m, gamma1_m, beta1_m, norm1_m, TT, D, eps);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, D, D, 1.f,
       norm1_m, D, W_q_m, D, 0.f, Q_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, D, D, 1.f,
       norm1_m, D, W_k_m, D, 0.f, K_m, D);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, D, D, 1.f,
       norm1_m, D, W_v_m, D, 0.f, V_m, D);
   metal::sdpa_metal<T>(Q_m, K_m, V_m, attn_m,
                         B, TT, TT, NH, NH, HD, scale, false);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, D, D, 1.f,
       attn_m, D, W_o_m, D, 0.f, proj_m, D);
-  primitives<Device::METAL>::add<T>(x_m, proj_m, h1_m, TT * D);
+  primitives<Device::MPS>::add<T>(x_m, proj_m, h1_m, TT * D);
   metal::layer_norm_metal<T>(h1_m, gamma2_m, beta2_m, norm2_m, TT, D, eps);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, FFN, D, 1.f,
       norm2_m, D, W1_m, D, 0.f, ffn1_m, FFN);
-  primitives<Device::METAL>::relu<T>(ffn1_m, ffn1a_m, TT * FFN);
-  primitives<Device::METAL>::gemm<T, T>(
+  primitives<Device::MPS>::relu<T>(ffn1_m, ffn1a_m, TT * FFN);
+  primitives<Device::MPS>::gemm<T, T>(
       false, false, false, true, TT, D, FFN, 1.f,
       ffn1a_m, FFN, W2_m, FFN, 0.f, ffn2_m, D);
-  primitives<Device::METAL>::add<T>(h1_m, ffn2_m, out_m, TT * D);
+  primitives<Device::MPS>::add<T>(h1_m, ffn2_m, out_m, TT * D);
 
   auto out_metal = metal_to_host(out_m, TT * D);
   float err = max_abs_diff(out_cpu, out_metal);

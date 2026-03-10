@@ -1,7 +1,7 @@
 // Benchmark: GPU two-pass reduction vs CPU-sequential reduction.
 //
 // For each input size we time:
-//   GPU  — primitives<Device::METAL>::sum  (our new two-pass kernel)
+//   GPU  — primitives<Device::MPS>::sum  (our new two-pass kernel)
 //   CPU  — commit_and_wait() + std::accumulate (the first implementation)
 //
 // This establishes whether the GPU path actually wins and at what crossover
@@ -10,7 +10,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/reduction_bench.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -100,11 +100,11 @@ static float cpu_amax(const float* p, dim_t n) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -129,20 +129,20 @@ static void bench_sum_float() {
     for (dim_t i = 0; i < N; ++i) { p[i] = 1.f; }  // sum == N
 
     // Warmup (also compiles the PSO on first call)
-    sink_f = primitives<Device::METAL>::sum(p, N);
+    sink_f = primitives<Device::MPS>::sum(p, N);
     sink_f = cpu_sum(p, N);
 
     // Choose iteration count so total bench time stays reasonable
     int iters = (N <= 4096) ? 200 : (N <= 262144) ? 50 : (N <= (4 << 20)) ? 20 : 10;
 
     double gpu_us = bench_median_us(iters, [&] {
-      return primitives<Device::METAL>::sum(p, N);
+      return primitives<Device::MPS>::sum(p, N);
     });
     double cpu_us = bench_median_us(iters, [&] {
       return cpu_sum(p, N);
     });
 
-    float gpu_result = primitives<Device::METAL>::sum(p, N);
+    float gpu_result = primitives<Device::MPS>::sum(p, N);
     float cpu_result = cpu_sum(p, N);
     bool match = std::fabs(gpu_result - cpu_result) < 1e-1f * N;  // relative tol
 
@@ -182,19 +182,19 @@ static void bench_amax_float() {
     }
     float expected_amax = static_cast<float>(N);  // |p[N-1]| = N
 
-    sink_f = primitives<Device::METAL>::amax(p, N);
+    sink_f = primitives<Device::MPS>::amax(p, N);
     sink_f = cpu_amax(p, N);
 
     int iters = (N <= 4096) ? 200 : (N <= 262144) ? 50 : (N <= (4 << 20)) ? 20 : 10;
 
     double gpu_us = bench_median_us(iters, [&] {
-      return primitives<Device::METAL>::amax(p, N);
+      return primitives<Device::MPS>::amax(p, N);
     });
     double cpu_us = bench_median_us(iters, [&] {
       return cpu_amax(p, N);
     });
 
-    float gpu_result = primitives<Device::METAL>::amax(p, N);
+    float gpu_result = primitives<Device::MPS>::amax(p, N);
     float cpu_result = cpu_amax(p, N);
     bool match = std::fabs(gpu_result - expected_amax) < 1.f
               && std::fabs(cpu_result - expected_amax) < 1.f;
@@ -232,22 +232,22 @@ static void bench_sum_after_gpu_op() {
     for (dim_t i = 0; i < N; ++i) { x[i] = 1.f; }
 
     // Warmup
-    primitives<Device::METAL>::add(0.f, x, out, N);
-    sink_f = primitives<Device::METAL>::sum(out, N);
-    primitives<Device::METAL>::add(0.f, x, out, N);
+    primitives<Device::MPS>::add(0.f, x, out, N);
+    sink_f = primitives<Device::MPS>::sum(out, N);
+    primitives<Device::MPS>::add(0.f, x, out, N);
     sink_f = cpu_sum(out, N);
 
     int iters = (N <= 4096) ? 200 : (N <= 262144) ? 50 : (N <= (4 << 20)) ? 20 : 10;
 
     // GPU path: encode add, then sum (sum internally commits both)
     double gpu_us = bench_median_us(iters, [&] {
-      primitives<Device::METAL>::add(1.f, x, out, N);
-      return primitives<Device::METAL>::sum(out, N);
+      primitives<Device::MPS>::add(1.f, x, out, N);
+      return primitives<Device::MPS>::sum(out, N);
     });
 
     // CPU path: encode add, then CPU sum (cpu_sum commits)
     double cpu_us = bench_median_us(iters, [&] {
-      primitives<Device::METAL>::add(1.f, x, out, N);
+      primitives<Device::MPS>::add(1.f, x, out, N);
       return cpu_sum(out, N);
     });
 

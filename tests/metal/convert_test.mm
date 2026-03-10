@@ -1,4 +1,4 @@
-// Tests for primitives<Device::METAL>::convert<U,V>
+// Tests for primitives<Device::MPS>::convert<U,V>
 //
 // Primary concern (Fix 1.1 from metal-primitives-review.md):
 //   convert() performs a CPU std::copy from a Metal (shared-memory) buffer.
@@ -29,7 +29,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/convert_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -76,10 +76,10 @@ static int g_failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
-static void metal_free(T* p) { get_allocator<Device::METAL>().free(p); }
+static void metal_free(T* p) { get_allocator<Device::MPS>().free(p); }
 
 // ---------------------------------------------------------------------------
 // Fix 1.1 regression test
@@ -103,11 +103,11 @@ static void test_convert_flushes_gpu_writes() {
   for (dim_t i = 0; i < N; ++i) d_src[i] = initial;
 
   // GPU: encode add_scalar (d_src[i] += addend) — intentionally NOT synced.
-  primitives<Device::METAL>::add(addend, d_src, d_src, N);
+  primitives<Device::MPS>::add(addend, d_src, d_src, N);
   // No gpu_sync() / commit_and_wait() here — write is still pending.
 
   // convert must internally commit_and_wait() before reading d_src.
-  primitives<Device::METAL>::convert(d_src, d_dst, N);
+  primitives<Device::MPS>::convert(d_src, d_dst, N);
 
   // Verify: all elements should be expected (6.0), NOT stale initial (1.0).
   bool ok = true;
@@ -140,7 +140,7 @@ static void test_pair(const char* label) {
   for (dim_t i = 0; i < N; ++i) src[i] = U(static_cast<int>(i) + 1);
 
   // No pending GPU ops — convert should just std::copy after a no-op flush.
-  primitives<Device::METAL>::convert(src, dst, N);
+  primitives<Device::MPS>::convert(src, dst, N);
 
   bool ok = true;
   for (dim_t i = 0; i < N; ++i) {
@@ -164,7 +164,7 @@ static void test_zero_size() {
   ct2_f16* d_dst = metal_alloc<ct2_f16>(1);
   bool ok = true;
   try {
-    primitives<Device::METAL>::convert(d_src, d_dst, 0);
+    primitives<Device::MPS>::convert(d_src, d_dst, 0);
   } catch (...) { ok = false; }
   CHECK("zero-size no-crash", ok);
   metal_free(d_src);

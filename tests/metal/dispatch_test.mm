@@ -1,9 +1,9 @@
 // Standalone runtime tests for M5.1: DEVICE_AND_FLOAT_DISPATCH guard behaviour.
 //
 // Verifies:
-//   1. float32  + Device::METAL → dispatches, D==METAL, sizeof(T)==4
-//   2. float16  + Device::METAL → no throw (M5.1 PASS), D==METAL, sizeof(T)==2
-//   3. bfloat16 + Device::METAL → no throw (M5.1 PASS), D==METAL, sizeof(T)==2
+//   1. float32  + Device::MPS → dispatches, D==METAL, sizeof(T)==4
+//   2. float16  + Device::MPS → no throw (M5.1 PASS), D==METAL, sizeof(T)==2
+//   3. bfloat16 + Device::MPS → no throw (M5.1 PASS), D==METAL, sizeof(T)==2
 //   4. float16  + Device::CPU   → throws std::invalid_argument("FP16 ...")
 //   5. bfloat16 + Device::CPU   → throws std::invalid_argument("BF16 ...")
 //
@@ -14,7 +14,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O0 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/dispatch_test.mm \
 //     src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm \
 //     src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm \
@@ -80,11 +80,11 @@ static int failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 static void gpu_sync() { metal::commit_and_wait(); }
 
@@ -100,23 +100,23 @@ struct DispatchResult {
 };
 
 // ---------------------------------------------------------------------------
-// 1. float32 + Device::METAL
+// 1. float32 + Device::MPS
 // ---------------------------------------------------------------------------
 static void test_float32_metal() {
-  std::printf("\n--- 1. float32 + Device::METAL ---\n");
+  std::printf("\n--- 1. float32 + Device::MPS ---\n");
 
   DispatchResult dr;
   CHECK_NOTHROW("float32 + Metal: no throw",
-    DEVICE_AND_FLOAT_DISPATCH("test", Device::METAL, DataType::FLOAT32,
+    DEVICE_AND_FLOAT_DISPATCH("test", Device::MPS, DataType::FLOAT32,
       (dr = DispatchResult{D, sizeof(T)})));
-  CHECK("float32 + Metal: D == METAL",        dr.d == Device::METAL);
+  CHECK("float32 + Metal: D == METAL",        dr.d == Device::MPS);
   CHECK("float32 + Metal: sizeof(T) == 4",    dr.sz_T == sizeof(float));
 
   // End-to-end: confirm the Metal float32 path actually works.
   float* x   = metal_alloc<float>(N);
   float* out = metal_alloc<float>(N);
   for (dim_t i = 0; i < N; ++i) x[i] = float(i);
-  primitives<Device::METAL>::add(10.f, x, out, N);
+  primitives<Device::MPS>::add(10.f, x, out, N);
   gpu_sync();
   bool ok = true;
   for (dim_t i = 0; i < N; ++i)
@@ -126,23 +126,23 @@ static void test_float32_metal() {
 }
 
 // ---------------------------------------------------------------------------
-// 2. float16 + Device::METAL  — M5.1 primary PASS criterion
+// 2. float16 + Device::MPS  — M5.1 primary PASS criterion
 // ---------------------------------------------------------------------------
 static void test_float16_metal() {
-  std::printf("\n--- 2. float16 + Device::METAL (M5.1 PASS) ---\n");
+  std::printf("\n--- 2. float16 + Device::MPS (M5.1 PASS) ---\n");
 
   DispatchResult dr;
   CHECK_NOTHROW("float16 + Metal: no throw",
-    DEVICE_AND_FLOAT_DISPATCH("test", Device::METAL, DataType::FLOAT16,
+    DEVICE_AND_FLOAT_DISPATCH("test", Device::MPS, DataType::FLOAT16,
       (dr = DispatchResult{D, sizeof(T)})));
-  CHECK("float16 + Metal: D == METAL",        dr.d == Device::METAL);
+  CHECK("float16 + Metal: D == METAL",        dr.d == Device::MPS);
   CHECK("float16 + Metal: sizeof(T) == 2",    dr.sz_T == 2);
 
   // End-to-end: Metal float16 add (direct, confirming the FP16 GPU path works).
   ct2_f16* x   = metal_alloc<ct2_f16>(N);
   ct2_f16* out = metal_alloc<ct2_f16>(N);
   for (dim_t i = 0; i < N; ++i) x[i] = ct2_f16(float(i));
-  primitives<Device::METAL>::add(ct2_f16(5.f), x, out, N);
+  primitives<Device::MPS>::add(ct2_f16(5.f), x, out, N);
   gpu_sync();
   bool ok = true;
   for (dim_t i = 0; i < N; ++i)
@@ -152,23 +152,23 @@ static void test_float16_metal() {
 }
 
 // ---------------------------------------------------------------------------
-// 3. bfloat16 + Device::METAL  — M5.1 primary PASS criterion
+// 3. bfloat16 + Device::MPS  — M5.1 primary PASS criterion
 // ---------------------------------------------------------------------------
 static void test_bfloat16_metal() {
-  std::printf("\n--- 3. bfloat16 + Device::METAL (M5.1 PASS) ---\n");
+  std::printf("\n--- 3. bfloat16 + Device::MPS (M5.1 PASS) ---\n");
 
   DispatchResult dr;
   CHECK_NOTHROW("bfloat16 + Metal: no throw",
-    DEVICE_AND_FLOAT_DISPATCH("test", Device::METAL, DataType::BFLOAT16,
+    DEVICE_AND_FLOAT_DISPATCH("test", Device::MPS, DataType::BFLOAT16,
       (dr = DispatchResult{D, sizeof(T)})));
-  CHECK("bfloat16 + Metal: D == METAL",        dr.d == Device::METAL);
+  CHECK("bfloat16 + Metal: D == METAL",        dr.d == Device::MPS);
   CHECK("bfloat16 + Metal: sizeof(T) == 2",    dr.sz_T == 2);
 
   // End-to-end: Metal bfloat16 add (direct, confirming the BF16 GPU path works).
   ct2_bf16* x   = metal_alloc<ct2_bf16>(N);
   ct2_bf16* out = metal_alloc<ct2_bf16>(N);
   for (dim_t i = 0; i < N; ++i) x[i] = ct2_bf16(float(i));
-  primitives<Device::METAL>::add(ct2_bf16(3.f), x, out, N);
+  primitives<Device::MPS>::add(ct2_bf16(3.f), x, out, N);
   gpu_sync();
   bool ok = true;
   for (dim_t i = 0; i < N; ++i)

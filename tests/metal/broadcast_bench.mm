@@ -9,7 +9,7 @@
 // Run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/broadcast_bench.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -78,11 +78,11 @@ static double bench_median_us(int iters, Fn fn) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -223,24 +223,24 @@ static void run_accuracy() {
   std::vector<Spec> specs = {
     { "add_batch_broadcast",
       [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-        primitives<Device::METAL>::add_batch_broadcast(a, b, c, as, bs); },
+        primitives<Device::MPS>::add_batch_broadcast(a, b, c, as, bs); },
       cpu_add_batch_broadcast },
 
     { "add_depth_broadcast",
       [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-        primitives<Device::METAL>::add_depth_broadcast(a, b, c, as, bs); },
+        primitives<Device::MPS>::add_depth_broadcast(a, b, c, as, bs); },
       cpu_add_depth_broadcast },
 
     { "add_block_broadcast",
       // block baked in via capture
       [block](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-        primitives<Device::METAL>::add_block_broadcast(a, b, c, block, as, bs); },
+        primitives<Device::MPS>::add_block_broadcast(a, b, c, block, as, bs); },
       [block](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
         cpu_add_block_broadcast(a, b, c, block, as, bs); } },
 
     { "mul_batch_broadcast",
       [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-        primitives<Device::METAL>::mul_batch_broadcast(a, b, c, as, bs); },
+        primitives<Device::MPS>::mul_batch_broadcast(a, b, c, as, bs); },
       cpu_mul_batch_broadcast },
   };
 
@@ -330,25 +330,25 @@ static void run_perf() {
 
   bench_broadcast_op("add_batch_broadcast", a_size,
     [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-      primitives<Device::METAL>::add_batch_broadcast(a, b, c, as, bs); },
+      primitives<Device::MPS>::add_batch_broadcast(a, b, c, as, bs); },
     cpu_add_batch_broadcast);
 
   bench_broadcast_op("add_depth_broadcast", a_size,
     [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-      primitives<Device::METAL>::add_depth_broadcast(a, b, c, as, bs); },
+      primitives<Device::MPS>::add_depth_broadcast(a, b, c, as, bs); },
     cpu_add_depth_broadcast);
 
   // add_block_broadcast with fixed block size; a_size = b_size / block per row
   // Use block=64, a_size=16 so b_size stays a multiple of both.
   bench_broadcast_op("add_block_broadcast", /*a_size=*/16,
     [block](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-      primitives<Device::METAL>::add_block_broadcast(a, b, c, block, as, bs); },
+      primitives<Device::MPS>::add_block_broadcast(a, b, c, block, as, bs); },
     [block](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
       cpu_add_block_broadcast(a, b, c, block, as, bs); });
 
   bench_broadcast_op("mul_batch_broadcast", a_size,
     [](const float* a, const float* b, float* c, dim_t as, dim_t bs) {
-      primitives<Device::METAL>::mul_batch_broadcast(a, b, c, as, bs); },
+      primitives<Device::MPS>::mul_batch_broadcast(a, b, c, as, bs); },
     cpu_mul_batch_broadcast);
 }
 

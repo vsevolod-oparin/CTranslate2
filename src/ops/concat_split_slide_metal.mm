@@ -68,7 +68,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                         \
     template void                                                               \
-    Concat::compute<Device::METAL, T>(const std::vector<const StorageView*>&,  \
+    Concat::compute<Device::MPS, T>(const std::vector<const StorageView*>&,  \
                                        StorageView&) const;
 
     DECLARE_ALL_TYPES(DECLARE_IMPL)
@@ -105,7 +105,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                       \
     template void                                                             \
-    Split::compute<Device::METAL, T>(const StorageView&,                     \
+    Split::compute<Device::MPS, T>(const StorageView&,                     \
                                       std::vector<StorageView*>&) const;
 
     DECLARE_ALL_TYPES(DECLARE_IMPL)
@@ -140,7 +140,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                         \
     template void                                                               \
-    Slide::compute<Device::METAL, T>(const StorageView&, StorageView&,          \
+    Slide::compute<Device::MPS, T>(const StorageView&, StorageView&,          \
                                       const dim_t&) const;
 
     DECLARE_ALL_TYPES(DECLARE_IMPL)

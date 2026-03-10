@@ -20,7 +20,7 @@ def main():
 
     tokenizer = load_marian_tokenizer()
     cpu = ctranslate2.Translator(mpath, device="cpu")
-    metal = ctranslate2.Translator(mpath, device="metal")
+    metal = ctranslate2.Translator(mpath, device="mps")
 
     sentence = "The cat sat on the mat."
     tokens = tokenize(tokenizer, sentence)

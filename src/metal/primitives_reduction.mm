@@ -131,7 +131,7 @@ namespace ctranslate2 {
   // sum: Σ x[i]  (result cast back to T)
   template<>
   template <typename T>
-  T primitives<Device::METAL>::sum(const T* array, dim_t size) {
+  T primitives<Device::MPS>::sum(const T* array, dim_t size) {
     if (size == 0) return T(0);
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_sum_%s", MetalTypeName<T>::value);
@@ -163,7 +163,7 @@ namespace ctranslate2 {
   // GPU reduces each tile to (best_val, best_idx) in float/uint32_t pair buffers.
   template<>
   template <typename T>
-  dim_t primitives<Device::METAL>::max_element(const T* array, dim_t size) {
+  dim_t primitives<Device::MPS>::max_element(const T* array, dim_t size) {
     if (size == 0) return 0;
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_max_element_%s", MetalTypeName<T>::value);
@@ -206,7 +206,7 @@ namespace ctranslate2 {
   // max: maximum value in the array.
   template<>
   template <typename T>
-  T primitives<Device::METAL>::max(const T* array, dim_t size) {
+  T primitives<Device::MPS>::max(const T* array, dim_t size) {
     if (size == 0) return T(0);
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_max_%s", MetalTypeName<T>::value);
@@ -238,7 +238,7 @@ namespace ctranslate2 {
   // GPU kernel accumulates in float (all types); CPU converts back to T.
   template<>
   template <typename T>
-  T primitives<Device::METAL>::amax(const T* array, dim_t size) {
+  T primitives<Device::MPS>::amax(const T* array, dim_t size) {
     if (size == 0) return T(0);
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "reduce_amax_%s", MetalTypeName<T>::value);
@@ -270,7 +270,7 @@ namespace ctranslate2 {
   // Computed stably as log(Σ exp(x[i] - max)) + max.
   template<>
   template <typename T>
-  float primitives<Device::METAL>::logsumexp(const T* x, dim_t size) {
+  float primitives<Device::MPS>::logsumexp(const T* x, dim_t size) {
     if (size == 0) return 0.f;
     CT2_COMMIT_AND_WAIT();
     float maxval = (float)x[0];
@@ -288,21 +288,21 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                    \
   template T                                                               \
-  primitives<Device::METAL>::sum(const T* array, dim_t size);             \
+  primitives<Device::MPS>::sum(const T* array, dim_t size);             \
   template dim_t                                                           \
-  primitives<Device::METAL>::max_element(const T* array, dim_t size);     \
+  primitives<Device::MPS>::max_element(const T* array, dim_t size);     \
   template T                                                               \
-  primitives<Device::METAL>::max(const T* array, dim_t size);             \
+  primitives<Device::MPS>::max(const T* array, dim_t size);             \
   template T                                                               \
-  primitives<Device::METAL>::amax(const T* array, dim_t size);
+  primitives<Device::MPS>::amax(const T* array, dim_t size);
 
   DECLARE_ALL_TYPES(DECLARE_IMPL)
 
 #undef DECLARE_IMPL
 
-  template float primitives<Device::METAL>::logsumexp(const float*,      dim_t);
-  template float primitives<Device::METAL>::logsumexp(const float16_t*,  dim_t);
-  template float primitives<Device::METAL>::logsumexp(const bfloat16_t*, dim_t);
+  template float primitives<Device::MPS>::logsumexp(const float*,      dim_t);
+  template float primitives<Device::MPS>::logsumexp(const float16_t*,  dim_t);
+  template float primitives<Device::MPS>::logsumexp(const bfloat16_t*, dim_t);
 
   // -------------------------------------------------------------------------
   // Fused timestamp check + disable — M11.17.

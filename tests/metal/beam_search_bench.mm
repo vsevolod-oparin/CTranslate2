@@ -11,7 +11,7 @@
 // Build and run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/beam_search_bench.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -81,11 +81,11 @@ static double bench_median_us(int iters, Fn fn) {
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -173,7 +173,7 @@ static void penalize_accuracy() {
   std::memcpy(d_prev_scr, prev_scores.data(), batch * len   * sizeof(float));
   std::memcpy(d_prev_ids, prev_ids.data(),    batch * len   * sizeof(int32_t));
 
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       d_scores, d_prev_scr, d_prev_ids, penalty, batch, len, vocab);
   metal::commit_and_wait();
 
@@ -237,14 +237,14 @@ static void penalize_perf_row(const char* label,
   std::memcpy(d_scores, scores_init.data(), batch * vocab * sizeof(float));
   std::memcpy(d_prev_scr, prev_scores.data(), batch * len * sizeof(float));
   std::memcpy(d_prev_ids, prev_ids.data(), batch * len * sizeof(int32_t));
-  primitives<Device::METAL>::penalize_previous_tokens(
+  primitives<Device::MPS>::penalize_previous_tokens(
       d_scores, d_prev_scr, d_prev_ids, penalty, batch, len, vocab);
   metal::commit_and_wait();
 
   // GPU benchmark: reinitialise scores each iter so the kernel actually writes
   double gpu_us = bench_median_us(iters, [&] {
     std::memcpy(d_scores, scores_init.data(), batch * vocab * sizeof(float));
-    primitives<Device::METAL>::penalize_previous_tokens(
+    primitives<Device::MPS>::penalize_previous_tokens(
         d_scores, d_prev_scr, d_prev_ids, penalty, batch, len, vocab);
     metal::commit_and_wait();
     return d_scores[0];
@@ -338,7 +338,7 @@ static void mask_accuracy_and_perf() {
                          /*mask_future=*/true, /*multi_query=*/false,
                          ref_mask.data());
 
-    primitives<Device::METAL>::prepare_length_mask(
+    primitives<Device::MPS>::prepare_length_mask(
         d_lengths, batch, heads, queries,
         /*mask_future=*/true, /*multi_query=*/false, d_mask);
 
@@ -385,12 +385,12 @@ static void mask_accuracy_and_perf() {
       d_lengths[b] = next_int(1, (int32_t)s.queries + 1);
 
     // Warmup
-    primitives<Device::METAL>::prepare_length_mask(
+    primitives<Device::MPS>::prepare_length_mask(
         d_lengths, s.batch, s.heads, s.queries,
         s.mask_future, s.multi_query, d_mask);
 
     double lat_us = bench_median_us(s.iters, [&] {
-      primitives<Device::METAL>::prepare_length_mask(
+      primitives<Device::MPS>::prepare_length_mask(
           d_lengths, s.batch, s.heads, s.queries,
           s.mask_future, s.multi_query, d_mask);
       return (float)d_mask[0];
@@ -415,19 +415,19 @@ static void at_perf() {
   for (dim_t i = 0; i < n; ++i) d[i] = (float)i;
 
   // Warmup
-  primitives<Device::METAL>::add(1.f, d, d, n);  // GPU encode
-  float v = primitives<Device::METAL>::at(d, 0);  // flush + read
+  primitives<Device::MPS>::add(1.f, d, d, n);  // GPU encode
+  float v = primitives<Device::MPS>::at(d, 0);  // flush + read
 
   double gpu_write_then_at = bench_median_us(200, [&] {
-    primitives<Device::METAL>::add(1.f, d, d, n);  // GPU encode (increments by 1)
-    float val = primitives<Device::METAL>::at(d, 0);  // flush + CPU read
+    primitives<Device::MPS>::add(1.f, d, d, n);  // GPU encode (increments by 1)
+    float val = primitives<Device::MPS>::at(d, 0);  // flush + CPU read
     return val;
   });
 
   // Baseline: at() with no pending GPU work (just commit empty buffer + read)
   metal::commit_and_wait();
   double at_no_gpu_work = bench_median_us(200, [&] {
-    return (float)primitives<Device::METAL>::at(d, 0);
+    return (float)primitives<Device::MPS>::at(d, 0);
   });
 
   std::printf("at() after GPU add kernel:  %.1f μs  (flush + read)\n",
@@ -465,8 +465,8 @@ static void logsumexp_bench() {
   for (float x : host) sum_h += std::exp(x - max_h);
   float ref = std::log(sum_h) + max_h;
 
-  float res_f32 = primitives<Device::METAL>::logsumexp(d_f32, n);
-  float res_f16 = primitives<Device::METAL>::logsumexp(d_f16, n);
+  float res_f32 = primitives<Device::MPS>::logsumexp(d_f32, n);
+  float res_f16 = primitives<Device::MPS>::logsumexp(d_f16, n);
 
   std::printf("Accuracy (n=%lld random floats in [-3, 3]):\n", (long long)n);
   std::printf("  CPU ref   = %.6f\n", (double)ref);
@@ -487,15 +487,15 @@ static void logsumexp_bench() {
     ct2_f16* d16 = metal_alloc<ct2_f16>(sz);
     for (dim_t i = 0; i < sz; ++i) { d32[i] = (float)i * 0.001f; d16[i] = (ct2_f16)d32[i]; }
     // Warmup
-    (void)primitives<Device::METAL>::logsumexp(d32, sz);
+    (void)primitives<Device::MPS>::logsumexp(d32, sz);
 
     int iters = (sz <= 1024) ? 500 : (sz <= 16384) ? 100 : 40;
 
     double lat32 = bench_median_us(iters, [&] {
-      return primitives<Device::METAL>::logsumexp(d32, sz);
+      return primitives<Device::MPS>::logsumexp(d32, sz);
     });
     double lat16 = bench_median_us(iters, [&] {
-      return primitives<Device::METAL>::logsumexp(d16, sz);
+      return primitives<Device::MPS>::logsumexp(d16, sz);
     });
 
     std::printf("%-10lld  %12.2f  %12.2f\n", (long long)sz, lat32, lat16);

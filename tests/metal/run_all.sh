@@ -68,7 +68,7 @@ FULL_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm ${PRIM_
 # ---------------------------------------------------------------------------
 # Compiler / linker flags
 # ---------------------------------------------------------------------------
-CFLAGS_COMMON="-std=c++17 -I${REPO_ROOT}/include -I${REPO_ROOT}/src -DCT2_WITH_METAL"
+CFLAGS_COMMON="-std=c++17 -I${REPO_ROOT}/include -I${REPO_ROOT}/src -DCT2_WITH_MPS"
 
 # Base Metal frameworks (required by all tests)
 FW_BASE="-framework Metal -framework Foundation -framework MetalPerformanceShaders"

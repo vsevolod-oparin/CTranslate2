@@ -1,12 +1,12 @@
 // Standalone tests for M4.4 GEMM: FP32, FP16, BF16.
 //
-// Verifies correctness of primitives<Device::METAL>::gemm and
+// Verifies correctness of primitives<Device::MPS>::gemm and
 // gemm_batch_strided against a CPU reference (std::inner_product).
 //
 // Run from the repository root:
 //   clang++ -std=c++17 -O2 \
 //     -I include -I src \
-//     -DCT2_WITH_METAL \
+//     -DCT2_WITH_MPS \
 //     tests/metal/gemm_test.mm \
 //     src/metal/device.mm \
 //     src/metal/utils.mm \
@@ -65,11 +65,11 @@ static int failed = 0;
 
 template <typename T>
 static T* metal_alloc(dim_t n) {
-  return static_cast<T*>(get_allocator<Device::METAL>().allocate(n * sizeof(T)));
+  return static_cast<T*>(get_allocator<Device::MPS>().allocate(n * sizeof(T)));
 }
 template <typename T>
 static void metal_free(T* p) {
-  get_allocator<Device::METAL>().free(p);
+  get_allocator<Device::MPS>().free(p);
 }
 
 // ---------------------------------------------------------------------------
@@ -155,7 +155,7 @@ static void test_gemm_float(bool trans_a, bool trans_b, int m, int n, int k) {
   std::vector<float> C_ref(m * n, 0.f);
   cpu_gemm_ref(trans_a, trans_b, m, n, k, 1.f, A, lda, B, ldb, 0.f, C_ref.data(), n);
 
-  primitives<Device::METAL>::gemm<float, float>(
+  primitives<Device::MPS>::gemm<float, float>(
       false, false, trans_a, trans_b, m, n, k,
       1.f, A, lda, B, ldb, 0.f, C, ldc);
   metal::commit_and_wait();
@@ -216,7 +216,7 @@ static void test_gemm_fp16(bool trans_a, bool trans_b, int m, int n, int k) {
   cpu_gemm_ref(trans_a, trans_b, m, n, k, 1.f,
                Af.data(), lda, Bf.data(), ldb, 0.f, Cf_ref.data(), n);
 
-  primitives<Device::METAL>::gemm<ct2_f16, ct2_f16>(
+  primitives<Device::MPS>::gemm<ct2_f16, ct2_f16>(
       false, false, trans_a, trans_b, m, n, k,
       1.f, A, lda, B, ldb, 0.f, C, ldc);
   metal::commit_and_wait();
@@ -280,7 +280,7 @@ static void test_gemm_bf16(bool trans_a, bool trans_b, int m, int n, int k) {
   cpu_gemm_ref(trans_a, trans_b, m, n, k, 1.f,
                Af.data(), lda, Bf.data(), ldb, 0.f, Cf_ref.data(), n);
 
-  primitives<Device::METAL>::gemm<ct2_bf16, ct2_bf16>(
+  primitives<Device::MPS>::gemm<ct2_bf16, ct2_bf16>(
       false, false, trans_a, trans_b, m, n, k,
       1.f, A, lda, B, ldb, 0.f, C, ldc);
   // BF16 GEMM commits internally (MPSGraph path).
@@ -328,7 +328,7 @@ static void test_gemm_batch_strided_float(int batch, int m, int n, int k) {
                  0.f, C_ref.data() + b * stridec, n);
   }
 
-  primitives<Device::METAL>::gemm_batch_strided<float, float>(
+  primitives<Device::MPS>::gemm_batch_strided<float, float>(
       false, false, m, n, k, 1.f,
       A, lda, stridea,
       B, ldb, strideb,
@@ -392,7 +392,7 @@ static void test_gemm_batch_strided_bf16(int batch, int m, int n, int k) {
                  0.f, Cf_ref.data() + b * stridec, n);
   }
 
-  primitives<Device::METAL>::gemm_batch_strided<ct2_bf16, ct2_bf16>(
+  primitives<Device::MPS>::gemm_batch_strided<ct2_bf16, ct2_bf16>(
       false, false, m, n, k, 1.f,
       A, lda, stridea,
       B, ldb, strideb,

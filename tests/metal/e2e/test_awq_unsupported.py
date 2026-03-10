@@ -33,7 +33,7 @@ def main():
     # but we can verify that the Metal device is recognized and that
     # compute_type resolution doesn't silently accept AWQ-incompatible types.
 
-    # Test 1: Loading a non-AWQ model with device="metal" works fine
+    # Test 1: Loading a non-AWQ model with device="mps" works fine
     from conftest import model_path
     f32_path = model_path("opus-mt-en-de")
     if not os.path.isdir(f32_path):
@@ -41,7 +41,7 @@ def main():
         return 0
 
     try:
-        t = ctranslate2.Translator(f32_path, device="metal")
+        t = ctranslate2.Translator(f32_path, device="mps")
         check("Non-AWQ model loads on Metal", True)
         del t
     except Exception as e:

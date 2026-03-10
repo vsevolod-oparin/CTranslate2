@@ -184,7 +184,7 @@ def main():
 
     # --- Phase 2: Metal model ---
     print("Loading Metal model...")
-    model_metal = ctranslate2.models.Whisper(whisper_path, device="metal")
+    model_metal = ctranslate2.models.Whisper(whisper_path, device="mps")
     metal_ct = model_metal.compute_type
     print(f"  Metal compute_type: {metal_ct}")
 
@@ -211,7 +211,7 @@ def main():
 
     del model_metal
     gc.collect()
-    ctranslate2.clear_device_cache("metal")
+    ctranslate2.clear_device_cache("mps")
 
     # --- Correctness checks ---
     print("\n=== Correctness ===")

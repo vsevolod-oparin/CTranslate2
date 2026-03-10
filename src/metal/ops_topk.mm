@@ -4,7 +4,7 @@
 //
 // Both paths are encode-only (no commit_and_wait).
 // The caller (Sampler::operator()) syncs via copy_from which
-// calls synchronize_stream(Device::METAL) internally.
+// calls synchronize_stream(Device::MPS) internally.
 
 #include "metal/primitives_infra.h"
 

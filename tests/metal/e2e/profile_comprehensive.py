@@ -287,9 +287,9 @@ def main():
     print(f"{'='*70}")
 
     # Enable commit trace
-    os.environ['CT2_METAL_TRACE'] = '1'
+    os.environ['CT2_MPS_TRACE'] = '1'
 
-    model_metal = WhisperModel(whisper_path, device="metal", compute_type="float32")
+    model_metal = WhisperModel(whisper_path, device="mps", compute_type="float32")
     # Warmup (also triggers PSO compilation)
     print("  Warmup run...")
     api['reset_pso_stats']()
@@ -300,7 +300,7 @@ def main():
 
     # Clean timed run (no cProfile, no background sampling — pure timing)
     print("\n  Clean timed run (no cProfile overhead)...")
-    result = profile_transcription(model_metal, audio_file, beam_size, api, "metal",
+    result = profile_transcription(model_metal, audio_file, beam_size, api, "mps",
                                    enable_cprofile=False, enable_bg_sampling=False)
 
     # cProfile run (separate — to see CPU hotspots without polluting timing)
@@ -421,7 +421,7 @@ def main():
     # Cleanup
     del model_metal
     gc.collect()
-    import ctranslate2; ctranslate2.clear_device_cache("metal")
+    import ctranslate2; ctranslate2.clear_device_cache("mps")
 
     print(f"\n{'='*70}")
     print("DONE")

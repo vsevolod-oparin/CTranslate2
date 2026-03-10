@@ -1,6 +1,6 @@
 // src/ops/alibi_add_metal.mm
 //
-// M6.4 — AlibiAdd::compute<Device::METAL>
+// M6.4 — AlibiAdd::compute<Device::MPS>
 //
 // Thin wrapper: extracts dimensions from StorageView and calls
 // metal::alibi_add_metal<T>() (implemented in src/metal/ops_alibi.mm).
@@ -35,7 +35,7 @@ namespace ctranslate2 {
 
 #define DECLARE_IMPL(T)                                                       \
     template void                                                             \
-    AlibiAdd::compute<Device::METAL, T>(const StorageView&,                   \
+    AlibiAdd::compute<Device::MPS, T>(const StorageView&,                   \
                                         const StorageView&,                   \
                                         const dim_t,                          \
                                         StorageView&) const;

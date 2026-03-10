@@ -13,7 +13,7 @@ namespace ctranslate2 {
   enum class Device {
     CPU,
     CUDA,
-    METAL
+    MPS
   };
 
   Device str_to_device(const std::string& device);

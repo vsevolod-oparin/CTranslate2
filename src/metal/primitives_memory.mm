@@ -69,17 +69,51 @@ namespace ctranslate2 {
       *x = a;
   }
 
+  // M11.25: indexed_fill GPU kernel infrastructure.
+  namespace {
+    static id<MTLLibrary> get_indexed_fill_library() {
+      static id<MTLLibrary> lib = nil;
+      static std::once_flag flag;
+      return compile_library_once(flag, lib, kIndexedFillMSL, "indexed_fill");
+    }
+    static id<MTLComputePipelineState> get_indexed_fill_pso(const char* name) {
+      static PSOCache cache;
+      return cache.get(get_indexed_fill_library, name);
+    }
+  }
+
   template<>
   template <typename T>
   void primitives<Device::METAL>::indexed_fill(T* x, T a,
                                                 const int32_t* indices,
                                                 dim_t num_indices) {
-    // Flush pending GPU writes: x may live in a buffer with in-flight GPU
-    // work (e.g. row_copy from padded GEMM output).  The CPU loop below
-    // modifies x directly, so the GPU must finish first.
+    // M11.25: GPU scatter kernel.  protect_buffer defers index buffer
+    // recycling until commit_and_wait().  The commit before ensures prior
+    // GPU writes to x are visible AND CPU writes to the indices buffer
+    // are flushed to shared memory before the GPU kernel executes.
+    metal::protect_buffer(indices);
     CT2_COMMIT_AND_WAIT();
-    for (dim_t i = 0; i < num_indices; ++i)
-      x[indices[i]] = a;
+
+    char kname[kKernelNameBufSize];
+    std::snprintf(kname, sizeof(kname), "indexed_fill_%s",
+                  MetalTypeName<T>::value);
+    id<MTLComputePipelineState> pso = get_indexed_fill_pso(kname);
+
+    NSUInteger x_off = 0, idx_off = 0;
+    id<MTLBuffer> x_buf   = metal_buffer_for_ptr(x, &x_off);
+    id<MTLBuffer> idx_buf = metal_buffer_for_ptr(indices, &idx_off);
+
+    id<MTLComputeCommandEncoder> enc = metal::create_compute_encoder();
+    [enc setComputePipelineState:pso];
+    [enc setBuffer:x_buf   offset:x_off   atIndex:0];
+    [enc setBytes:&a       length:sizeof(T) atIndex:1];
+    [enc setBuffer:idx_buf offset:idx_off atIndex:2];
+    [enc dispatchThreads:MTLSizeMake(ct2_u32(num_indices), 1, 1)
+       threadsPerThreadgroup:MTLSizeMake(
+           std::min<NSUInteger>(ct2_u32(num_indices),
+                                pso.maxTotalThreadsPerThreadgroup), 1, 1)];
+    [enc endEncoding];
+    [enc release];
   }
 
   // convert: flush pending GPU writes before the CPU reads x, then copy with

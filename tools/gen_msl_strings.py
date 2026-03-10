@@ -45,6 +45,7 @@ KERNELS = [
     ("quantize",       "kQuantizeMSL"),
     ("topk",           "kTopKMSL"),
     ("fused_norm_gemm", "kFusedNormGemmMSL"),
+    ("indexed_fill",    "kIndexedFillMSL"),
 ]
 
 # Raw-string delimiter used to wrap the MSL source.

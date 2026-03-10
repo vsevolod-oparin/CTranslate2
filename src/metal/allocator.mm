@@ -115,8 +115,8 @@ namespace ctranslate2 {
 
         if (is_protected) {
           // M11.18: This buffer is referenced by a pending encode-only GPU
-          // kernel (e.g. MPS padded GEMM row_copy-back).  Defer recycling
-          // until commit_and_wait() completes all prior GPU work.
+          // kernel (e.g. MPS padded GEMM row_copy-back, indexed_fill indices).
+          // Defer recycling until commit_and_wait() completes all prior GPU work.
           _pending_free.push_back({sz, buf, false});
         } else {
           // Return to pool immediately (safe — not GPU-referenced).
@@ -139,8 +139,7 @@ namespace ctranslate2 {
             return;
           }
         }
-        // Not found in _live — might already be freed or not from this allocator.
-        // Silently ignore (the buffer might be a temp or stack allocation).
+        // Not found — might already be freed or not from this allocator.
       }
 
       // O(1) version — caller supplies the base pointer of the allocation

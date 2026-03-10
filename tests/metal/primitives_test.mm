@@ -28,6 +28,7 @@
 #include "ctranslate2/primitives.h"
 #include "ctranslate2/devices.h"
 #include "ctranslate2/types.h"
+#include "metal/utils.h"
 
 using namespace ctranslate2;
 
@@ -168,6 +169,7 @@ static void test_indexed_fill() {
   idx[0] = 1; idx[1] = 3; idx[2] = 5;
 
   primitives<Device::METAL>::indexed_fill(p, 9.f, idx, 3);
+  metal::commit_and_wait();  // M11.25: indexed_fill is now encode-only
 
   CHECK("indexed_fill: p[1] == 9.f", std::fabs(p[1] - 9.f) < 1e-6f);
   CHECK("indexed_fill: p[3] == 9.f", std::fabs(p[3] - 9.f) < 1e-6f);

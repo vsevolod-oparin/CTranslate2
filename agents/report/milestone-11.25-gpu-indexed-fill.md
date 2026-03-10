@@ -163,7 +163,7 @@ All tests pass with exact CPU-Metal match:
 
 ## Performance Impact
 
-Speed benchmarks are variable across runs due to CPU thermal throttling. The pre-sync is preserved, so this milestone does not reduce sync count — the work is moved from CPU to GPU but the sync barrier remains.
+Speed benchmarks are variable across runs. The pre-sync is preserved, so this milestone does not reduce sync count — the work is moved from CPU to GPU but the sync barrier remains.
 
 | Run | CPU (ms) | Metal (ms) | Speedup |
 |-----|----------|------------|---------|
@@ -172,7 +172,7 @@ Speed benchmarks are variable across runs due to CPU thermal throttling. The pre
 | test_faster_whisper run 3 | 17761 | 12740 | 1.39x |
 | test_whisper (float32) | 5873 | 2392 | 2.46x |
 
-The variance is attributable to CPU thermal state rather than the indexed_fill change itself. With the pre-sync preserved, the sync trace remains unchanged from M11.23:
+The `test_faster_whisper` variance (1.39x–3.41x) is caused by `faster_whisper`'s seek loop generating different numbers of total tokens per run due to MPS GEMM floating-point non-determinism (see M11.27 report for full analysis). The `test_whisper` (raw CTranslate2 API, float32) result of 2.46x is the reliable measurement. With the pre-sync preserved, the sync trace remains unchanged from M11.23:
 
 ```
    1509  devices.cc:162          (synchronize_stream)

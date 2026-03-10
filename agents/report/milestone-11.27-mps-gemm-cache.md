@@ -137,7 +137,20 @@ The `test_faster_whisper` speedup varies 1.66x–4.78x across runs. The variance
 
 Run 1 generates 2.2x more tokens than run 0 for identical final output. The extra tokens come from `generate()` calls hitting `max_length=224` (the cap), producing output that `faster_whisper` discards and retries via its seek logic.
 
-**Root cause**: GPU floating-point non-determinism (thread scheduling order in reductions like softmax/layer_norm) produces slightly different logit scores across runs → different beam search paths → some `generate()` calls produce usable segments, others hit `max_length` and trigger seek retries. More retries = more wall time, despite identical final transcription.
+**Root cause**: GPU floating-point non-determinism (MPS GEMM internal tiling/accumulation order) produces slightly different logit scores across runs → different beam search paths → some `generate()` calls produce usable segments, others hit `max_length` and trigger seek retries. More retries = more wall time, despite identical final transcription.
+
+**Why MPS GEMM is non-deterministic**: Apple's `MPSMatrixMultiplication` is a black box that does not guarantee bit-identical results across invocations. The internal tiling strategy and floating-point accumulation order can vary, producing results that differ at the ULP (unit in last place) level. With float16's 10-bit mantissa, these ULP differences compound through ~32 transformer layers per decode step, eventually diverging beam search decisions.
+
+**Is it fixable?**
+
+| Approach | Feasibility | Trade-off |
+|----------|-------------|-----------|
+| Replace MPS GEMM with custom deterministic MSL kernel | Massive effort | Would be slower than Apple's tuned MPS |
+| Use float32 instead of float16 | Easy | More precision reduces (doesn't eliminate) divergence; slower inference |
+| Fix `faster_whisper`'s seek retry sensitivity | Not our code | The retry logic is by design for long audio |
+| Accept non-determinism, fix benchmark methodology | Recommended | Use raw `generate()` API for timing; report median over many runs |
+
+**Recommendation**: The MPS non-determinism is unfixable without replacing Apple's GEMM implementation. For reliable benchmarking, use the raw CTranslate2 `generate()` API (which shows 1.2% CV) or report median/P50 over 10+ `faster_whisper` runs. The `test_whisper.py` test (f32, raw API) is a more reliable performance indicator than `test_faster_whisper.py`.
 
 ## Why This Works
 

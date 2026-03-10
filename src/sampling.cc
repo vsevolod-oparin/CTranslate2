@@ -1,6 +1,10 @@
 #include "ctranslate2/sampling.h"
 
+#include <cstring>
+
 #include "ctranslate2/ops/ops.h"
+#include "ctranslate2/devices.h"
+#include "type_dispatch.h"
 
 namespace ctranslate2 {
 
@@ -16,8 +20,28 @@ namespace ctranslate2 {
       StorageView sampled_ids_device(DataType::INT32, scores.device());
       StorageView sampled_scores_device(scores.dtype(), scores.device());
       sample(scores, num_samples, sampled_ids_device, sampled_scores_device);
-      sampled_ids.copy_from(sampled_ids_device);
-      sampled_scores.copy_from(sampled_scores_device);
+#ifdef CT2_WITH_METAL
+      if (scores.device() == Device::METAL) {
+        // M11.26: Single sync for both GPU→CPU copies.  On Metal with
+        // unified memory, after synchronize_stream the shared-memory
+        // buffers are CPU-readable.  One sync + two memcpys instead of
+        // two separate copy_from calls (each of which would sync).
+        synchronize_stream(Device::METAL);
+        sampled_ids.resize_as(sampled_ids_device);
+        sampled_scores.resize_as(sampled_scores_device);
+        std::memcpy(sampled_ids.data<int32_t>(),
+                    sampled_ids_device.data<int32_t>(),
+                    sampled_ids_device.size() * sizeof(int32_t));
+        TYPE_DISPATCH(sampled_scores_device.dtype(),
+                      std::memcpy(sampled_scores.data<T>(),
+                                  sampled_scores_device.data<T>(),
+                                  sampled_scores_device.size() * sizeof(T)));
+      } else
+#endif
+      {
+        sampled_ids.copy_from(sampled_ids_device);
+        sampled_scores.copy_from(sampled_scores_device);
+      }
     }
   }
 

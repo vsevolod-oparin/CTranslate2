@@ -1221,28 +1221,24 @@ namespace ctranslate2 {
 
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
       if (batch_size > 0 && needs_padding()) {
-        if (m * n > 4096 || m == 1) {
-          // M11.18: Route m=1 decode attention GEMMs through MPS padded path
-          // (encode-only, zero syncs) instead of cblas (1 sync per call).
-          dispatch_mps_gemm_batched_padded<float>(
-              transpose_a, transpose_b, m, n, k,
-              alpha, a, lda, stridea, b, ldb, strideb,
-              beta, c, ldc, stridec, batch_size);
-          if (m == 1) {
-            // M11.18: Protect original buffers from premature reuse.
-            // Only needed for m=1 decode attention GEMMs where the caller
-            // may free A/B/C before the encode-only GPU work completes.
-            // Use O(1) protect_buffer_by_base via metal_buffer_for_ptr.
-            NSUInteger off_tmp;
-            ctranslate2::metal::protect_buffer_by_base(
-                [ctranslate2::metal_buffer_for_ptr(a, &off_tmp) contents]);
-            ctranslate2::metal::protect_buffer_by_base(
-                [ctranslate2::metal_buffer_for_ptr(b, &off_tmp) contents]);
-            ctranslate2::metal::protect_buffer_by_base(
-                [ctranslate2::metal_buffer_for_ptr(c, &off_tmp) contents]);
-          }
-        } else {
-          batch_cpu_gemm_f32(a, b, c);
+        // M11.26: Always route padded f32 GEMMs through MPS (encode-only,
+        // zero syncs).  The old m*n>4096 threshold fell back to CPU cblas,
+        // requiring CT2_COMMIT_AND_WAIT before each call.
+        dispatch_mps_gemm_batched_padded<float>(
+            transpose_a, transpose_b, m, n, k,
+            alpha, a, lda, stridea, b, ldb, strideb,
+            beta, c, ldc, stridec, batch_size);
+        if (m == 1) {
+          // M11.18: Protect original buffers from premature reuse.
+          // Only needed for m=1 decode attention GEMMs where the caller
+          // may free A/B/C before the encode-only GPU work completes.
+          NSUInteger off_tmp;
+          ctranslate2::metal::protect_buffer_by_base(
+              [ctranslate2::metal_buffer_for_ptr(a, &off_tmp) contents]);
+          ctranslate2::metal::protect_buffer_by_base(
+              [ctranslate2::metal_buffer_for_ptr(b, &off_tmp) contents]);
+          ctranslate2::metal::protect_buffer_by_base(
+              [ctranslate2::metal_buffer_for_ptr(c, &off_tmp) contents]);
         }
       } else {
         if (!dispatch_mps_gemm_batched<float>(
@@ -1267,14 +1263,14 @@ namespace ctranslate2 {
         return;
       }
       if (batch_size > 0 && needs_padding()) {
-        if (m * n > 4096) {
-          dispatch_mps_gemm_batched_padded<float16_t>(
-              transpose_a, transpose_b, m, n, k,
-              alpha, a, lda, stridea, b, ldb, strideb,
-              beta, c, ldc, stridec, batch_size);
-        } else {
-          batch_cpu_gemm_f16(a, b, c);
-        }
+        // M11.26: Always route padded f16 GEMMs through MPS (encode-only,
+        // zero syncs).  The old m*n>4096 threshold fell back to CPU cblas
+        // for small GEMMs, requiring CT2_COMMIT_AND_WAIT before each call
+        // (548 syncs per inference, breaking GPU pipeline mid-forward-pass).
+        dispatch_mps_gemm_batched_padded<float16_t>(
+            transpose_a, transpose_b, m, n, k,
+            alpha, a, lda, stridea, b, ldb, strideb,
+            beta, c, ldc, stridec, batch_size);
       } else {
         if (!dispatch_mps_gemm_batched<float16_t>(
                 transpose_a, transpose_b, m, n, k,

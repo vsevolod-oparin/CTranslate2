@@ -44,6 +44,91 @@ template<> struct MPS_Dtype<float>                  { static const MPSDataType v
 template<> struct MPS_Dtype<ctranslate2::float16_t> { static const MPSDataType value = MPSDataTypeFloat16; };
 
 // ---------------------------------------------------------------------------
+// M11.27 — MPSMatrixMultiplication cache
+//
+// MPSMatrixMultiplication alloc+init performs kernel selection internally,
+// costing ~10-20µs per call.  With 76K+ GEMM dispatches per whisper inference,
+// this adds up.  The object only depends on (transpose, m, n, k, alpha, beta)
+// and can be reused across encodes with different buffers.
+//
+// For batched GEMMs, batchSize is included in the key to avoid mutation races
+// if multiple threads share the cache.
+// ---------------------------------------------------------------------------
+
+struct MpsGemmKey {
+  bool transpose_a;
+  bool transpose_b;
+  NSUInteger m, n, k;
+  uint64_t alpha_bits;
+  uint64_t beta_bits;
+  NSUInteger batch_size;  // 0 for non-batched
+
+  bool operator==(const MpsGemmKey& o) const {
+    return transpose_a == o.transpose_a && transpose_b == o.transpose_b &&
+           m == o.m && n == o.n && k == o.k &&
+           alpha_bits == o.alpha_bits && beta_bits == o.beta_bits &&
+           batch_size == o.batch_size;
+  }
+};
+
+struct MpsGemmKeyHash {
+  size_t operator()(const MpsGemmKey& key) const {
+    // FNV-1a inspired mixing
+    size_t h = 14695981039346656037ULL;
+    h ^= (size_t)key.transpose_a; h *= 1099511628211ULL;
+    h ^= (size_t)key.transpose_b; h *= 1099511628211ULL;
+    h ^= key.m;                   h *= 1099511628211ULL;
+    h ^= key.n;                   h *= 1099511628211ULL;
+    h ^= key.k;                   h *= 1099511628211ULL;
+    h ^= key.alpha_bits;          h *= 1099511628211ULL;
+    h ^= key.beta_bits;           h *= 1099511628211ULL;
+    h ^= key.batch_size;          h *= 1099511628211ULL;
+    return h;
+  }
+};
+
+// Returns a cached (or newly created) MPSMatrixMultiplication.
+// The returned pointer is owned by the cache — caller must NOT release it.
+static MPSMatrixMultiplication* get_cached_mps_gemm(
+    bool transpose_a, bool transpose_b,
+    NSUInteger m, NSUInteger n, NSUInteger k,
+    double alpha, double beta,
+    NSUInteger batch_size = 0) {
+  uint64_t alpha_bits, beta_bits;
+  std::memcpy(&alpha_bits, &alpha, sizeof(double));
+  std::memcpy(&beta_bits, &beta, sizeof(double));
+
+  MpsGemmKey key{transpose_a, transpose_b, m, n, k,
+                 alpha_bits, beta_bits, batch_size};
+
+  static std::unordered_map<MpsGemmKey, MPSMatrixMultiplication*, MpsGemmKeyHash> cache;
+  static std::mutex mtx;
+
+  std::lock_guard<std::mutex> lk(mtx);
+  auto it = cache.find(key);
+  if (it != cache.end()) {
+    return it->second;
+  }
+
+  id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+  MPSMatrixMultiplication* op =
+      [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                         transposeLeft:(BOOL)transpose_a
+                                        transposeRight:(BOOL)transpose_b
+                                           resultRows:m
+                                        resultColumns:n
+                                      interiorColumns:k
+                                                alpha:alpha
+                                                 beta:beta];
+  if (batch_size > 0) {
+    op.batchSize = batch_size;
+    op.batchStart = 0;
+  }
+  cache[key] = op;  // retained by cache, never released
+  return op;
+}
+
+// ---------------------------------------------------------------------------
 // Path A — FP32 / FP16 GEMM via MPSMatrixMultiplication
 //
 // Physical layout of A in memory:
@@ -244,22 +329,16 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
     MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
     MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
 
-    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    // M11.27: Use cached MPSMatrixMultiplication (caller must NOT release).
     MPSMatrixMultiplication* gemm_op =
-        [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                           transposeLeft:(BOOL)transpose_a
-                                          transposeRight:(BOOL)transpose_b
-                                             resultRows:(NSUInteger)m
-                                          resultColumns:(NSUInteger)n
-                                        interiorColumns:(NSUInteger)k
-                                                  alpha:(double)alpha
-                                                   beta:(double)beta];
+        get_cached_mps_gemm(transpose_a, transpose_b,
+                            (NSUInteger)m, (NSUInteger)n, (NSUInteger)k,
+                            (double)alpha, (double)beta);
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
     [matA release];
     [matB release];
     [matC release];
-    [gemm_op release];
   }
 
   // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.
@@ -466,21 +545,15 @@ static void dispatch_mps_gemm_buf(
     MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
     MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
 
-    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    // M11.27: Use cached MPSMatrixMultiplication.
     MPSMatrixMultiplication* gemm_op =
-        [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                           transposeLeft:(BOOL)transpose_a
-                                          transposeRight:(BOOL)transpose_b
-                                             resultRows:(NSUInteger)m
-                                          resultColumns:(NSUInteger)n
-                                        interiorColumns:(NSUInteger)k
-                                                  alpha:(double)alpha
-                                                   beta:0.0];
+        get_cached_mps_gemm(transpose_a, transpose_b,
+                            (NSUInteger)m, (NSUInteger)n, (NSUInteger)k,
+                            (double)alpha, 0.0);
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
     [matA release];
     [matB release];
     [matC release];
-    [gemm_op release];
   }
 }
 
@@ -652,24 +725,17 @@ static bool dispatch_mps_gemm_batched(
     MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
     MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
 
-    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    // M11.27: Use cached MPSMatrixMultiplication with batch_size in key.
     MPSMatrixMultiplication* gemm_op =
-        [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                           transposeLeft:(BOOL)transpose_a
-                                          transposeRight:(BOOL)transpose_b
-                                             resultRows:(NSUInteger)m
-                                          resultColumns:(NSUInteger)n
-                                        interiorColumns:(NSUInteger)k
-                                                  alpha:(double)alpha
-                                                   beta:(double)beta];
-    gemm_op.batchSize = (NSUInteger)batch_size;
-    gemm_op.batchStart = 0;
+        get_cached_mps_gemm(transpose_a, transpose_b,
+                            (NSUInteger)m, (NSUInteger)n, (NSUInteger)k,
+                            (double)alpha, (double)beta,
+                            (NSUInteger)batch_size);
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
     [matA release];
     [matB release];
     [matC release];
-    [gemm_op release];
   }
 
   return true;  // successfully dispatched
@@ -1045,24 +1111,17 @@ static void dispatch_mps_gemm_batched_padded(
     MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
     MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
 
-    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    // M11.27: Use cached MPSMatrixMultiplication with batch_size in key.
     MPSMatrixMultiplication* gemm_op =
-        [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                           transposeLeft:(BOOL)transpose_a
-                                          transposeRight:(BOOL)transpose_b
-                                             resultRows:(NSUInteger)m
-                                          resultColumns:(NSUInteger)n
-                                        interiorColumns:(NSUInteger)k
-                                                  alpha:(double)alpha
-                                                   beta:(double)beta];
-    gemm_op.batchSize = (NSUInteger)batch_size;
-    gemm_op.batchStart = 0;
+        get_cached_mps_gemm(transpose_a, transpose_b,
+                            (NSUInteger)m, (NSUInteger)n, (NSUInteger)k,
+                            (double)alpha, (double)beta,
+                            (NSUInteger)batch_size);
 
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
     [matA release];
     [matB release];
     [matC release];
-    [gemm_op release];
   }
 
   // GPU unpack: copy rows from padded tmp_c back to tightly-packed C.

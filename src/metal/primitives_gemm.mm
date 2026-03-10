@@ -1073,6 +1073,10 @@ static void dispatch_mps_gemm_batched_padded(
   if (final_mb_a % final_rb_a != 0 || final_mb_a < rows_a * final_rb_a ||
       final_mb_b % final_rb_b != 0 || final_mb_b < rows_b * final_rb_b ||
       final_mb_c % final_rb_c != 0 || final_mb_c < (NSUInteger)m * final_rb_c) {
+    // Release temp buffers before fallback (ARC is off — must not leak).
+    if (tmp_a) [tmp_a release];
+    if (tmp_b) [tmp_b release];
+    if (tmp_c) [tmp_c release];
     // Fallback: per-element MPS for safety.
     for (ctranslate2::dim_t i = 0; i < batch_size; ++i)
       dispatch_mps_gemm<T>(transpose_a, transpose_b, m, n, k,

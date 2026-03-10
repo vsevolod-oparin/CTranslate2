@@ -87,6 +87,9 @@ namespace ctranslate2 {
   void primitives<Device::METAL>::indexed_fill(T* x, T a,
                                                 const int32_t* indices,
                                                 dim_t num_indices) {
+    if (num_indices <= 0)
+      return;
+
     // M11.28: GPU scatter kernel.  protect_buffer defers index buffer
     // recycling until the next commit_and_wait().
     //

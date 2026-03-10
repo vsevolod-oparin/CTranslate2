@@ -163,11 +163,17 @@ namespace ctranslate2 {
       }
 
       void clear_cache() override {
+        // Flush any in-flight GPU work so _pending_free buffers are no longer
+        // referenced by uncommitted command buffers.
+        metal::commit_and_wait();
+
         std::lock_guard<std::mutex> lock(_mutex);
         for (auto& [sz, bufs] : _pool)
           for (id<MTLBuffer> buf : bufs)
             [buf release];
         _pool.clear();
+        // After commit_and_wait(), pending_free buffers have already been
+        // flushed to pool by flush_pending_frees().  Clear any stragglers.
         for (auto& entry : _pending_free)
           [entry.buffer release];
         _pending_free.clear();

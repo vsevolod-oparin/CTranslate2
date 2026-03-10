@@ -97,6 +97,10 @@ struct MpsGemmKeyHash {
 // per translator for GPU work, so concurrent encode on the same object does
 // not occur.  A thread_local cache was tested but adds ~90ms overhead per
 // inference due to TLS initialization costs — not worth it for a latent issue.
+
+static std::unordered_map<MpsGemmKey, MPSMatrixMultiplication*, MpsGemmKeyHash> g_mps_gemm_cache;
+static std::mutex g_mps_gemm_mutex;
+
 static MPSMatrixMultiplication* get_cached_mps_gemm(
     bool transpose_a, bool transpose_b,
     NSUInteger m, NSUInteger n, NSUInteger k,
@@ -109,12 +113,9 @@ static MPSMatrixMultiplication* get_cached_mps_gemm(
   MpsGemmKey key{transpose_a, transpose_b, m, n, k,
                  alpha_bits, beta_bits, batch_size};
 
-  static std::unordered_map<MpsGemmKey, MPSMatrixMultiplication*, MpsGemmKeyHash> cache;
-  static std::mutex mtx;
-
-  std::lock_guard<std::mutex> lk(mtx);
-  auto it = cache.find(key);
-  if (it != cache.end()) {
+  std::lock_guard<std::mutex> lk(g_mps_gemm_mutex);
+  auto it = g_mps_gemm_cache.find(key);
+  if (it != g_mps_gemm_cache.end()) {
     return it->second;
   }
 
@@ -132,8 +133,17 @@ static MPSMatrixMultiplication* get_cached_mps_gemm(
     op.batchSize = batch_size;
     op.batchStart = 0;
   }
-  cache[key] = op;  // retained by cache, never released (process-lifetime)
+  g_mps_gemm_cache[key] = op;
   return op;
+}
+
+// Release all cached MPSMatrixMultiplication objects and clear the cache.
+// Called from MetalAllocator::clear_cache() via metal::clear_gemm_cache().
+static void clear_mps_gemm_cache() {
+  std::lock_guard<std::mutex> lk(g_mps_gemm_mutex);
+  for (auto& [key, op] : g_mps_gemm_cache)
+    [op release];
+  g_mps_gemm_cache.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1447,5 +1457,11 @@ namespace ctranslate2 {
       bool, bool, dim_t, dim_t, dim_t,
       float, const int8_t*, dim_t, dim_t, const int8_t*, dim_t, dim_t,
       float, int32_t*, dim_t, dim_t, dim_t);
+
+  namespace metal {
+    void clear_gemm_cache() {
+      clear_mps_gemm_cache();
+    }
+  }  // namespace metal
 
 }  // namespace ctranslate2

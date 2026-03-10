@@ -93,17 +93,19 @@ namespace ctranslate2 {
     // M11.28: GPU scatter kernel.  protect_buffer defers index buffer
     // recycling until the next commit_and_wait().
     //
-    // Pre-sync policy:
-    //   float16: SKIP — encode-only.  MPS GEMM and indexed_fill are in the
-    //            same command buffer; Metal guarantees in-order execution.
-    //            Verified correct across all f16 tests.
-    //   float32: REQUIRED — without the pre-sync, whisper-base f32 produces
-    //            garbage output.  Root cause unclear (possible MPS driver
-    //            ordering issue with f32 GEMMs).  See M11.25 report.
+    // Pre-sync: flush all pending GPU work before encoding the scatter.
+    // Required because:
+    //   - The x[] buffer may have been written by a prior encode-only GPU op
+    //     (e.g. MPS GEMM for logits) that used commit_command_buffer() internally
+    //     to split row-copy and GEMM into separate command buffers.
+    //   - Metal command queues are concurrent by default — CBs from the same
+    //     queue CAN execute concurrently.  Without a sync, indexed_fill could
+    //     race with an in-flight GEMM writing to x[].
+    //   - Verified: f32 produces garbage without this sync (M11.25).
+    //     f16 appeared safe only because m=1 goes through custom GEMV (no CB
+    //     split), but this is fragile and not guaranteed for all code paths.
     metal::protect_buffer(indices);
-    if constexpr (!std::is_same_v<T, ctranslate2::float16_t>) {
-      CT2_COMMIT_AND_WAIT();
-    }
+    CT2_COMMIT_AND_WAIT();
 
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "indexed_fill_%s",

@@ -9,12 +9,12 @@
 
 ## Summary
 
-| Severity | Count | Description |
-|----------|------:|-------------|
-| **BUG (P0)** | 1 | Missing `protect_buffer` for `previous_ids` in `RepetitionPenalty::apply()` |
-| **BUG (P1)** | 1 | F16 `indexed_fill` pre-sync skip has unclear root cause — fragile |
-| **WEAKNESS (P2)** | 3 | MPS cache unbounded growth; OPT-1 regression for Metal-resident features; `clear_cache()` ordering |
-| **MISSING TESTS** | 5 | `buffer_for_ptr` O(log N), `protect_buffer`, GEMM cache, `indexed_fill` f16 encode-only, `sampling.cc` batched memcpy |
+| Severity | Count | Status |
+|----------|------:|--------|
+| **BUG (P0)** | 1 | **FIXED** — `protect_buffer(previous_ids)` added in `decoding_utils.cc` |
+| **BUG (P1)** | 1 | **FIXED** — `indexed_fill` now always syncs (removed f16 conditional skip) |
+| **WEAKNESS (P2)** | 3 | **FIXED** — GEMM cache clearable via `clear_gemm_cache()`; OPT-1 documented; `clear_cache()` documented |
+| **MISSING TESTS** | 5 | **4/5 DONE** — 43 tests pass in `m11_review_test.mm` (incl. bf16); sampling.cc test deferred (requires full build) |
 
 ---
 

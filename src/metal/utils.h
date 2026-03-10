@@ -55,6 +55,10 @@ namespace ctranslate2 {
     void protect_buffer_by_base(void* base_ptr);
     void flush_pending_frees();
 
+    // Release all cached MPSMatrixMultiplication objects (MPS GEMM cache).
+    // Called from MetalAllocator::clear_cache() to prevent unbounded growth.
+    void clear_gemm_cache();
+
     // Allocator memory stats (bytes).
     size_t pool_bytes();   // Cached but unused (reclaimable via clear_cache).
     size_t live_bytes();   // Currently in use by StorageView/tensors.

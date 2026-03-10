@@ -669,6 +669,11 @@ namespace ctranslate2 {
         // the source data remains valid. For Metal, this avoids flushing pending
         // GPU work via commit_and_wait() inside sync_copy(). For CPU features,
         // synchronize_stream(CPU) was already a no-op.
+        //
+        // Assumption: features are CPU-resident. If Metal-resident features with
+        // pending GPU writes were passed, the copy constructor's memcpy would read
+        // stale data (no GPU sync in primitives<METAL>::copy). This is safe for all
+        // current callers (Python/faster_whisper always pass CPU features).
         [features = StorageView(features), to_cpu](WhisperReplica& replica) mutable {
           return replica.encode(std::move(features), to_cpu);
         });

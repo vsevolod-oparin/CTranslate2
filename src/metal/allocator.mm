@@ -170,7 +170,12 @@ namespace ctranslate2 {
       void clear_cache() override {
         // Flush any in-flight GPU work so _pending_free buffers are no longer
         // referenced by uncommitted command buffers.
+        // Note: clear_cache() is NOT thread-safe.  Callers (ReplicaPool::clear_cache,
+        // unload_model) must ensure no concurrent GPU work or allocations.
         metal::commit_and_wait();
+
+        // Release cached MPS GEMM objects (WEAK-1: prevents unbounded growth).
+        metal::clear_gemm_cache();
 
         std::lock_guard<std::mutex> lock(_mutex);
         for (auto& [sz, bufs] : _pool)

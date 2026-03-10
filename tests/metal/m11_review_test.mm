@@ -33,6 +33,7 @@
 #include "metal/utils.h"
 
 typedef ctranslate2::float16_t ct2_f16;
+typedef ctranslate2::bfloat16_t ct2_bf16;
 using namespace ctranslate2;
 
 static int passed = 0;
@@ -302,6 +303,39 @@ static void test_indexed_fill_zero() {
 }
 
 
+// bf16 indexed_fill (verify pre-sync fires for bfloat16 too)
+static void test_indexed_fill_bf16() {
+  std::printf("\n--- TEST-3e: indexed_fill bfloat16 ---\n");
+
+  // Check BF16 GPU support at runtime.
+  id<MTLDevice> dev = metal::get_metal_device();
+  if (![dev supportsFamily:MTLGPUFamilyApple9]) {
+    std::printf("  SKIP  bfloat16 not supported on this GPU\n");
+    return;
+  }
+
+  const dim_t N = 16;
+  auto* x = metal_alloc<ct2_bf16>(N);
+  auto* indices = metal_alloc<int32_t>(3);
+
+  for (dim_t i = 0; i < N; ++i) x[i] = ct2_bf16(0.0f);
+  indices[0] = 0;
+  indices[1] = 8;
+  indices[2] = 15;
+
+  primitives<Device::METAL>::indexed_fill(x, ct2_bf16(5.0f), indices, 3);
+  metal::commit_and_wait();
+
+  CHECK("bf16 indexed_fill: x[0] == 5.0",  std::fabs(float(x[0]) - 5.0f) < 0.1f);
+  CHECK("bf16 indexed_fill: x[8] == 5.0",  std::fabs(float(x[8]) - 5.0f) < 0.1f);
+  CHECK("bf16 indexed_fill: x[15] == 5.0", std::fabs(float(x[15]) - 5.0f) < 0.1f);
+  CHECK("bf16 indexed_fill: x[1] untouched", std::fabs(float(x[1])) < 0.1f);
+
+  metal_free(x);
+  metal_free(indices);
+}
+
+
 // =========================================================================
 // TEST-4: MPS GEMM cache correctness
 // =========================================================================
@@ -489,6 +523,7 @@ int main() {
   test_indexed_fill_f16_chain();
   test_indexed_fill_f32();
   test_indexed_fill_zero();
+  test_indexed_fill_bf16();
   test_gemm_cache();
   test_gemm_cache_f16();
   test_protect_buffer_race();

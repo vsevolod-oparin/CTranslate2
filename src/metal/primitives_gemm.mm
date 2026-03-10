@@ -89,6 +89,14 @@ struct MpsGemmKeyHash {
 
 // Returns a cached (or newly created) MPSMatrixMultiplication.
 // The returned pointer is owned by the cache — caller must NOT release it.
+//
+// Thread safety: the cache uses a global mutex for lookup/insert, but the
+// returned MPSMatrixMultiplication* is used WITHOUT a lock for encoding.
+// Apple documents that MPSKernel subclasses are NOT thread-safe for
+// concurrent encodeToCommandBuffer: calls.  CTranslate2 runs single-threaded
+// per translator for GPU work, so concurrent encode on the same object does
+// not occur.  A thread_local cache was tested but adds ~90ms overhead per
+// inference due to TLS initialization costs — not worth it for a latent issue.
 static MPSMatrixMultiplication* get_cached_mps_gemm(
     bool transpose_a, bool transpose_b,
     NSUInteger m, NSUInteger n, NSUInteger k,
@@ -124,7 +132,7 @@ static MPSMatrixMultiplication* get_cached_mps_gemm(
     op.batchSize = batch_size;
     op.batchStart = 0;
   }
-  cache[key] = op;  // retained by cache, never released
+  cache[key] = op;  // retained by cache, never released (process-lifetime)
   return op;
 }
 
@@ -1219,69 +1227,6 @@ namespace ctranslate2 {
              ((NSUInteger)ldc * elem_sz < mps_c);
     };
 
-    // Helper: single-sync CPU cblas loop for a batch of tiny padded float32 GEMMs.
-    auto batch_cpu_gemm_f32 = [&](const float* ba, const float* bb, float* bc) {
-      CT2_COMMIT_AND_WAIT();
-      for (dim_t i = 0; i < batch_size; ++i)
-        cblas_sgemm(CblasRowMajor,
-                    transpose_a ? CblasTrans : CblasNoTrans,
-                    transpose_b ? CblasTrans : CblasNoTrans,
-                    (int)m, (int)n, (int)k,
-                    alpha,
-                    ba + i * stridea, (int)lda,
-                    bb + i * strideb, (int)ldb,
-                    beta,
-                    bc + i * stridec, (int)ldc);
-    };
-
-    // Helper: single-sync CPU cblas loop for a batch of tiny padded float16 GEMMs.
-    // Widens to float32, runs cblas_sgemm, narrows back.
-    auto batch_cpu_gemm_f16 = [&](const float16_t* ba, const float16_t* bb, float16_t* bc) {
-      CT2_COMMIT_AND_WAIT();
-      const dim_t rows_a = transpose_a ? k : m;
-      const dim_t cols_a = transpose_a ? m : k;
-      const dim_t rows_b = transpose_b ? n : k;
-      const dim_t cols_b = transpose_b ? k : n;
-      const dim_t elems_a = rows_a * cols_a;
-      const dim_t elems_b = rows_b * cols_b;
-      const dim_t elems_c = m * n;
-      // Stack-allocate for small buffers, heap for large.
-      constexpr dim_t kStackMax = 4096;
-      float sa[kStackMax], sb[kStackMax], sc[kStackMax];
-      float* fa = (elems_a <= kStackMax) ? sa : new float[elems_a];
-      float* fb = (elems_b <= kStackMax) ? sb : new float[elems_b];
-      float* fc = (elems_c <= kStackMax) ? sc : new float[elems_c];
-      for (dim_t i = 0; i < batch_size; ++i) {
-        const auto* ai = ba + i * stridea;
-        const auto* bi = bb + i * strideb;
-        auto* ci = bc + i * stridec;
-        // Strided widen: lda/ldb may differ from cols when input is non-contiguous.
-        for (dim_t r = 0; r < rows_a; ++r)
-          for (dim_t c = 0; c < cols_a; ++c)
-            fa[r * cols_a + c] = static_cast<float>(ai[r * lda + c]);
-        for (dim_t r = 0; r < rows_b; ++r)
-          for (dim_t c = 0; c < cols_b; ++c)
-            fb[r * cols_b + c] = static_cast<float>(bi[r * ldb + c]);
-        if (beta != 0.0f)
-          for (dim_t r = 0; r < m; ++r)
-            for (dim_t c = 0; c < n; ++c)
-              fc[r * n + c] = static_cast<float>(ci[r * ldc + c]);
-        // cblas uses the contiguous widened layout (lda=cols_a, ldb=cols_b, ldc=n).
-        cblas_sgemm(CblasRowMajor,
-                    transpose_a ? CblasTrans : CblasNoTrans,
-                    transpose_b ? CblasTrans : CblasNoTrans,
-                    (int)m, (int)n, (int)k,
-                    alpha, fa, (int)cols_a, fb, (int)cols_b,
-                    beta, fc, (int)n);
-        for (dim_t r = 0; r < m; ++r)
-          for (dim_t c = 0; c < n; ++c)
-            ci[r * ldc + c] = static_cast<float16_t>(fc[r * n + c]);
-      }
-      if (fa != sa) delete[] fa;
-      if (fb != sb) delete[] fb;
-      if (fc != sc) delete[] fc;
-    };
-
     if constexpr (std::is_same_v<In, float> && std::is_same_v<Out, float>) {
       if (batch_size > 0 && needs_padding()) {
         // M11.26: Always route padded f32 GEMMs through MPS (encode-only,
@@ -1357,10 +1302,13 @@ namespace ctranslate2 {
                             b + i * strideb, ldb,
                             c + i * stridec, ldc);
       // Apply alpha scaling post-GEMM if needed.
+      // Scale per batch element to respect stridec (may differ from m*n).
       if (alpha != 1.0f) {
-        const dim_t total = batch_size * m * n;
-        primitives<Device::METAL>::mul(
-            static_cast<bfloat16_t>(alpha), c, c, total);
+        const dim_t elems_per_batch = m * n;
+        for (dim_t i = 0; i < batch_size; ++i)
+          primitives<Device::METAL>::mul(
+              static_cast<bfloat16_t>(alpha),
+              c + i * stridec, c + i * stridec, elems_per_batch);
       }
     } else if constexpr (std::is_same_v<In, int8_t> && std::is_same_v<Out, int32_t>) {
       if (batch_size == 0 || m == 0 || n == 0 || k == 0) return;

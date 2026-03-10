@@ -87,12 +87,20 @@ namespace ctranslate2 {
   void primitives<Device::METAL>::indexed_fill(T* x, T a,
                                                 const int32_t* indices,
                                                 dim_t num_indices) {
-    // M11.25: GPU scatter kernel.  protect_buffer defers index buffer
-    // recycling until commit_and_wait().  The commit before ensures prior
-    // GPU writes to x are visible AND CPU writes to the indices buffer
-    // are flushed to shared memory before the GPU kernel executes.
+    // M11.28: GPU scatter kernel.  protect_buffer defers index buffer
+    // recycling until the next commit_and_wait().
+    //
+    // Pre-sync policy:
+    //   float16: SKIP — encode-only.  MPS GEMM and indexed_fill are in the
+    //            same command buffer; Metal guarantees in-order execution.
+    //            Verified correct across all f16 tests.
+    //   float32: REQUIRED — without the pre-sync, whisper-base f32 produces
+    //            garbage output.  Root cause unclear (possible MPS driver
+    //            ordering issue with f32 GEMMs).  See M11.25 report.
     metal::protect_buffer(indices);
-    CT2_COMMIT_AND_WAIT();
+    if constexpr (!std::is_same_v<T, ctranslate2::float16_t>) {
+      CT2_COMMIT_AND_WAIT();
+    }
 
     char kname[kKernelNameBufSize];
     std::snprintf(kname, sizeof(kname), "indexed_fill_%s",

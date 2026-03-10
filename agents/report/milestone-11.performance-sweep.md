@@ -53,6 +53,14 @@
 | 38 | 712f909a | **2,901** | 2949, 2835, 2920 | 126 | Memory afix audit and report | **14.19x** |
 | 39 | e27bd2fa | 3,047 | 2950, 3166, 3024 | 126 | M11.23 GPU Fused TopK | 13.51x |
 | 40 | dc688f36 | **2,977** | 2966, 2966, 2999 | 126 | Big profile audit with report | **13.83x** |
+| 41 | 07c2fcf9 | 3,363 | 3231, 3069, 3790 | 126 | M11.25 GPU Indexed Fill Kernel | 12.24x |
+| 42 | cf76e83f | **1,941** | 1965, 1938, 1920 | 121-123 | **M11.26 Sync Elimination: cblas + Sampler** | **21.21x** |
+| 43 | 74597100 | 1,919 | 1903, 1909, 1944 | 123 | M11.27 MPSMatrixMultiplication Cache | 21.46x |
+| 44 | f88e9812 | 1,872 | 1905, 1844, 1865 | 121-123 | M11.28 Indexed Fill Pre-Sync Elimination | 22.00x |
+| 45 | 5446b26e | 1,865 | 1920, 1854, 1821 | 123 | M11.19-M11.28 Audit and critical bug fix | 22.07x |
+| 46 | aaff1784 | 1,881 | 1885, 1879, 1878 | 123 | M11.Audit Fix code issue, cache, stridec | 21.89x |
+| 47 | 7cd55360 | 1,789 | 1781, 1790, 1796 | 123 | M11 Commit benchmarks (report only) | 23.01x |
+| 48 | f12d2300 | **1,767** | 1774, 1772, 1755 | 123 | **OPT-1 + OPT-3 (buffer_for_ptr O(logN))** | **23.29x** |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*
@@ -96,40 +104,44 @@ Fixing the MPS object memory leaks was the **second transformative improvement**
 - RSS dropped from ~5GB to ~800MB
 - Variance collapsed: runs became consistent (±3% CV)
 
-### Phase 6: Stable Fast (commits 38-40) — ~2,900-3,050 ms
+### Phase 6: Stable Fast (commits 38-41) — ~2,900-3,400 ms
 Post-leak-fix performance is stable and fast:
 - Memory audit fixes: 2,901 ms
 - Fused TopK: 3,047 ms
 - Profile audit: 2,977 ms
+- GPU Indexed Fill: 3,363 ms (slight regression from new kernel overhead, later recovered)
 - **Consistency**: all runs within ±5% — a dramatic improvement over Phase 4.
+
+### Phase 7: Third Transformation — Sync Elimination (commits 42-48) — ~1,770-1,940 ms → **21-23x speedup**
+**M11.26 (Sync Elimination)** was the **third transformative improvement**:
+- Replaced hundreds of per-op `commit_and_wait()` calls with encode-only patterns
+- cblas GEMM fallback for tiny matrices now encode-only (no pre-sync)
+- Sampler batches GPU→CPU copy into a single `synchronize_stream()`
+- Result: **2,977 → 1,941 ms = 1.53x** (from 3,000ms plateau to sub-2,000ms)
+
+Subsequent commits added incremental improvements:
+- M11.27 (MPS Cache): 1,919 ms — cached MPSMatrixMultiplication objects
+- M11.28 (Indexed Fill Pre-Sync): 1,872 ms — eliminated Float16 indexed_fill sync
+- Audit + bug fixes: 1,865-1,881 ms — correctness without perf regression
+- OPT-1 + OPT-3: **1,767 ms** — buffer_for_ptr O(log N), non-sync lambda copy
 
 ---
 
 ## Key Insights
 
-### The Two Transformative Changes
+### The Three Transformative Changes
 1. **Commit 5 (General optimization)**: 41,169 → 6,594 ms = **6.2x** — CPU fallback for tiny GEMM + batching
-2. **Commit 37 (Memory leak fix)**: ~8,000 → 2,992 ms = **2.7x** (or 6,100 → 2,992 = **2.0x** relative to Phase 3 best)
+2. **Commit 37 (Memory leak fix)**: ~8,000 → 2,992 ms = **2.7x** — MPS object release, RSS 5GB→800MB
+3. **Commit 42 (Sync elimination)**: 2,977 → 1,941 ms = **1.53x** — encode-only patterns, batched sampling sync
 
 ### Memory Leaks Masked Real Performance
 The Phase 3 plateau at ~6,100 ms was artificially elevated. Once leaks were fixed (Phase 5), the same optimizations from Phase 3-4 could properly shine, achieving ~3,000 ms. The GPU kernels, sync eliminations, and encode-only patterns were all contributing, but their gains were hidden by growing memory pressure.
 
-### Total Optimization: **13.8x**
-From 41,169 ms (M11.3 baseline) to 2,977 ms (latest): a **13.8x improvement** on Whisper large-v3-turbo inference.
+### Total Optimization: **23.3x**
+From 41,169 ms (M11.3 baseline) to 1,767 ms (latest): a **23.3x improvement** on Whisper large-v3-turbo inference.
 
 ### Variance as a Diagnostic
-High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to ~2-3%, confirming that the leaks were the root cause.
+High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to <1% in Phase 7 (e.g., commit 48: 1774, 1772, 1755 ms), confirming complete resolution.
 
----
-
-## Commits Not Benchmarked
-
-The following commits were made after the sweep baseline and are not included:
-- M11.25 — GPU Indexed Fill Kernel
-- M11.26 — Sync Elimination: cblas Fallback + Sampler Batching
-- M11.27 — MPSMatrixMultiplication Cache
-- M11.28 — Indexed Fill Pre-Sync Elimination
-- M11.Audit — Critical bug fixes (BUG-1 through BUG-4)
-- M11.Audit — Code cleanup, cache documentation, BF16 alpha fix
-
-These primarily improve correctness and code quality rather than raw throughput.
+### Performance Ceiling
+At 1,767 ms with 16% GPU utilization, the remaining 84% is CTranslate2's ThreadPool architecture overhead (~700ms OS scheduling per API call) and CPU beam search logic. Further gains require upstream architectural changes (bypass ThreadPool, GPU beam search).

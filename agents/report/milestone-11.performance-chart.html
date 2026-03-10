@@ -172,6 +172,14 @@ const raw = [
   {i:38, hash:"712f909a", msg:"Memory afix audit and report", times:[2948.5,2835.4,2920.2], tokens:[126,126,126], mean:2901.4},
   {i:39, hash:"e27bd2fa", msg:"M11.23 GPU Fused TopK", times:[2949.8,3166.2,3024.3], tokens:[126,126,126], mean:3046.8},
   {i:40, hash:"dc688f36", msg:"Big profile audit with report", times:[2965.7,2965.5,2999.2], tokens:[126,126,126], mean:2976.8},
+  {i:41, hash:"07c2fcf9", msg:"M11.25 GPU Indexed Fill Kernel", times:[3230.7,3069.4,3790.0], tokens:[126,126,126], mean:3363.4},
+  {i:42, hash:"cf76e83f", msg:"M11.26 Sync Elimination: cblas + Sampler", times:[1964.8,1937.9,1920.0], tokens:[121,123,121], mean:1940.9},
+  {i:43, hash:"74597100", msg:"M11.27 MPSMatrixMultiplication Cache", times:[1902.7,1908.9,1943.8], tokens:[123,123,123], mean:1918.5},
+  {i:44, hash:"f88e9812", msg:"M11.28 Indexed Fill Pre-Sync Elimination", times:[1905.4,1844.2,1865.4], tokens:[121,123,121], mean:1871.7},
+  {i:45, hash:"5446b26e", msg:"M11.19-M11.28 Audit and critical bug fix", times:[1920.3,1853.8,1820.6], tokens:[123,123,123], mean:1864.9},
+  {i:46, hash:"aaff1784", msg:"M11.Audit Fix code issue, cache, stridec", times:[1884.8,1878.5,1878.3], tokens:[123,123,123], mean:1880.5},
+  {i:47, hash:"7cd55360", msg:"M11 Commit benchmarks (report only)", times:[1780.9,1790.2,1796.1], tokens:[123,123,123], mean:1789.1},
+  {i:48, hash:"f12d2300", msg:"OPT-1 + OPT-3 (buffer_for_ptr O(logN))", times:[1774.3,1772.0,1754.7], tokens:[123,123,123], mean:1767.0},
 ];
 
 const data = raw.filter(d => d.times);
@@ -181,9 +189,9 @@ const baseline = 41169.4;
 const summaryEl = document.getElementById("summary");
 const cards = [
   {value: "41.2s", label: "Baseline (M11.3)", cls: "warn"},
-  {value: "2.98s", label: "Best mean (commit 40)", cls: ""},
-  {value: "13.8×", label: "Total speedup", cls: "highlight"},
-  {value: "38", label: "Commits benchmarked", cls: ""},
+  {value: "1.77s", label: "Best mean (commit 48)", cls: ""},
+  {value: "23.3×", label: "Total speedup", cls: "highlight"},
+  {value: "46", label: "Commits benchmarked", cls: ""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");
@@ -203,7 +211,7 @@ const svg = d3.select("#chart").append("svg")
   .attr("width", width).attr("height", height);
 const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-const x = d3.scaleLinear().domain([3, 40]).range([0, innerW]);
+const x = d3.scaleLinear().domain([3, 48]).range([0, innerW]);
 const y = d3.scaleLinear().domain([0, 45000]).range([innerH, 0]);
 
 // Grid
@@ -216,7 +224,8 @@ const phases = [
   {x0:4.5, x1:14.5, color:"#151a18", label:"Optimization"},
   {x0:14.5, x1:16.5, color:"#1a1515", label:"⚠ Bug"},
   {x0:16.5, x1:36.5, color:"#1a1818", label:"Memory Leak Era"},
-  {x0:36.5, x1:40.5, color:"#151a18", label:"Stable Fast"},
+  {x0:36.5, x1:41.5, color:"#151a18", label:"Stable Fast"},
+  {x0:41.5, x1:48.5, color:"#151520", label:"Sync Elimination"},
 ];
 phases.forEach(p => {
   g.append("rect")
@@ -292,6 +301,7 @@ g.selectAll(".mean-dot").data(data).enter().append("circle")
 const annotations = [
   {i:5, label:"6.2× CPU GEMM fallback", dy:-14},
   {i:37, label:"13.8× Memory leak fix", dy:-14},
+  {i:42, label:"21.2× Sync elimination", dy:-14},
 ];
 annotations.forEach(a => {
   const d = data.find(d => d.i === a.i);
@@ -306,7 +316,7 @@ const svg2 = d3.select("#speedup-chart").append("svg")
 const g2 = svg2.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 const innerH2 = 280 - margin.top - 60;
 
-const y2 = d3.scaleLinear().domain([0, 16]).range([innerH2, 0]);
+const y2 = d3.scaleLinear().domain([0, 26]).range([innerH2, 0]);
 
 g2.append("g").attr("class","grid")
   .call(d3.axisLeft(y2).ticks(8).tickSize(-innerW).tickFormat(""));

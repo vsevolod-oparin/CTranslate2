@@ -66,8 +66,10 @@ namespace ctranslate2 {
     // previous_scores but apply() frees it on return.  Without protection the
     // buffer returns to the pool and may be overwritten before the GPU executes.
     // (Same class of bug as M10.1 Gather use-after-clone.)
-    if (device == Device::METAL)
+    if (device == Device::METAL) {
       metal::protect_buffer(previous_scores.buffer());
+      metal::protect_buffer(previous_ids.buffer());
+    }
 #endif
 
     DEVICE_AND_TYPE_DISPATCH(device, dtype,

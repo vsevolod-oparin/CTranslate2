@@ -103,6 +103,8 @@ namespace ctranslate2 {
       }
 
       // Ensure all operations are finished before returning the output.
+      // Note: For the generate() path, maybe_encode() is used instead, which
+      // skips this sync since decode on the same device guarantees ordering.
       synchronize_stream(device);
 
       return encoder_output;
@@ -663,7 +665,11 @@ namespace ctranslate2 {
 
     std::future<StorageView> Whisper::encode(const StorageView& features, const bool to_cpu) {
       return post<StorageView>(
-        [features = features.sync_copy(), to_cpu](WhisperReplica& replica) mutable {
+        // OPT-1: Use non-synchronous copy. The caller blocks on future.get(), so
+        // the source data remains valid. For Metal, this avoids flushing pending
+        // GPU work via commit_and_wait() inside sync_copy(). For CPU features,
+        // synchronize_stream(CPU) was already a no-op.
+        [features = StorageView(features), to_cpu](WhisperReplica& replica) mutable {
           return replica.encode(std::move(features), to_cpu);
         });
     }
@@ -674,7 +680,7 @@ namespace ctranslate2 {
                       WhisperOptions options) {
       const size_t batch_size = features.dim(0);
       return post_batch<WhisperGenerationResult>(
-        [features = features.sync_copy(),
+        [features = StorageView(features),
          prompts = std::move(prompts),
          options = std::move(options)]
         (WhisperReplica& replica) mutable {
@@ -689,7 +695,7 @@ namespace ctranslate2 {
                       WhisperOptions options) {
       const size_t batch_size = features.dim(0);
       return post_batch<WhisperGenerationResult>(
-        [features = features.sync_copy(),
+        [features = StorageView(features),
          prompts = std::move(prompts),
          options = std::move(options)]
         (WhisperReplica& replica) mutable {
@@ -702,7 +708,7 @@ namespace ctranslate2 {
     Whisper::detect_language(const StorageView& features) {
       const size_t batch_size = features.dim(0);
       return post_batch<std::vector<std::pair<std::string, float>>>(
-        [features = features.sync_copy()](WhisperReplica& replica) mutable {
+        [features = StorageView(features)](WhisperReplica& replica) mutable {
           return replica.detect_language(std::move(features));
         },
         batch_size);
@@ -716,7 +722,7 @@ namespace ctranslate2 {
                    dim_t median_filter_width) {
       const size_t batch_size = features.dim(0);
       return post_batch<WhisperAlignmentResult>(
-        [features = features.sync_copy(),
+        [features = StorageView(features),
          start_sequence = std::move(start_sequence),
          text_tokens = std::move(text_tokens),
          num_frames = std::move(num_frames),

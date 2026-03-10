@@ -1,6 +1,7 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <map>
 #include <mutex>
 #include <stdexcept>
 #include <string>
@@ -52,18 +53,21 @@ namespace ctranslate2 {
       // byte offset of ptr within that buffer.  Needed by compute encoders
       // (which take id<MTLBuffer> + offset, not raw void*).
       //
-      // Iterates _live to find the enclosing allocation.  O(n) where n is
-      // the number of live allocations — typically a few dozen in inference.
+      // Uses a sorted map (std::map) with upper_bound for O(log n) lookup
+      // instead of O(n) linear scan.  Called for every setBuffer: dispatch.
       id<MTLBuffer> buffer_for_ptr(const void* ptr, NSUInteger* offset_out) {
         const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
         std::lock_guard<std::mutex> lock(_mutex);
-        for (auto& [base, entry] : _live) {
-          const uint8_t* base_ptr = static_cast<const uint8_t*>(base);
-          if (byte_ptr >= base_ptr && byte_ptr < base_ptr + entry.requested_size) {
+
+        // Find the first entry with base > byte_ptr, then step back one.
+        auto it = _live.upper_bound(byte_ptr);
+        if (it != _live.begin()) {
+          --it;
+          if (byte_ptr < it->first + it->second.requested_size) {
             if (offset_out) {
-              *offset_out = static_cast<NSUInteger>(byte_ptr - base_ptr);
+              *offset_out = static_cast<NSUInteger>(byte_ptr - it->first);
             }
-            return entry.buffer;
+            return it->second.buffer;
           }
         }
         throw std::runtime_error("Metal: pointer not in any live allocation");
@@ -78,7 +82,7 @@ namespace ctranslate2 {
         if (pool_it != _pool.end() && !pool_it->second.empty()) {
           id<MTLBuffer> buf = pool_it->second.back();
           pool_it->second.pop_back();
-          void* ptr = [buf contents];
+          uint8_t* ptr = static_cast<uint8_t*>([buf contents]);
           _live[ptr] = {size, buf};
           return ptr;
         }
@@ -92,7 +96,7 @@ namespace ctranslate2 {
               "Metal: failed to allocate MTLBuffer of size " + std::to_string(size));
         }
 
-        void* ptr = [buf contents];
+        uint8_t* ptr = static_cast<uint8_t*>([buf contents]);
         _live[ptr] = {size, buf};
         return ptr;
       }
@@ -103,7 +107,7 @@ namespace ctranslate2 {
         }
         std::lock_guard<std::mutex> lock(_mutex);
 
-        auto live_it = _live.find(ptr);
+        auto live_it = _live.find(static_cast<uint8_t*>(ptr));
         if (live_it == _live.end()) {
           throw std::runtime_error("Metal: attempt to free unknown pointer");
         }
@@ -127,26 +131,27 @@ namespace ctranslate2 {
       // Mark a live buffer as GPU-protected: its reclamation will be deferred
       // when free() is called, until after the next commit_and_wait().
       //
-      // O(n) scan version — finds the enclosing allocation for any sub-pointer.
+      // O(log n) via sorted map upper_bound.
       // Prefer protect_buffer_by_base() when the base pointer is already known.
       void protect_buffer(const void* ptr) {
         std::lock_guard<std::mutex> lock(_mutex);
         const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
-        for (auto& [base, entry] : _live) {
-          const uint8_t* base_ptr = static_cast<const uint8_t*>(base);
-          if (byte_ptr >= base_ptr && byte_ptr < base_ptr + entry.requested_size) {
-            entry.gpu_protected = true;
+        auto it = _live.upper_bound(byte_ptr);
+        if (it != _live.begin()) {
+          --it;
+          if (byte_ptr < it->first + it->second.requested_size) {
+            it->second.gpu_protected = true;
             return;
           }
         }
         // Not found — might already be freed or not from this allocator.
       }
 
-      // O(1) version — caller supplies the base pointer of the allocation
+      // O(log n) version — caller supplies the base pointer of the allocation
       // (e.g. from [MTLBuffer contents] after metal_buffer_for_ptr()).
       void protect_buffer_by_base(void* base_ptr) {
         std::lock_guard<std::mutex> lock(_mutex);
-        auto it = _live.find(base_ptr);
+        auto it = _live.find(static_cast<uint8_t*>(base_ptr));
         if (it != _live.end()) {
           it->second.gpu_protected = true;
         }
@@ -205,7 +210,7 @@ namespace ctranslate2 {
       };
 
       std::mutex                                               _mutex;
-      std::unordered_map<void*, LiveEntry>                     _live;
+      std::map<const uint8_t*, LiveEntry>                      _live;   // sorted for O(log n) range lookup
       std::unordered_map<size_t, std::vector<id<MTLBuffer>>>   _pool;
       std::vector<LiveEntry>                                   _pending_free;
     };

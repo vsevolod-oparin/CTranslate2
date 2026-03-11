@@ -514,8 +514,9 @@ static void sdpa_cpu(const T* q, const T* k, const T* v, T* output,
 
   for (ctranslate2::dim_t b = 0; b < batch_size; ++b) {
     const ctranslate2::dim_t kv_b = b / beam_size;  // K/V batch broadcasting
+    const ctranslate2::dim_t heads_per_kv = num_heads / num_heads_k;
     for (ctranslate2::dim_t h = 0; h < num_heads; ++h) {
-      const ctranslate2::dim_t hk = h % num_heads_k;
+      const ctranslate2::dim_t hk = h / heads_per_kv;
 
       const T* k_base = k + kv_b * kv_bstride + hk * head_dim;
       const T* v_base = v + kv_b * kv_bstride + hk * head_dim;
@@ -577,14 +578,14 @@ namespace ctranslate2 {
                     float scale, bool is_causal,
                     dim_t kv_batch_stride,
                     dim_t beam_size) {
-      // CPU fast-path for small SDPA: avoids MPS GEMM padding overhead.
-      // MPS GEMM with tiny matrices (cols ≤ 3) triggers commit_and_wait
-      // per head due to rowBytes padding — ~0.4ms × num_heads × num_layers.
-      // CPU SDPA for small sq*sk is orders of magnitude faster.
-      // Threshold: sq*sk ≤ 32 routes to CPU (covers decode sq=1 and
-      // short encoder prefill like sq=sk=3).
+      // CPU fast-path: avoids per-head MPS GEMM overhead.
+      // For decode (sq=1), CPU SDPA with float32 accumulation is ~100x
+      // faster than 32 per-head MPS GEMMs (each with alloc/encode overhead).
+      // The CT2_COMMIT_AND_WAIT cost (~0.4ms × 22 layers) is far less than
+      // the per-head GPU loop (32 × 22 × ~50µs GEMM overhead).
+      // Also covers short prefill (sq*sk ≤ 32).
       constexpr dim_t kCpuSdpaThresh = 32;
-      if (seqlen_q * seqlen_k <= kCpuSdpaThresh) {
+      if (seqlen_q == 1 || seqlen_q * seqlen_k <= kCpuSdpaThresh) {
         // Flush any pending GPU writes so CPU can read Q/K/V.
         CT2_COMMIT_AND_WAIT();
         sdpa_cpu<T>(q, k, v, output, batch_size, seqlen_q, seqlen_k,
@@ -601,8 +602,9 @@ namespace ctranslate2 {
 
       for (dim_t b = 0; b < batch_size; ++b) {
         const dim_t kv_b = b / beam_size;  // K/V batch broadcasting
+        const dim_t heads_per_kv = num_heads / num_heads_k;
         for (dim_t h = 0; h < num_heads; ++h) {
-          const dim_t hk = h % num_heads_k;
+          const dim_t hk = h / heads_per_kv;
 
           const T* q_row0 = q      + (b * seqlen_q * num_heads   + h ) * head_dim;
           const T* k_row0 = k      + kv_b * kv_bstride + hk * head_dim;

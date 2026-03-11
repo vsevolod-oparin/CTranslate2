@@ -187,51 +187,49 @@ namespace ctranslate2 {
           T*       v_cache = cached_values->data<T>();
           const T* v_new   = values.data<T>();
 
-          // M12.17: GPU decode RoPE — encode-only, no sync needed.
-          // Replaces the M6.3 CPU path (commit_and_wait + CPU RoPE + memcpy).
+          // M6.3 CPU RoPE path — flush GPU, apply RoPE on CPU, memcpy to cache.
+          // M12.17 GPU decode_rope_metal was reverted due to in-place WAR race
+          // condition: the MSL kernel reads partner elements (d±half_dim) while
+          // simultaneously overwriting them, causing non-deterministic output.
+          // CPU RoPE for 36 vectors × 64 elements is ~0.5 µs — negligible.
+
+          // Flush pending GPU writes (GEMM for Q/K/V) so CPU can read them.
+          metal::commit_and_wait();
+
           if (need_rope) {
-            if constexpr (std::is_same_v<T, float>
-                       || std::is_same_v<T, float16_t>
-                       || std::is_same_v<T, bfloat16_t>) {
-              const dim_t half_dim = rotary_cos->dim(1);
-              const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
-              const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
+            const dim_t half_dim = rotary_cos->dim(1);
+            const dim_t ndims    = half_dim * 2;
+            const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
+            const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
 
-              // Apply RoPE to Q: [batch_size * num_heads] vectors of [head_dim].
-              metal::decode_rope_metal<T>(
-                  q_ptr, cos_row, sin_row,
-                  batch_size * num_heads, head_dim, half_dim,
-                  rotary_interleave);
-
-              // Apply RoPE to new K: [batch_size * num_heads_k] vectors of [head_dim].
-              metal::decode_rope_metal<T>(
-                  k_new, cos_row, sin_row,
-                  batch_size * num_heads_k, head_dim, half_dim,
-                  rotary_interleave);
+            // Apply RoPE to Q: [batch_size, 1, num_heads, head_dim] → num_heads vectors.
+            for (dim_t b = 0; b < batch_size; ++b) {
+              for (dim_t h = 0; h < num_heads; ++h) {
+                T* qvec = q_ptr + (b * seqlen_q * num_heads + h) * head_dim;
+                apply_rope_half(qvec, cos_row, sin_row, ndims, head_dim, rotary_interleave);
+              }
             }
 
-            // Copy new K/V to cache via GPU blit (no sync needed).
+            // Apply RoPE to new K: [batch_size, seqlen_new, num_heads_k, head_dim].
+            for (dim_t b = 0; b < batch_size; ++b) {
+              for (dim_t h = 0; h < num_heads_k; ++h) {
+                T* kvec = k_new + (b * seqlen_new * num_heads_k + h) * head_dim;
+                apply_rope_half(kvec, cos_row, sin_row, ndims, head_dim, rotary_interleave);
+              }
+            }
+          }
+
+          // CPU memcpy — write new K/V into cache at position `offset`.
+          // Unified memory: GPU sees the writes without explicit copy.
+          {
             const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
             for (dim_t b = 0; b < batch_size; ++b) {
               T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
               T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
               const T* ks = k_new   +  b * seqlen_new * row_elements;
               const T* vs = v_new   +  b * seqlen_new * row_elements;
-              metal::blit_copy(ks, kd, row_bytes);
-              metal::blit_copy(vs, vd, row_bytes);
-            }
-          } else {
-            // No RoPE — use GPU blit copy, no sync needed.
-            // The blit executes after prior compute kernels (GEMM for K/V)
-            // within the same command buffer.
-            const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
-            for (dim_t b = 0; b < batch_size; ++b) {
-              T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
-              T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
-              const T* ks = k_new   +  b * seqlen_new * row_elements;
-              const T* vs = v_new   +  b * seqlen_new * row_elements;
-              metal::blit_copy(ks, kd, row_bytes);
-              metal::blit_copy(vs, vd, row_bytes);
+              std::memcpy(kd, ks, row_bytes);
+              std::memcpy(vd, vs, row_bytes);
             }
           }
 

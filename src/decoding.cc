@@ -1,7 +1,10 @@
 #include "ctranslate2/decoding.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <memory>
 #include <numeric>
 
@@ -9,6 +12,74 @@
 #include "dispatch.h"
 
 namespace ctranslate2 {
+
+  // -----------------------------------------------------------------------
+  // M12.4: Decode-loop profiling.
+  //
+  // Enabled by CT2_DECODE_PROFILE=1 environment variable.
+  // Zero overhead when disabled (single branch on a cached bool).
+  // Accumulates per-component wall time across all decode steps, then
+  // prints a summary when the search loop exits.
+  // -----------------------------------------------------------------------
+  static bool decode_profile_enabled() {
+    static const bool v = (std::getenv("CT2_DECODE_PROFILE") != nullptr);
+    return v;
+  }
+
+  using hrclock = std::chrono::high_resolution_clock;
+
+  struct DecodeProfiler {
+    bool enabled = false;
+    dim_t steps = 0;
+
+    // Accumulated microseconds per component.
+    double decoder_call_us    = 0;   // decoder(step, ids, state) → logits
+    double logits_process_us  = 0;   // disable_tokens + logits_processors + apply
+    double log_softmax_us     = 0;   // LogSoftMax + beam score accumulation
+    double sampler_us         = 0;   // sampler() — includes GPU sync
+    double beam_bookkeep_us   = 0;   // EOS check, hypothesis registration, finalize
+    double beam_gather_us     = 0;   // gather_beam_flat / batch_gather, keep_batches
+    double state_update_us    = 0;   // decoder.update_state() — KV cache reorder
+    double step_overhead_us   = 0;   // everything else (reshape, flatten, misc)
+    double total_loop_us      = 0;   // full loop wall time
+
+    hrclock::time_point t0;
+
+    void tick() { t0 = hrclock::now(); }
+    double tock_us() {
+      auto now = hrclock::now();
+      return std::chrono::duration<double, std::micro>(now - t0).count();
+    }
+
+    void report(const char* search_type) const {
+      if (!enabled) return;
+      auto pct = [&](double v) { return total_loop_us > 0 ? v / total_loop_us * 100.0 : 0.0; };
+      std::fprintf(stderr,
+        "\n=== CT2_DECODE_PROFILE: %s (%lld steps) ===\n"
+        "  decoder_call:    %10.1f ms  (%5.1f%%)  — transformer forward pass\n"
+        "  logits_process:  %10.1f ms  (%5.1f%%)  — disable_tokens + processors\n"
+        "  log_softmax:     %10.1f ms  (%5.1f%%)  — LogSoftMax + beam score add\n"
+        "  sampler:         %10.1f ms  (%5.1f%%)  — TopK + GPU sync + memcpy\n"
+        "  beam_bookkeep:   %10.1f ms  (%5.1f%%)  — EOS check, hypothesis mgmt\n"
+        "  beam_gather:     %10.1f ms  (%5.1f%%)  — gather_beam_flat, keep_batches\n"
+        "  state_update:    %10.1f ms  (%5.1f%%)  — decoder.update_state (KV reorder)\n"
+        "  step_overhead:   %10.1f ms  (%5.1f%%)  — misc (reshape, unflatten, etc.)\n"
+        "  ─────────────────────────────────────────\n"
+        "  total_loop:      %10.1f ms  (100.0%%)\n"
+        "  avg per step:    %10.3f ms\n\n",
+        search_type, (long long)steps,
+        decoder_call_us / 1000,   pct(decoder_call_us),
+        logits_process_us / 1000, pct(logits_process_us),
+        log_softmax_us / 1000,    pct(log_softmax_us),
+        sampler_us / 1000,        pct(sampler_us),
+        beam_bookkeep_us / 1000,  pct(beam_bookkeep_us),
+        beam_gather_us / 1000,    pct(beam_gather_us),
+        state_update_us / 1000,   pct(state_update_us),
+        step_overhead_us / 1000,  pct(step_overhead_us),
+        total_loop_us / 1000,
+        steps > 0 ? total_loop_us / 1000.0 / steps : 0.0);
+    }
+  };
 
   static const ops::Gather gather;
 
@@ -510,10 +581,16 @@ namespace ctranslate2 {
                                         return_prefix,
                                         use_hard_prefix ? prefix_ids : nullptr);
 
+    // M12.4: Decode-loop profiling.
+    DecodeProfiler prof;
+    prof.enabled = decode_profile_enabled();
+    auto loop_t0 = hrclock::now();
+
     for (dim_t step = 0; step < max_step; ++step) {
       const bool is_expanded = (!expand_after_first_step || step > 0);
 
-      // Compute log probs for the current step.
+      // --- decoder call ---
+      if (prof.enabled) prof.tick();
       StorageView attention_step(dtype, device);
       convert_to_original_word_ids(decoder, topk_ids);
       decoder(start_step + step,
@@ -521,9 +598,12 @@ namespace ctranslate2 {
               state,
               &logits,  // output shape: (cur_batch_size*beam_size x vocab_size), if not expanded beam_size is 1
               (return_attention || _coverage_penalty != 0) ? &attention_step : nullptr);
+      if (prof.enabled) prof.decoder_call_us += prof.tock_us();
 
       const dim_t cur_batch_size = is_expanded ? logits.dim(0) / _beam_size : logits.dim(0);
 
+      // --- logits processing ---
+      if (prof.enabled) prof.tick();
       DisableTokens disable_tokens(logits);
 
       // Prevent the generation of end_ids until the minimum length is reached.
@@ -552,7 +632,10 @@ namespace ctranslate2 {
         else
           logits_vec = build_logits(logits, cur_batch_size);
       }
+      if (prof.enabled) prof.logits_process_us += prof.tock_us();
 
+      // --- log softmax + beam score accumulation ---
+      if (prof.enabled) prof.tick();
       StorageView log_probs(dtype, device);
       if (bias_towards_prefix) {
         biased_decoder->decode(cur_batch_size,
@@ -577,10 +660,15 @@ namespace ctranslate2 {
 
       // Flatten the probs into a list of candidates.
       log_probs.reshape({cur_batch_size, -1});
+      if (prof.enabled) prof.log_softmax_us += prof.tock_us();
 
-      // TopK candidates.
+      // --- sampler (includes GPU sync on MPS) ---
+      if (prof.enabled) prof.tick();
       sampler(log_probs, topk_ids, topk_scores, num_candidates);
+      if (prof.enabled) prof.sampler_us += prof.tock_us();
 
+      // --- step overhead (unflatten, prefix, append) ---
+      if (prof.enabled) prof.tick();
       // Unflatten the ids.
       StorageView gather_indices = unflatten_ids(topk_ids, _beam_size, vocabulary_size, is_expanded);
 
@@ -614,8 +702,10 @@ namespace ctranslate2 {
         append_step_output(alive_attention, attention_step.to_float32().to(Device::CPU));
         gather_beam_flat(alive_attention, gather_indices, num_candidates);
       }
+      if (prof.enabled) prof.step_overhead_us += prof.tock_us();
 
-      // Check if some hypotheses are finished.
+      // --- beam bookkeeping (EOS check, hypothesis registration) ---
+      if (prof.enabled) prof.tick();
       std::vector<int32_t> non_finished_index;
       non_finished_index.reserve(cur_batch_size);
 
@@ -688,6 +778,7 @@ namespace ctranslate2 {
           non_finished_index.emplace_back(i);
         }
       }
+      if (prof.enabled) prof.beam_bookkeep_us += prof.tock_us();
 
       const dim_t next_batch_size = non_finished_index.size();
 
@@ -700,6 +791,8 @@ namespace ctranslate2 {
         break;
       }
 
+      // --- beam gather ---
+      if (prof.enabled) prof.tick();
       gather(gather_indices, active_beams);  // CPU-to-CPU, no sync
 
 #ifdef CT2_WITH_MPS
@@ -735,7 +828,10 @@ namespace ctranslate2 {
         if (keep_batches->device() != device)
           *keep_batches = keep_batches->to(device);
       }
+      if (prof.enabled) prof.beam_gather_us += prof.tock_us();
 
+      // --- state update (KV cache reorder) ---
+      if (prof.enabled) prof.tick();
       if (gather_indices.device() != device)
         gather_indices = gather_indices.to(device);
       decoder.update_state(state, gather_indices, _beam_size, keep_batches.get());
@@ -745,6 +841,15 @@ namespace ctranslate2 {
 
       if (bias_towards_prefix)
         bias_towards_prefix = !all_beams_diverged_from_prefix(beams_diverged_from_prefix);
+      if (prof.enabled) prof.state_update_us += prof.tock_us();
+
+      ++prof.steps;
+    }
+
+    if (prof.enabled) {
+      prof.total_loop_us = std::chrono::duration<double, std::micro>(
+          hrclock::now() - loop_t0).count();
+      prof.report("beam_search");
     }
 
     return results;

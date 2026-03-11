@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-11
-**Status:** In progress — M12 profiling complete (translation pipeline optimization), M11 done
+**Status:** In progress — M12.1-12.4 done (profiling + sync elimination), M12.5-12.6 next (BF16/INT8 fix)
 
 ---
 
@@ -1019,64 +1019,85 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 ---
 
 ### Milestone 12: Translation Pipeline Optimization
-**Goal:** Optimize MPS backend for encoder-decoder translation (OPUS-MT, MarianNMT) — eliminate sync bottlenecks, reduce ObjC overhead, achieve GPU utilization >70%.
-**Time:** 1 week
+**Goal:** Optimize MPS backend for encoder-decoder translation (OPUS-MT, MarianNMT) — eliminate sync bottlenecks, fix slow compute types (BF16, INT8).
+**Time:** 2 weeks
 **Depends on:** M11
 
 **Context:** MPS benchmark (WMT14 En→De, 2737 sentences, beam=4, Apple M4) showed:
 - MPS float16: 1006 tok/s (1.08× CPU) — expected 2-3× for GPU
 - MPS float32: 269 tok/s (0.29× CPU) — GPU mostly idle
-- GPU utilization: ~40% — 60% of time spent in CPU overhead
-- Root cause: 288 commit_and_wait() calls per 100-sentence batch + ObjC alloc overhead
+- GPU utilization: ~40% — 60% of time spent waiting for GPU
+- Root cause: 288 commit_and_wait() calls per 100-sentence batch
 
-**12.1 prepare_length_mask sync elimination**
-- Replace `CT2_COMMIT_AND_WAIT()` in `primitives_beam_search.mm:91` with `encode_barrier()`
-- The mask kernel only reads `lengths` on GPU and writes `mask` on GPU — no CPU access needed
-- Eliminates ~140 commits per batch (~50% of all syncs)
-- **PASS:** Translation output identical, commit count reduced by ~50%
+**12.1 prepare_length_mask sync elimination + bucketed allocator** ✅
+- Replaced `CT2_COMMIT_AND_WAIT()` in `primitives_beam_search.mm` with `commit_command_buffer()` (non-blocking)
+- Added power-of-2 size-class bucketing to Metal allocator (pool reuse: ~0% → ~100%)
+- Commits: 188→90 (f16), 188→96 (f32) — ~50% reduction
+- f16: 1286→1500 tok/s (+17%), f32: 923→1043 tok/s (+13%)
+- **DONE:** Report `agents/report/milestone-12.performance-sweep.md`
 
-**12.2 ObjC overhead reduction in GEMM path**
-- Cache `MPSMatrixDescriptor` objects by (rows, cols, rowBytes, dataType)
-- Pool or cache `MPSMatrix` objects for the decode hot path (m=1)
-- Consider custom f32 GEMV kernel for m=1 decode (bypass MPS matrix wrapper entirely)
-- **PASS:** Per-GEMM ObjC overhead reduced; measurable wall-time improvement
+**12.2 ObjC overhead reduction in GEMM path** ✅ (investigated, negligible)
+- Cached `rowBytesForColumns:dataType:` results (eliminated 15 ObjC calls/GEMM)
+- Tested custom f32 GEMV kernel — **16% regression** (MPS uses AMX hardware, custom kernel cannot)
+- Total ObjC overhead measured at **0.18% of wall time** (2.7ms/batch), not 10-20% as estimated
+- **DONE:** Report `agents/report/milestone-12.2-objc-overhead-reduction.md`
 
-**12.3 Buffer lookup optimization**
-- Replace linear scan in `metal_buffer_for_ptr()` with sorted map (O(log n) lookup)
-- Called ~10,000+ times per translation batch (3× per GEMM + 2× per kernel)
-- **PASS:** Lookup time reduced; profiler shows lower CPU overhead
+**12.3 Buffer lookup optimization** ✅ (investigated, negligible)
+- Added 256-entry direct-mapped pointer cache to `buffer_for_ptr()` (50.7% hit rate)
+- `_live` map was already `std::map` with O(log n) `upper_bound()`, not linear scan
+- No measurable wall-time improvement — O(log 100) ≈ 7 comparisons × 10ns = ~70ns/lookup
+- **DONE:** Report `agents/report/milestone-12.3-buffer-lookup-optimization.md`
 
-**12.4 MPS benchmark and README update**
-- Run `tools/benchmark/benchmark_mps.py` with optimized backend
-- Update README.md MPS section with final numbers
-- Target: MPS float16 ≥ 2× CPU float32, GPU utilization ≥ 70%
-- **PASS:** README shows competitive MPS numbers
+**12.4 Decode loop profiling** ✅ (CRITICAL FINDING)
+- Instrumented beam search loop with 8-component `chrono` timers (`CT2_DECODE_PROFILE=1`)
+- **Overturned previous bottleneck analysis**: CPU overhead in decode loop is **<0.4%** (3ms/800ms)
+- Three distinct bottleneck profiles discovered:
+  - **f16**: decoder 50% / sampler 50% — GPU compute balanced, pipeline optimal
+  - **f32**: decoder 43% / sampler 55% — sync wait slightly longer (f32 GEMM 1.5× f16)
+  - **int8/bf16**: decoder **98-99.8%** — internal blocking syncs inside decoder forward pass
+- INT8: 45.6ms/step — ~36 GEMMs × 2 `commit_and_wait()` each for CPU int8↔f32 conversion
+- BF16: 424ms/step — ~36 synchronous MPSGraph calls at ~11ms each
+- Beam bookkeeping, ObjC overhead, buffer lookup: all **0.0%** of loop time
+- **DONE:** Report `agents/report/milestone-12.4-decode-loop-profiling.md`
 
-**12.5 BF16 translation performance** (timed out at >20 min for 2737 sentences)
-- Root cause: MPSGraph `runWithMTLCommandQueue:` is inherently synchronous — each BF16 GEMM
-  blocks CPU+GPU (~1ms per graph run). ~144 graph runs per decode step at beam=4.
-- Options (pick best ROI):
-  - (a) `runAsyncWithMTLCommandQueue:` for deferred graph execution (risky, API behavior unclear)
-  - (b) Batched graph execution — single 3D matmul instead of B separate 2D runs
-  - (c) Auto-promote BF16 weights → FP16 at load time on MPS (lossy, immediate speedup)
-  - (d) Custom BF16 GEMV kernel for m=1 decode (bypass MPSGraph for decode hot path)
-- **PASS:** BF16 translation completes within 2× FP16 time, or auto-promotes to FP16
+**12.5 BF16 GEMM fix** (HIGHEST PRIORITY — 65× improvement expected)
+- Root cause confirmed by M12.4: MPSGraph `runWithMTLCommandQueue:` is synchronous,
+  424ms/step (99.8% of decode time). Each BF16 GEMM: ~11ms (pre-flush + graph sync + readBytes).
+- Best option: auto-promote BF16 weights → FP16 at load time on MPS (424ms→6.5ms/step)
+- Alt: async MPSGraph, batched graph, or custom BF16 GEMV for m=1
+- **PASS:** BF16 translation at FP16-equivalent speed (~1400 tok/s)
 
-**12.6 INT8 translation performance** (131 tok/s — 7× slower than CPU float32)
-- Root cause: No native Metal INT8 GEMM. Current: CPU int8→f32 + GPU f32 GEMM + CPU f32→i32
-  requires 2 commit_and_wait() per single GEMM (batched path: 2 total).
-- Options:
-  - (a) GPU int8→float32 + float32→int32 kernels (eliminate CPU conversion, 0 syncs)
-  - (b) INT8 dequantize-to-FP16 at model load (INT8 models run at FP16 speed, 2× memory)
-- **PASS:** INT8 translation ≥ 500 tok/s, or auto-promotes to FP16/FP32
+**12.6 INT8 GPU dequantize** (HIGH PRIORITY — 3.5× improvement expected)
+- Root cause confirmed by M12.4: CPU int8→f32 dequant + 2 syncs/GEMM = 45.6ms/step (98% of decode)
+- GPU int8→f32 + f32→int32 kernels would eliminate all internal syncs (encode-only pipeline)
+- Expected: 45.6ms/step → ~13ms/step
+- Alt: INT8 dequantize-to-FP16 at model load (immediate, 2× memory)
+- **PASS:** INT8 translation ≥ 300 tok/s
 
 **12.7 CPU INT8 build support**
 - Error: "does not support efficient int8 computation" — build lacks RUY/MKL/DNNL
 - Fix: Build with `-DCT2_WITH_RUY=ON` (best for Apple Silicon ARM NEON)
-- Also fix benchmark script to detect and skip unsupported compute types gracefully
 - **PASS:** CPU INT8 benchmark runs successfully
 
-- Report: `agents/report/milestone-12-translation-pipeline-optimization.md`
+**12.8 Larger model benchmarks** (validates scaling)
+- OPUS-MT (d_model=512) is too small — GPU:CPU ratio unfavorable (0.5ms GPU vs 6ms sync/step)
+- Benchmark with larger model (Whisper large-v3-turbo d_model=1280, or NLLB) to confirm GPU scales
+- **PASS:** Larger model shows >3× CPU speedup with f16
+
+**Current performance (50 sentences, best-of-3, post M12.1-12.4):**
+
+| Type | tok/s | vs CPU | Commits | Bottleneck (M12.4 finding) |
+|------|-------|--------|---------|---------------------------|
+| float16 | 1476 | 1.79× | 90 | GPU compute + sync balanced |
+| float32 | 1019 | 1.23× | 96 | GPU compute + sync balanced |
+| int8 | 84 | 0.10× | 5692 | CPU int8↔f32 + 2 syncs/GEMM |
+| int8_f16 | 86 | 0.10× | 5580 | CPU int8↔f32 + 2 syncs/GEMM |
+| bfloat16 | 9 | 0.01× | 2844 | MPSGraph synchronous GEMM |
+| int8_bf16 | 9 | 0.01× | 6904 | Both INT8 + MPSGraph |
+
+- Reports: `agents/report/milestone-12*.md`
+- Benchmark script: `tools/benchmark/m12_perf_sweep.py`
+- Performance sweep: `agents/report/milestone-12.performance-sweep.md`
 
 ---
 
@@ -1142,7 +1163,8 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 | 9 (INT8) | Quantize/dequantize + INT8 model support + gemm_pack_b/u8 stubs | 1 week | 5 |
 | 10 (Models) | Full model + Python API | 1–2 weeks | 8, 9 |
 | 11 (Perf) | Command batching, pipeline cache, BF16, profiling | 1–2 weeks | 10 |
-| 12 (CI/Docs) | Test parameterization, CI, documentation | 1 week | 11 |
+| 12 (Pipeline) | Translation pipeline optimization, BF16/INT8 fix | 2 weeks | 11 |
+| 13 (CI/Docs) | Test parameterization, CI, documentation | 1 week | 12 |
 | **Total** | | **~12–18 weeks** | |
 
 ---

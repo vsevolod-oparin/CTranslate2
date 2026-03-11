@@ -22,6 +22,12 @@
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|--------|
 | 1 | c55d4e9d | 1201 | 1216, 1224, 1201 | 1544 | 188 | 41% | 1286 | M12 baseline (pre-optimization) | 1.64x |
 
+## BFloat16 Results (10 sentences — too slow for 50)
+
+| # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
+|---|--------|-----------|-----------|--------|---------|------|-------|-------|
+| 1 | a8a2bf16 | 22261 | 22261, 22410, 22334 | 195 | 2895 | 1% | 9 | M12 baseline (pre-optimization) |
+
 ---
 
 ## Baseline Analysis
@@ -32,6 +38,8 @@
 - **f16 vs f32**: 1.39x speedup (1673 → 1201 ms) from faster MPS GEMM
 - **f16 vs CPU**: 1.64x speedup — GPU already ahead of 4-thread CPU
 - **f32 vs CPU**: 1.18x — barely ahead; sync overhead nearly offsets GPU compute advantage
+- **BF16**: 9 tok/s, **2895 commits** for just 10 sentences — **15x more commits** than f32/f16 (50 sent). MPSGraph `runWithMTLCommandQueue:` is synchronous, forcing a commit per BF16 GEMM. GPU utilization is just 1%.
+- **BF16 extrapolated to 50 sentences**: ~110s vs 1.2s for f16 — **~90x slower**
 
 ### Commit Breakdown (per decode step)
 With ~50 sentences and beam=4, the 188 commits come from:

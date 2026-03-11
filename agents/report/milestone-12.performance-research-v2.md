@@ -103,37 +103,26 @@ CTranslate2's Metal backend has been optimized through M12.11 to near-theoretica
 
 See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investigation including decode profiler breakdown.
 
-### 2.3 Pre-allocate DecodingResult Containers (Priority: ★★★★)
+### 2.3 Pre-allocate DecodingResult Containers — ✅ REJECTED (M12.14)
 
 **Location**: `src/decoding.cc:555`
-**Issue**: DecodingResult vectors (`hypotheses`, `scores`, `attention`) grow dynamically via push_back/emplace_back, causing repeated heap allocations.
-**Fix**: Reserve capacity based on `max_length` and `num_hypotheses`:
-```cpp
-result.hypotheses.reserve(num_hypotheses);
-result.scores.reserve(num_hypotheses);
-```
-**Impact**: 10-15% allocation reduction in beam bookkeeping
-**Effort**: Low
+**Tested**: Added `reserve(num_hypotheses)` for hypotheses, scores, attention vectors.
+**Result**: **REJECTED.** Consistent slight regression across all 6 types (all negative deltas). Allocation overhead is ~30 us total (<0.003% of wall time) — too small to measure. All code reverted.
+**Report**: `agents/report/milestone-12.14-decode-bookkeeping-optimization.md`
 
-### 2.4 Eliminate alive_seq Concat Per Step (Priority: ★★★★)
+### 2.4 Eliminate alive_seq Concat Per Step — ✅ REJECTED (M12.14)
 
 **Location**: `src/decoding.cc:208-220`
-**Issue**: `ops::Concat` allocates a new buffer every step to append the latest token to the sequence history. For 100-token sequences: 100 reallocations, each copying all accumulated data (O(n²) total).
-**Fix**: Pre-allocate `alive_seq` to `max_length` and use slice assignment:
-```cpp
-StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
-// Per step: write into alive_seq[:, step] instead of concat
-```
-**Impact**: 5-10% of decode loop
-**Effort**: Medium (rewrite append_step_output)
+**Tested**: Replaced `ops::Concat(2)` with direct row-by-row memcpy. Also evaluated full pre-allocation to `max_step` width — rejected because `gather_beam_flat` creates new tensors (would lose pre-allocation benefit, wider tensors make gather MORE expensive).
+**Result**: **REJECTED.** Manual memcpy slightly worse than `ops::Concat`'s optimized `primitives<CPU>::copy`. alive_seq concat is ~500 us total (<0.05% of wall time). All code reverted.
+**Report**: `agents/report/milestone-12.14-decode-bookkeeping-optimization.md`
 
-### 2.5 Lazy Hypothesis Construction (Priority: ★★★)
+### 2.5 Lazy Hypothesis Construction — ✅ REJECTED (M12.14)
 
 **Location**: `src/decoding.cc:742-749`
-**Issue**: `build_hypothesis()` copies token sequences from GPU immediately when a beam finishes. Multiple vector allocations per finished beam.
-**Fix**: Store (batch_id, beam_id, start, end) tuples, construct hypotheses only at finalization.
-**Impact**: 3-5%
-**Effort**: Medium
+**Issue**: Research proposed deferring hypothesis construction to finalization.
+**Result**: **Architecturally infeasible.** `gather_beam_flat` immediately after hypothesis registration overwrites beam data in alive_seq. Token data for finished beams is destroyed before finalization. Current immediate copy is correct and necessary.
+**Report**: `agents/report/milestone-12.14-decode-bookkeeping-optimization.md`
 
 ### 2.6 Object Pooling for Per-Step Temporaries (Priority: ★★★)
 
@@ -283,10 +272,10 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 
 | # | Task | Impact | Effort | Files |
 |---|------|--------|--------|-------|
-| 2.3 | Pre-allocate DecodingResult | All: 10-15% alloc | Low | `decoding.cc:555` |
-| 2.4 | Eliminate alive_seq concat | All: 5-10% | Medium | `decoding.cc:208-220` |
+| 2.3 | ~~Pre-allocate DecodingResult~~ | ✅ REJECTED (M12.14) | — | Slight regression, reverted |
+| 2.4 | ~~Eliminate alive_seq concat~~ | ✅ REJECTED (M12.14) | — | Slight regression, reverted |
 | 4.2 | ~~Aggressive GEMV for decode~~ | ✅ REJECTED (M12.13) | — | Naive GEMV 20% slower than MPS |
-| 2.5 | Lazy hypothesis construction | All: 3-5% | Medium | `decoding.cc:742-749` |
+| 2.5 | ~~Lazy hypothesis construction~~ | ✅ REJECTED (M12.14) | — | Architecturally infeasible |
 
 ### Phase 3: Medium Impact (Expected: 5-10% additional)
 

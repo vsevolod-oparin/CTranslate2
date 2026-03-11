@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-11
-**Status:** In progress — M12.1-12.6 done, M12.7-12.8 next
+**Status:** In progress — M12.1-12.7 done, M12.8 next (larger model benchmarks)
 
 ---
 
@@ -1076,10 +1076,13 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Per-step: int8 46.5→29.8 ms/step, int8_f16 46.2→23.9 ms/step
 - **DONE:** Report `agents/report/milestone-12.6-int8-gpu-dequantize.md`
 
-**12.7 CPU INT8 build support**
-- Error: "does not support efficient int8 computation" — build lacks RUY/MKL/DNNL
-- Fix: Build with `-DCT2_WITH_RUY=ON` (best for Apple Silicon ARM NEON)
-- **PASS:** CPU INT8 benchmark runs successfully
+**12.7 CPU INT8 build support** ✅
+- Fixed: Build with `-DCT2_WITH_RUY=ON -DCMAKE_POLICY_VERSION_MINIMUM=3.5`
+- RUY already bundled at `third_party/ruy/`, uses ARM NEON SIMD for INT8 GEMM
+- **Finding**: CPU INT8 (580 tok/s) is 28% slower than CPU FP32 (807 tok/s) on Apple Silicon
+  - Apple AMX accelerates FP32 GEMM; RUY INT8 uses general NEON (no AMX INT8 path)
+  - INT8 useful for memory reduction only, not speed, on this hardware
+- **DONE:** Report `agents/report/milestone-12.7-cpu-int8-build.md`
 
 **12.8 Larger model benchmarks** (validates scaling)
 - OPUS-MT (d_model=512) is too small — GPU:CPU ratio unfavorable (0.5ms GPU vs 6ms sync/step)

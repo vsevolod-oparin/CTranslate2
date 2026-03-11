@@ -36,7 +36,8 @@ The original M12 plan attributed CPU overhead to:
 
 | Component | Time (ms) | % of wall | Status |
 |-----------|-----------|-----------|--------|
-| **GPU compute** | 742 | 41.5% | Actual useful work |
+| **GPU compute** | 7
+42 | 41.5% | Actual useful work |
 | **Commit sync overhead** | 54 | 3.0% | Fixed by M12.1 (was ~115ms) |
 | **Non-commit CPU overhead** | **991** | **55.5%** | **Dominant bottleneck** |
 | Total wall | 1787 | 100% | |

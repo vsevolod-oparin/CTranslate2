@@ -44,6 +44,43 @@ template<> struct MPS_Dtype<float>                  { static const MPSDataType v
 template<> struct MPS_Dtype<ctranslate2::float16_t> { static const MPSDataType value = MPSDataTypeFloat16; };
 
 // ---------------------------------------------------------------------------
+// M12.2: Cached rowBytesForColumns — avoids repeated ObjC message sends.
+//
+// rowBytesForColumns:dataType: is a pure function of (cols, dtype) for a
+// given Metal device.  Caching eliminates ~15 ObjC calls per GEMM dispatch
+// and the associated @autoreleasepool blocks.
+// ---------------------------------------------------------------------------
+
+static NSUInteger cached_row_bytes(NSUInteger cols, MPSDataType dtype) {
+  // Small inline cache: most GEMM shapes reuse a handful of (cols, dtype) pairs.
+  // Single-threaded GPU work means no contention on the mutex.
+  struct Key {
+    NSUInteger cols;
+    MPSDataType dtype;
+    bool operator==(const Key& o) const { return cols == o.cols && dtype == o.dtype; }
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const {
+      return std::hash<NSUInteger>()(k.cols) ^ (std::hash<uint32_t>()(k.dtype) << 16);
+    }
+  };
+  static std::unordered_map<Key, NSUInteger, KeyHash> cache;
+  static std::mutex mtx;
+
+  Key key{cols, dtype};
+  std::lock_guard<std::mutex> lk(mtx);
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+
+  NSUInteger rb;
+  @autoreleasepool {
+    rb = [MPSMatrixDescriptor rowBytesForColumns:cols dataType:dtype];
+  }
+  cache[key] = rb;
+  return rb;
+}
+
+// ---------------------------------------------------------------------------
 // M11.27 — MPSMatrixMultiplication cache
 //
 // MPSMatrixMultiplication alloc+init performs kernel selection internally,
@@ -193,13 +230,10 @@ static void dispatch_mps_gemm(bool transpose_a, bool transpose_b,
   const NSUInteger nat_rb_b = (NSUInteger)ldb * elem;
   const NSUInteger nat_rb_c = (NSUInteger)ldc * elem;
 
-  // Query MPS minimum rowBytes inside an autorelease pool (may allocate ObjC temps).
-  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
-  @autoreleasepool {
-    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dtype];
-    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dtype];
-    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:cols_c dataType:dtype];
-  }
+  // M12.2: Use cached rowBytesForColumns (avoids ObjC message send per call).
+  const NSUInteger mps_rb_a = cached_row_bytes(cols_a, dtype);
+  const NSUInteger mps_rb_b = cached_row_bytes(cols_b, dtype);
+  const NSUInteger mps_rb_c = cached_row_bytes(cols_c, dtype);
 
   const bool pad_a = (nat_rb_a < mps_rb_a);
   const bool pad_b = (nat_rb_b < mps_rb_b);
@@ -601,16 +635,10 @@ static void dispatch_int8_gemm(
   // Flush pending GPU work before CPU reads from a/b.
   CT2_COMMIT_AND_WAIT();
 
-  // Query MPS minimum rowBytes for float32.
-  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
-  @autoreleasepool {
-    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a
-                                              dataType:MPSDataTypeFloat32];
-    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b
-                                              dataType:MPSDataTypeFloat32];
-    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n
-                                              dataType:MPSDataTypeFloat32];
-  }
+  // M12.2: Use cached rowBytesForColumns for float32.
+  const NSUInteger mps_rb_a = cached_row_bytes(cols_a, MPSDataTypeFloat32);
+  const NSUInteger mps_rb_b = cached_row_bytes(cols_b, MPSDataTypeFloat32);
+  const NSUInteger mps_rb_c = cached_row_bytes((NSUInteger)n, MPSDataTypeFloat32);
 
   // Use padded row bytes to satisfy MPS alignment requirements.
   const NSUInteger rb_a = std::max((NSUInteger)lda * sizeof(float), mps_rb_a);
@@ -979,6 +1007,124 @@ static void dispatch_gemv_f16_batched(
   ctranslate2::metal::protect_buffer_by_base([buf_c contents]);
 }
 
+// ---------------------------------------------------------------------------
+// M12.2: Custom float32 GEMV kernel for m=1 decode GEMMs.
+//
+// Mirrors the float16 GEMV (M11.19) but for float32.  During autoregressive
+// decoding, all GEMMs have m=1 (one query token per step).  For float16,
+// the custom GEMV already bypasses MPS entirely (M11.19).  For float32,
+// decode GEMMs still went through the full MPS pipeline:
+//   MPSMatrixDescriptor × 3 + MPSMatrix alloc/init/release × 3
+//   + MPSMatrixMultiplication encode + @autoreleasepool
+// This custom kernel eliminates all of that overhead.
+//
+// Grid: [batch_size, 1, 1], threads per group: [256, 1, 1]
+// Each threadgroup computes C[1,N] = alpha * A[1,K] * B + beta * C.
+// No float32→float32 conversion needed (unlike f16 which promotes to f32).
+// ---------------------------------------------------------------------------
+static const char* kGemvF32MSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+kernel void gemv_float(
+    device const float*  A       [[buffer(0)]],
+    device const float*  B       [[buffer(1)]],
+    device       float*  C       [[buffer(2)]],
+    constant     uint&   K       [[buffer(3)]],
+    constant     uint&   N       [[buffer(4)]],
+    constant     uint&   stridea [[buffer(5)]],
+    constant     uint&   strideb [[buffer(6)]],
+    constant     uint&   stridec [[buffer(7)]],
+    constant     uint&   ldb_val [[buffer(8)]],
+    constant     float&  alpha   [[buffer(9)]],
+    constant     float&  beta    [[buffer(10)]],
+    constant     uint&   tb      [[buffer(11)]],
+    uint batch_id [[threadgroup_position_in_grid]],
+    uint tid      [[thread_index_in_threadgroup]],
+    uint tgs      [[threads_per_threadgroup]])
+{
+    device const float* a_row = A + batch_id * stridea;
+    device const float* b_mat = B + batch_id * strideb;
+    device       float* c_row = C + batch_id * stridec;
+
+    for (uint j = tid; j < N; j += tgs) {
+        float acc = 0.0f;
+        if (tb) {
+            device const float* b_row = b_mat + j * ldb_val;
+            for (uint i = 0; i < K; ++i)
+                acc += a_row[i] * b_row[i];
+        } else {
+            for (uint i = 0; i < K; ++i)
+                acc += a_row[i] * b_mat[i * ldb_val + j];
+        }
+        float old_c = (beta != 0.0f) ? c_row[j] : 0.0f;
+        c_row[j] = alpha * acc + beta * old_c;
+    }
+}
+)";
+
+static id<MTLLibrary> get_gemv_f32_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kGemvF32MSL, "gemv_f32");
+}
+
+static id<MTLComputePipelineState> get_gemv_f32_pso() {
+  static PSOCache cache;
+  return cache.get(get_gemv_f32_library, "gemv_float");
+}
+
+static void dispatch_gemv_f32_batched(
+    bool transpose_b,
+    ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha, float beta,
+    const float* a, ctranslate2::dim_t lda, ctranslate2::dim_t stridea,
+    const float* b, ctranslate2::dim_t ldb, ctranslate2::dim_t strideb,
+    float* c, ctranslate2::dim_t ldc, ctranslate2::dim_t stridec,
+    ctranslate2::dim_t batch_size) {
+  if (batch_size <= 0 || n == 0 || k == 0) return;
+
+  id<MTLComputePipelineState> pso = get_gemv_f32_pso();
+  id<MTLComputeCommandEncoder> enc =
+      ctranslate2::metal::create_compute_encoder();
+  [enc setComputePipelineState:pso];
+
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+  [enc setBuffer:buf_a offset:off_a atIndex:0];
+  [enc setBuffer:buf_b offset:off_b atIndex:1];
+  [enc setBuffer:buf_c offset:off_c atIndex:2];
+
+  uint32_t K_u32 = ct2_u32(k);
+  uint32_t N_u32 = ct2_u32(n);
+  uint32_t sa_u32 = ct2_u32(stridea);
+  uint32_t sb_u32 = ct2_u32(strideb);
+  uint32_t sc_u32 = ct2_u32(stridec);
+  uint32_t ldb_u32 = ct2_u32(ldb);
+  uint32_t tb_u32 = transpose_b ? 1u : 0u;
+  [enc setBytes:&K_u32   length:sizeof(uint32_t) atIndex:3];
+  [enc setBytes:&N_u32   length:sizeof(uint32_t) atIndex:4];
+  [enc setBytes:&sa_u32  length:sizeof(uint32_t) atIndex:5];
+  [enc setBytes:&sb_u32  length:sizeof(uint32_t) atIndex:6];
+  [enc setBytes:&sc_u32  length:sizeof(uint32_t) atIndex:7];
+  [enc setBytes:&ldb_u32 length:sizeof(uint32_t) atIndex:8];
+  [enc setBytes:&alpha   length:sizeof(float)    atIndex:9];
+  [enc setBytes:&beta    length:sizeof(float)    atIndex:10];
+  [enc setBytes:&tb_u32  length:sizeof(uint32_t) atIndex:11];
+
+  NSUInteger tgs = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreadgroups:MTLSizeMake((NSUInteger)batch_size, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tgs, 1, 1)];
+  [enc endEncoding];
+  [enc release];
+
+  // M12.2: Protect original buffers from premature reuse (encode-only).
+  ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_c contents]);
+}
+
 template <typename T>
 static void dispatch_mps_gemm_batched_padded(
     bool transpose_a, bool transpose_b,
@@ -1003,12 +1149,10 @@ static void dispatch_mps_gemm_batched_padded(
   const NSUInteger nat_rb_b = (NSUInteger)ldb * elem;
   const NSUInteger nat_rb_c = (NSUInteger)ldc * elem;
 
-  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
-  @autoreleasepool {
-    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dtype];
-    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dtype];
-    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n dataType:dtype];
-  }
+  // M12.2: Use cached rowBytesForColumns.
+  const NSUInteger mps_rb_a = cached_row_bytes(cols_a, dtype);
+  const NSUInteger mps_rb_b = cached_row_bytes(cols_b, dtype);
+  const NSUInteger mps_rb_c = cached_row_bytes((NSUInteger)n, dtype);
 
   const bool pad_a = (nat_rb_a < mps_rb_a);
   const bool pad_b = (nat_rb_b < mps_rb_b);
@@ -1220,18 +1364,16 @@ namespace ctranslate2 {
     // Only for truly tiny columns (≤4) where MPS overhead dominates.
     // Alignment-only padding (large matrices) is handled inside dispatch_mps_gemm
     // via GPU-side temp buffer + blit copy (zero syncs).
+    // M12.2: Use cached rowBytesForColumns in needs_padding check.
     auto needs_padding = [&]() -> bool {
       constexpr NSUInteger elem_sz = sizeof(In);
       const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
       const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
       const NSUInteger cols_c = (NSUInteger)n;
-      NSUInteger mps_a, mps_b, mps_c;
       MPSDataType dt = (elem_sz == 4) ? MPSDataTypeFloat32 : MPSDataTypeFloat16;
-      @autoreleasepool {
-        mps_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dt];
-        mps_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dt];
-        mps_c = [MPSMatrixDescriptor rowBytesForColumns:cols_c dataType:dt];
-      }
+      NSUInteger mps_a = cached_row_bytes(cols_a, dt);
+      NSUInteger mps_b = cached_row_bytes(cols_b, dt);
+      NSUInteger mps_c = cached_row_bytes(cols_c, dt);
       return ((NSUInteger)lda * elem_sz < mps_a) ||
              ((NSUInteger)ldb * elem_sz < mps_b) ||
              ((NSUInteger)ldc * elem_sz < mps_c);
@@ -1337,15 +1479,10 @@ namespace ctranslate2 {
         const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
         const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
 
-        NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
-        @autoreleasepool {
-          mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a
-                                                    dataType:MPSDataTypeFloat32];
-          mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b
-                                                    dataType:MPSDataTypeFloat32];
-          mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)n
-                                                    dataType:MPSDataTypeFloat32];
-        }
+        // M12.2: Use cached rowBytesForColumns.
+        NSUInteger mps_rb_a = cached_row_bytes(cols_a, MPSDataTypeFloat32);
+        NSUInteger mps_rb_b = cached_row_bytes(cols_b, MPSDataTypeFloat32);
+        NSUInteger mps_rb_c = cached_row_bytes((NSUInteger)n, MPSDataTypeFloat32);
         const NSUInteger rb_a = std::max((NSUInteger)lda * sizeof(float), mps_rb_a);
         const NSUInteger rb_b = std::max((NSUInteger)ldb * sizeof(float), mps_rb_b);
         const NSUInteger rb_c = std::max((NSUInteger)n   * sizeof(float), mps_rb_c);

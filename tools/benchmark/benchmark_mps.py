@@ -36,6 +36,7 @@ import json
 import os
 import resource
 import sys
+import threading
 import time
 
 import ctranslate2
@@ -48,7 +49,22 @@ def get_max_rss_mb():
         return usage.ru_maxrss / (1024 * 1024)
     return usage.ru_maxrss / 1024
 
+def start_rss_watchdog(limit_mb):
+    """Background thread that kills the process if RSS exceeds limit_mb."""
+    def _watch():
+        while True:
+            time.sleep(0.5)
+            if get_max_rss_mb() > limit_mb:
+                print(f"RSS watchdog: {get_max_rss_mb():.0f} MB > {limit_mb} MB limit",
+                      file=sys.stderr, flush=True)
+                os._exit(99)
+    t = threading.Thread(target=_watch, daemon=True)
+    t.start()
+
 config = json.loads(sys.argv[1])
+
+rss_limit = config.get("rss_limit_mb", 6000)
+start_rss_watchdog(rss_limit)
 
 tokenizer = MarianTokenizer.from_pretrained("Helsinki-NLP/opus-mt-en-de")
 
@@ -63,6 +79,8 @@ source_tokens = [
 ]
 
 device = config["device"]
+chunk_size = 32
+
 translator = ctranslate2.Translator(
     config["model_path"],
     device=device,
@@ -82,17 +100,24 @@ for sample in range(config["num_samples"]):
     if device == "mps":
         ctranslate2.clear_device_cache("mps")
 
+    all_results = []
     t0 = time.monotonic()
-    results = translator.translate_batch(
-        source_tokens,
-        beam_size=config["beam_size"],
-        max_batch_size=32,
-    )
+    for ci in range(0, len(source_tokens), chunk_size):
+        chunk = source_tokens[ci:ci + chunk_size]
+        chunk_results = translator.translate_batch(
+            chunk,
+            beam_size=config["beam_size"],
+            max_batch_size=chunk_size,
+        )
+        all_results.extend(chunk_results)
+        if device == "mps":
+            gc.collect()
+            ctranslate2.clear_device_cache("mps")
     elapsed = time.monotonic() - t0
 
     if best_time is None or elapsed < best_time:
         best_time = elapsed
-        hypotheses = [r.hypotheses[0] for r in results]
+        hypotheses = [r.hypotheses[0] for r in all_results]
         num_target_tokens = sum(len(h) for h in hypotheses)
         decoded = [
             tokenizer.decode(tokenizer.convert_tokens_to_ids(tokens))
@@ -132,7 +157,10 @@ def run_benchmark_subprocess(config):
     )
 
     if result.returncode != 0:
-        print(f"  FAILED (exit {result.returncode})")
+        if result.returncode == 99:
+            print(f"  ABORTED: RSS limit exceeded")
+        else:
+            print(f"  FAILED (exit {result.returncode})")
         stderr = result.stderr.strip()
         if stderr:
             # Print last 5 lines of stderr
@@ -154,8 +182,10 @@ def main():
         description="MPS benchmark for CTranslate2",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument("--num_samples", type=int, default=3,
+    parser.add_argument("--num_samples", type=int, default=2,
                         help="Number of runs per configuration (report best)")
+    parser.add_argument("--rss_limit_mb", type=int, default=6000,
+                        help="RSS limit in MB for worker subprocess (exit 99 if exceeded)")
     parser.add_argument("--num_cpus", type=int, default=4,
                         help="Number of CPU threads for CPU baseline")
     parser.add_argument("--beam_size", type=int, default=4,
@@ -230,6 +260,7 @@ def main():
             "intra_threads": args.num_cpus if device == "cpu" else 1,
             "test_set": args.test_set,
             "langpair": args.langpair,
+            "rss_limit_mb": args.rss_limit_mb,
         }
 
         r = run_benchmark_subprocess(config)

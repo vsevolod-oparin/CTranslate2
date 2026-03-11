@@ -85,10 +85,21 @@ namespace ctranslate2 {
       dim_t num_queries, bool mask_future, bool multi_query, int32_t* mask) {
     if (batch_size == 0) return;
 
-    // Flush pending GPU work: downstream CPU code (or ops that preceded this
-    // call) may depend on data written by earlier GPU encodes.  The original
-    // CPU implementation had CT2_COMMIT_AND_WAIT() here for the same reason.
-    CT2_COMMIT_AND_WAIT();
+    // Non-blocking commit: flush prior GPU encodes (e.g. beam-reorder
+    // gathers over KV cache) to a separate CB so this kernel starts with
+    // clean GPU state.  The serial queue guarantees prior CB completes
+    // before this kernel runs.
+    //
+    // commit_command_buffer() instead of CT2_COMMIT_AND_WAIT():
+    //   - Signals the shared event (for future encode_barrier callers)
+    //   - Does NOT block the CPU (~0 ms vs ~0.4 ms per call)
+    //   - Required for f32: MPSMatrixMultiplication has a driver coherency
+    //     issue where compute encoders in the SAME CB may read stale data
+    //     from prior MPS ops.  CB split resolves this.
+    //   - For f16/bf16 encode_barrier() alone would suffice, but the
+    //     non-blocking commit is cheap enough (~0 CPU cost) to use
+    //     unconditionally.
+    metal::commit_command_buffer();
 
     id<MTLComputePipelineState> pso = get_beam_search_pso("prepare_length_mask");
     id<MTLComputeCommandEncoder> enc =

@@ -13,12 +13,20 @@ import argparse
 import ctypes
 import gc
 import os
+import resource
 import sys
 import time
 
 import ctranslate2
 import sacrebleu
 from transformers import MarianTokenizer
+
+
+def get_max_rss_mb():
+    usage = resource.getrusage(resource.RUSAGE_SELF)
+    if sys.platform == "darwin":
+        return usage.ru_maxrss / (1024 * 1024)
+    return usage.ru_maxrss / 1024
 
 
 NUM_SENTENCES = 50       # Small subset for speed
@@ -99,6 +107,8 @@ def main():
     parser.add_argument("--cpu_baseline", action="store_true",
                         help="Also run CPU baseline")
     parser.add_argument("--num_sentences", type=int, default=NUM_SENTENCES)
+    parser.add_argument("--rss_limit_mb", type=int, default=6000,
+                        help="RSS limit in MB; exit with warning if exceeded")
     args = parser.parse_args()
 
     data_dir = os.environ.get(
@@ -166,6 +176,9 @@ def main():
         intra_threads=1,
     )
     translator.translate_batch([[""]], beam_size=1)  # warmup + PSO compile
+    ctranslate2.clear_device_cache("mps")
+
+    print(f"RSS before benchmark: {get_max_rss_mb():.0f} MB")
 
     runs = []
     for i in range(NUM_RUNS):
@@ -173,6 +186,12 @@ def main():
         ctranslate2.clear_device_cache("mps")
         w, tokens, commits, gpu_ms = run_benchmark(translator, source_tokens, fns)
         runs.append((w, tokens, commits, gpu_ms))
+        current_rss = get_max_rss_mb()
+        if current_rss > args.rss_limit_mb:
+            print(f"WARNING: RSS {current_rss:.0f} MB exceeds limit {args.rss_limit_mb} MB, aborting")
+            del translator; gc.collect()
+            ctranslate2.clear_device_cache("mps")
+            return 1
 
     # Pick best wall time
     best = min(runs, key=lambda r: r[0])
@@ -201,6 +220,8 @@ def main():
     print(f"\n--- Table row ---")
     print(f"| {commit} | {wall_ms:.0f} | {runs_str} | {tokens} | "
           f"{commits} | {gpu_pct:.0f}% | {tok_s:.0f} | {label} | {speedup_str} |")
+
+    print(f"RSS after benchmark: {get_max_rss_mb():.0f} MB")
 
     del translator; gc.collect()
     ctranslate2.clear_device_cache("mps")

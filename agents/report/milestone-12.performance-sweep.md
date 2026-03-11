@@ -6,7 +6,8 @@
 **Dataset**: WMT14 newstest2014 (50 sentences for fast types, 10 for slow types)
 **Method**: Beam=4, max_batch=32, best-of-3 runs
 **Script**: `tools/benchmark/m12_perf_sweep.py`
-**CPU baseline**: float32, 4 threads, 50 sentences → 1969 ms, 1549 tokens, 787 tok/s
+**CPU baseline**: float32, 4 threads, 50 sentences → 1969 ms, 1549 tokens, 787 tok/s (M12.0)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1875 ms, 1549 tokens, 826 tok/s (M12.1, bucketed allocator)
 
 ---
 
@@ -29,36 +30,42 @@
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label | vs CPU |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|--------|
 | 1 | c55d4e9d | 1673 | 1818, 1673, 1673 | 1544 | 188 | 54% | 923 | M12 baseline (pre-optimization) | 1.18x |
+| 2 | 8e325364 | 1480 | 1516, 1516, 1480 | 1544 | 96 | 55% | 1043 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.29x |
 
 ## Float16 Results (50 sentences)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label | vs CPU |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|--------|
 | 1 | c55d4e9d | 1201 | 1216, 1224, 1201 | 1544 | 188 | 41% | 1286 | M12 baseline (pre-optimization) | 1.64x |
+| 2 | 8e325364 | 1033 | 1084, 1034, 1033 | 1550 | 90 | 42% | 1500 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.81x |
 
 ## INT8 Results (10 sentences)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
 | 1 | 051a64f5 | 2512 | 2638, 2591, 2512 | 194 | 5743 | 14% | 77 | M12 baseline |
+| 2 | 8e325364 | 2336 | 2380, 2348, 2336 | 194 | 5692 | 15% | 83 | M12.1 bucketed allocator |
 
 ## INT8+Float16 Results (10 sentences)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
 | 1 | 051a64f5 | 2447 | 2630, 2447, 2460 | 192 | 5630 | 16% | 78 | M12 baseline |
+| 2 | 8e325364 | 2266 | 2286, 2266, 2276 | 193 | 5580 | 15% | 85 | M12.1 bucketed allocator |
 
 ## BFloat16 Results (10 sentences)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
 | 1 | a8a2bf16 | 22261 | 22261, 22410, 22334 | 195 | 2895 | 1% | 9 | M12 baseline |
+| 2 | 8e325364 | 21387 | 21401, 21501, 21387 | 195 | 2844 | 1% | 9 | M12.1 bucketed allocator |
 
 ## INT8+BFloat16 Results (10 sentences)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
 | 1 | 051a64f5 | 23786 | 27672, 25010, 23786 | 195 | 6955 | 2% | 8 | M12 baseline |
+| 2 | 8e325364 | 22042 | 22528, 22042, 22251 | 195 | 6904 | 2% | 9 | M12.1 bucketed allocator |
 
 ---
 
@@ -126,3 +133,51 @@ conda run -n ct2 python tools/benchmark/m12_perf_sweep.py --compute_type bfloat1
 conda run -n ct2 python tools/benchmark/m12_perf_sweep.py --compute_type int8_bfloat16 --num_sentences 10 --label "description"
 ```
 Copy the "Table row" output and append to the appropriate table above.
+
+---
+
+## M12.1 Memory Analysis — Bucketed Allocator (2026-03-11)
+
+### Root Cause of System Crash (pre-M12.1)
+The Metal allocator pool keyed on **exact requested size**. During translation, each internal
+batch has different sentence lengths → different tensor dimensions → different buffer sizes.
+Almost none of these sizes were reused across batches, so the pool accumulated dead MTLBuffers
+indefinitely. On Apple Silicon (unified memory), each `MTLResourceStorageModeShared` buffer
+consumes real DRAM. Without a cap, the full WMT14 (2737 sentences) grew the pool to **30+ GB**,
+exhausting system memory and crashing the machine.
+
+### Fix: Power-of-2 Size-Class Bucketing
+`allocate()` now rounds sizes up to the next power-of-2. The pool keys on bucket size instead
+of exact size. A 131,000-byte request and a 130,500-byte request both bucket to 131,072 → the
+freed buffer gets reused. The pool converges after the first few batches.
+
+### Memory Profile: Full WMT14 (2737 sentences, float16, beam=4)
+
+| Metric | Before (exact-size) | After (bucketed) |
+|--------|-------------------|-----------------|
+| Pool after 500 sent | **15,436 MB** | **702 MB** (22x reduction) |
+| Pool after full WMT14 | **~80 GB** (crash) | **2,774 MB** |
+| Same-data repeat growth | +150 MB each | **0 MB** (perfect reuse) |
+| Peak RSS (full WMT14) | system crash | **1,108 MB** |
+| Translation correctness | baseline | exact match vs CPU |
+
+### Performance Impact of Bucketing
+Benchmarks show no measurable performance difference across pool cap sizes (256 MB to uncapped),
+confirming the old exact-size pool entries were dead weight with ~0% reuse.
+
+### Chunk-Level Memory Stability (2737 sent, chunk_size=200)
+
+| Chunk | Sentences | Pool (MB) | RSS (MB) | tok/s |
+|-------|-----------|-----------|----------|-------|
+| 1 | 1-200 | 1,653 | 869 | 1,758 |
+| 2 | 201-400 | 2,518 | 957 | 1,348 |
+| 3-5 | 401-1000 | 2,542-2,554 | 957 | 1,412-1,490 |
+| 6-9 | 1001-1800 | 2,554 | 957 | 989-1,440 |
+| 10-14 | 1801-2737 | 2,562-2,774 | 959-1,108 | 1,153-1,456 |
+
+Pool stabilizes by chunk 3 (~2,550 MB) with small growth as new bucket sizes are encountered
+in later sentence-length ranges. RSS stays under 1.2 GB throughout.
+
+### Environment Variable (optional safety valve)
+`CT2_METAL_POOL_MAX_MB=N` caps the pool at N megabytes. Excess buffers are released to the system.
+Default: unlimited (bucketing alone prevents unbounded growth).

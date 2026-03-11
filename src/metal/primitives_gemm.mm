@@ -29,14 +29,6 @@
 namespace {
 
 // ---------------------------------------------------------------------------
-// Vectorized int8 → float32 conversion using vDSP (Accelerate framework)
-// (Kept for reference/fallback; M12.6 GPU path is preferred.)
-// ---------------------------------------------------------------------------
-static inline void int8_to_float32(float* dst, const int8_t* src, NSUInteger count) {
-  vDSP_vflt8(reinterpret_cast<const char*>(src), 1, dst, 1, (vDSP_Length)count);
-}
-
-// ---------------------------------------------------------------------------
 // M12.6: GPU kernels for INT8 GEMM — eliminates 2 CPU/GPU syncs per GEMM.
 //
 // int8_to_float32_strided:
@@ -106,7 +98,8 @@ static void encode_int8_to_float32(
   [enc setComputePipelineState:pso];
   [enc setBuffer:src_buf offset:src_off atIndex:0];
   [enc setBuffer:dst_buf offset:dst_off atIndex:1];
-  const uint32_t params[4] = { rows, cols, (uint32_t)in_stride, (uint32_t)out_stride };
+  // M12 review M2: Use ct2_u32() for checked narrowing (project convention).
+  const uint32_t params[4] = { rows, cols, ct2_u32(in_stride), ct2_u32(out_stride) };
   [enc setBytes:params length:sizeof(params) atIndex:2];
   const NSUInteger total = (NSUInteger)rows * cols;
   const NSUInteger tpg = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
@@ -130,7 +123,7 @@ static void encode_float32_to_int32(
   [enc setComputePipelineState:pso];
   [enc setBuffer:src_buf offset:src_off atIndex:0];
   [enc setBuffer:dst_buf offset:dst_off atIndex:1];
-  const uint32_t params[4] = { rows, (uint32_t)cols, (uint32_t)in_stride, (uint32_t)out_stride };
+  const uint32_t params[4] = { rows, cols, ct2_u32(in_stride), ct2_u32(out_stride) };
   [enc setBytes:params length:sizeof(params) atIndex:2];
   const NSUInteger total = (NSUInteger)rows * cols;
   const NSUInteger tpg = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
@@ -767,10 +760,10 @@ static void dispatch_int8_gemm(
 
   encode_int8_to_float32(buf_a, off_a, (NSUInteger)lda,
                           tmp_a, 0, rb_a / sizeof(float),
-                          (uint32_t)rows_a, (uint32_t)cols_a);
+                          ct2_u32(rows_a), ct2_u32(cols_a));
   encode_int8_to_float32(buf_b, off_b, (NSUInteger)ldb,
                           tmp_b, 0, rb_b / sizeof(float),
-                          (uint32_t)rows_b, (uint32_t)cols_b);
+                          ct2_u32(rows_b), ct2_u32(cols_b));
 
   // GPU: encode float32 MPS GEMM (encode-only).
   dispatch_mps_gemm_buf(
@@ -784,7 +777,7 @@ static void dispatch_int8_gemm(
   id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
   encode_float32_to_int32(tmp_c, 0, rb_c / sizeof(float),
                            buf_c, off_c, (NSUInteger)ldc,
-                           (uint32_t)m, (uint32_t)n);
+                           ct2_u32(m), ct2_u32(n));
 
   // Release temp buffers — CB retains them until GPU execution completes.
   [tmp_a release];
@@ -1620,10 +1613,10 @@ namespace ctranslate2 {
           id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(src_b, &off_b);
           encode_int8_to_float32(buf_a, off_a, (NSUInteger)lda,
                                   tmp_a, bi * bytes_a, out_stride_a,
-                                  (uint32_t)rows_a, (uint32_t)cols_a);
+                                  ct2_u32(rows_a), ct2_u32(cols_a));
           encode_int8_to_float32(buf_b, off_b, (NSUInteger)ldb,
                                   tmp_b, bi * bytes_b, out_stride_b,
-                                  (uint32_t)rows_b, (uint32_t)cols_b);
+                                  ct2_u32(rows_b), ct2_u32(cols_b));
         }
 
         // Phase 2: GPU encode all MPS GEMMs (encode-only).
@@ -1642,7 +1635,7 @@ namespace ctranslate2 {
           id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(dst_c, &off_c);
           encode_float32_to_int32(tmp_c, bi * bytes_c, out_stride_c,
                                    buf_c, off_c, (NSUInteger)ldc,
-                                   (uint32_t)m, (uint32_t)n);
+                                   ct2_u32(m), ct2_u32(n));
         }
 
         // Release temp buffers — CB retains them until GPU execution.

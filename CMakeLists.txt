@@ -511,6 +511,11 @@ if (WITH_OPENBLAS)
   list(APPEND LIBRARIES ${OPENBLAS_LIBRARY})
 endif()
 
+# RUY: Google's matrix multiplication library for INT8 GEMM on ARM (NEON).
+# On Apple Silicon, INT8 with RUY is slower than FP32 with AMX/Accelerate
+# (~0.73× at 4 threads) due to quantize/dequantize overhead.
+# Note: CMake 3.30+ requires -DCMAKE_POLICY_VERSION_MINIMUM=3.5 because
+# RUY's cpuinfo dependency has an outdated cmake_minimum_required().
 if (WITH_RUY)
   add_definitions(-DCT2_WITH_RUY)
   set(CMAKE_POSITION_INDEPENDENT_CODE ON)

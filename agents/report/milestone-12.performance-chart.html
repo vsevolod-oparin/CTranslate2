@@ -170,7 +170,7 @@
     <div class="legend-item"><div class="legend-dot" style="background:#e0af68"></div> MPS int8</div>
     <div class="legend-item"><div class="legend-dot" style="background:#f7768e"></div> MPS int8_float16</div>
     <div class="legend-item"><div class="legend-dot" style="background:#c0a36e"></div> MPS int8_bfloat16</div>
-    <div class="legend-item"><div class="legend-line" style="background:#555; border-top: 2px dashed #555"></div> CPU f32 baseline (741 tok/s)</div>
+    <div class="legend-item"><div class="legend-line" style="background:#555; border-top: 2px dashed #555"></div> CPU f32 baseline (813 tok/s)</div>
   </div>
   <div id="bar-chart" style="position:relative"></div>
 </div>
@@ -200,7 +200,7 @@
 
 <!-- Summary table -->
 <div class="table-container">
-  <div class="chart-title">Final Performance Summary (M12.8 — Post Code Review)</div>
+  <div class="chart-title">Final Performance Summary (M12.9 — Post All Fixes)</div>
   <table id="summary-table">
     <thead>
       <tr>
@@ -224,7 +224,7 @@
 <script>
 
 // ── Raw data ──
-const cpuBaseline = 741;  // CPU f32, 4 threads, 50 sentences
+const cpuBaseline = 813;  // CPU f32, 4 threads, 50 sentences (M12.9)
 
 // Timeline data: tok/s at each milestone for each type
 const milestones = [
@@ -234,47 +234,48 @@ const milestones = [
   "M12.3\nPtr Cache",
   "M12.5\nBF16→FP16\nPromotion",
   "M12.6\nINT8 GPU\nDequant",
-  "M12.8\nCode Review\nFixes"
+  "M12.8\nHIGH\nFixes",
+  "M12.9\nMED/LOW\nFixes"
 ];
 
 const timeline = {
-  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497],
-  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019],
-  int8:         [  77,   83,   84,   84,   84,  453,  462],
-  int8_float16: [  78,   85,   86,   86,   86,  494,  486],
-  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492],
+  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497, 1496],
+  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019, 1059],
+  int8:         [  77,   83,   84,   84,   84,  453,  462,  467],
+  int8_float16: [  78,   85,   86,   86,   86,  494,  486,  496],
+  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492, 1305],
 };
 
 // Commit counts timeline
 const commitTimeline = {
-  float16:      [188, 90, 90, 90, 90, 90, 90],
-  float32:      [188, 96, 96, 96, 96, 96, 96],
-  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522],
-  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446],
-  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90],
+  float16:      [188, 90, 90, 90, 90, 90, 90, 90],
+  float32:      [188, 96, 96, 96, 96, 96, 96, 96],
+  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522, 3522],
+  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446, 3446],
+  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90, 90],
 };
 
 // Final summary table data
 const finalData = [
-  {backend:"MPS",type:"float16",  toks:1497,ms:1035,vsCpu:"2.02×",commits:90,  gpu:"42%",notes:"Best overall",cls:"type-f16"},
-  {backend:"MPS",type:"bfloat16", toks:1492,ms:1043,vsCpu:"2.01×",commits:90,  gpu:"41%",notes:"Auto-promoted to f16 (M12.5)",cls:"type-bf16"},
-  {backend:"MPS",type:"float32",  toks:1019,ms:1515,vsCpu:"1.38×",commits:96,  gpu:"54%",notes:"Precision-sensitive",cls:"type-f32"},
-  {backend:"CPU",type:"float32",  toks:741, ms:2092,vsCpu:"1.00×",commits:0,   gpu:"—",  notes:"Baseline (4 threads, AMX)",cls:"type-cpu"},
-  {backend:"CPU",type:"int8 RUY", toks:540, ms:2882,vsCpu:"0.73×",commits:0,   gpu:"—",  notes:"Memory-constrained only (M12.7)",cls:"type-cpu"},
-  {backend:"MPS",type:"int8_float16",toks:486,ms:3186,vsCpu:"0.66×",commits:3446,gpu:"42%",notes:"GPU dequant (M12.6)",cls:"type-i8f16"},
-  {backend:"MPS",type:"int8_bfloat16",toks:491,ms:3153,vsCpu:"0.66×",commits:3446,gpu:"41%",notes:"Auto-promoted to int8_f16",cls:"type-i8bf16"},
-  {backend:"MPS",type:"int8",     toks:462, ms:3363,vsCpu:"0.62×",commits:3522,gpu:"39%",notes:"GPU dequant (M12.6)",cls:"type-i8"},
+  {backend:"MPS",type:"float16",  toks:1496,ms:1036,vsCpu:"1.84×",commits:90,  gpu:"41%",notes:"Best overall",cls:"type-f16"},
+  {backend:"MPS",type:"bfloat16", toks:1305,ms:1188,vsCpu:"1.60×",commits:90,  gpu:"44%",notes:"Auto-promoted to f16 (M12.5)",cls:"type-bf16"},
+  {backend:"MPS",type:"float32",  toks:1059,ms:1458,vsCpu:"1.30×",commits:96,  gpu:"54%",notes:"Precision-sensitive",cls:"type-f32"},
+  {backend:"CPU",type:"float32",  toks:813, ms:1904,vsCpu:"1.00×",commits:0,   gpu:"—",  notes:"Baseline (4 threads, AMX)",cls:"type-cpu"},
+  {backend:"CPU",type:"int8 RUY", toks:540, ms:2882,vsCpu:"0.66×",commits:0,   gpu:"—",  notes:"Memory-constrained only (M12.7)",cls:"type-cpu"},
+  {backend:"MPS",type:"int8_float16",toks:496,ms:3122,vsCpu:"0.61×",commits:3446,gpu:"41%",notes:"GPU dequant (M12.6)",cls:"type-i8f16"},
+  {backend:"MPS",type:"int8_bfloat16",toks:483,ms:3201,vsCpu:"0.59×",commits:3446,gpu:"41%",notes:"Auto-promoted to int8_f16",cls:"type-i8bf16"},
+  {backend:"MPS",type:"int8",     toks:467, ms:3321,vsCpu:"0.57×",commits:3522,gpu:"39%",notes:"GPU dequant (M12.6)",cls:"type-i8"},
 ];
 
 // ── Summary cards ──
 const summaryEl = document.getElementById("summary");
 const cards = [
-  {value:"1,497", label:"Best tok/s (MPS f16)",cls:""},
-  {value:"2.02×", label:"vs CPU f32 (741 tok/s)",cls:"highlight"},
+  {value:"1,496", label:"Best tok/s (MPS f16)",cls:""},
+  {value:"1.84×", label:"vs CPU f32 (813 tok/s)",cls:"highlight"},
   {value:"5.4×",  label:"INT8 speedup (M12.6)",cls:"warn"},
   {value:"166×",  label:"BF16 speedup (M12.5)",cls:"cpu"},
   {value:"90",    label:"Commits (f16, from 188)",cls:""},
-  {value:"7",     label:"Milestones completed",cls:""},
+  {value:"8",     label:"Milestones completed",cls:""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");
@@ -322,7 +323,7 @@ function hideTip() { tip.style("opacity",0); }
     .attr("stroke","#555").attr("stroke-dasharray","6,4").attr("stroke-width",1.5);
   g.append("text").attr("x",innerW-4).attr("y",y(cpuBaseline)-6)
     .attr("text-anchor","end").attr("fill","#666").attr("font-size","10px")
-    .text("CPU f32 baseline (741 tok/s)");
+    .text("CPU f32 baseline (813 tok/s)");
 
   // Bars
   g.selectAll(".bar").data(finalData).enter().append("rect")
@@ -391,7 +392,7 @@ function hideTip() { tip.style("opacity",0); }
     {x0:-0.5, x1:0.5, color:"#1a1520", label:"Baseline"},
     {x0:0.5, x1:3.5, color:"#151a18", label:"Infrastructure"},
     {x0:3.5, x1:5.5, color:"#151520", label:"Type Optimization"},
-    {x0:5.5, x1:6.5, color:"#1a1a15", label:"Review"},
+    {x0:5.5, x1:7.5, color:"#1a1a15", label:"Review"},
   ];
   phases.forEach(p => {
     const px0 = x(Math.max(0, p.x0 + 0.5)) - x.step()*0.4;

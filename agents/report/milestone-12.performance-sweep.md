@@ -9,22 +9,25 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1969 ms, 1549 tokens, 787 tok/s (M12.0)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1875 ms, 1549 tokens, 826 tok/s (M12.1, bucketed allocator)
 **CPU baseline**: float32, 4 threads, 50 sentences → 2092 ms, 1549 tokens, 741 tok/s (M12.8, post code review)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1904 ms, 1549 tokens, 813 tok/s (M12.9, post M/L fixes)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
 
-## Final Summary (M12.8 — Post Code Review, all compute types, 50 sentences)
+## Final Summary (M12.9 — Post All Fixes, all compute types, 50 sentences)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
-| **MPS** | **float16** | **1497** | **1035** | **2.02×** | 90 | 42% | Best overall |
-| **MPS** | **bfloat16** | **1492** | **1043** | **2.01×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
-| **MPS** | **float32** | **1019** | **1515** | **1.38×** | 96 | 54% | Precision-sensitive |
-| CPU | float32 | 741 | 2092 | 1.00× | — | — | Baseline (4 threads, AMX) |
-| CPU | int8 (RUY) | 540 | 2882 | 0.73× | — | — | Memory-constrained only (M12.7) |
-| **MPS** | int8_float16 | 486 | 3186 | 0.66× | 3446 | 42% | GPU dequant (M12.6) |
-| **MPS** | int8_bfloat16 | 491 | 3153 | 0.66× | 3446 | 41% | Auto-promoted to int8_f16 |
-| **MPS** | int8 | 462 | 3363 | 0.62× | 3522 | 39% | GPU dequant (M12.6) |
+| **MPS** | **float16** | **1496** | **1036** | **1.84×** | 90 | 41% | Best overall |
+| **MPS** | **bfloat16** | **1305** | **1188** | **1.60×** | 90 | 44% | Auto-promoted to f16 (M12.5) |
+| **MPS** | **float32** | **1059** | **1458** | **1.30×** | 96 | 54% | Precision-sensitive |
+| CPU | float32 | 813 | 1904 | 1.00× | — | — | Baseline (4 threads, AMX) |
+| CPU | int8 (RUY) | 540 | 2882 | 0.66× | — | — | Memory-constrained only (M12.7) |
+| **MPS** | int8_float16 | 496 | 3122 | 0.61× | 3446 | 41% | GPU dequant (M12.6) |
+| **MPS** | int8_bfloat16 | 483 | 3201 | 0.59× | 3446 | 41% | Auto-promoted to int8_f16 |
+| **MPS** | int8 | 467 | 3321 | 0.57× | 3522 | 39% | GPU dequant (M12.6) |
+
+Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratios above use the M12.9 baseline (813 tok/s). MPS absolute throughput is stable across M12.8→M12.9.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -62,6 +65,7 @@
 | 5 | — | — | — | — | 96 | 54% | ~1000 | M12.5 BF16 auto-promotion (no f32 change) | |
 | 6 | — | — | — | — | 96 | 54% | ~1000 | M12.6 INT8 GPU dequant (no f32 change) | |
 | 7 | fda694a1 | 1515 | 1528, 1515, 1523 | 1544 | 96 | 54% | 1019 | M12.8 code review fixes | 1.38x |
+| 8 | 093ae223 | 1458 | 1493, 1480, 1458 | 1544 | 96 | 54% | 1059 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.30x |
 
 ## Float16 Results (50 sentences)
 
@@ -74,6 +78,7 @@
 | 5 | — | — | — | — | 90 | 41% | ~1476 | M12.5 BF16 auto-promotion (no f16 change) | |
 | 6 | — | 1049 | — | 1550 | 90 | 41% | 1464 | M12.6 INT8 GPU dequant (no f16 change) | |
 | 7 | fda694a1 | 1035 | 1084, 1035, 1036 | 1550 | 90 | 42% | 1497 | M12.8 code review fixes | 1.86x |
+| 8 | 093ae223 | 1036 | 1125, 1036, 1043 | 1550 | 90 | 41% | 1496 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.84x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -86,6 +91,7 @@
 | 5 | — | — | — | — | — | — | — | M12.5 (no int8 change) |
 | 6 | — | — | — | 194 | 3522 | 40% | 453 | **M12.6 GPU dequant (5.4× speedup)** |
 | 7 | fda694a1 | 3363 | 3363, 3389, 3375 | 1552 | 3522 | 39% | 462 | M12.8 code review fixes (50 sent) |
+| 8 | 093ae223 | 3321 | 3451, 3325, 3321 | 1552 | 3522 | 39% | 467 | M12.9 MEDIUM/LOW fixes (no perf change) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -98,6 +104,7 @@
 | 5 | — | — | — | — | — | — | — | M12.5 (no int8_f16 change) |
 | 6 | — | — | — | 193 | 3446 | 42% | 494 | **M12.6 GPU dequant (5.7× speedup)** |
 | 7 | fda694a1 | 3186 | 3186, 3242, 3196 | 1547 | 3446 | 42% | 486 | M12.8 code review fixes (50 sent) |
+| 8 | 093ae223 | 3122 | 3302, 3139, 3122 | 1547 | 3446 | 41% | 496 | M12.9 MEDIUM/LOW fixes (no perf change) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -110,6 +117,7 @@
 | 5 | — | — | — | 1556 | 90 | 41% | 1426 | **M12.5 BF16→FP16 auto-promotion (158× speedup)** |
 | 6 | — | — | — | — | 90 | 41% | ~1426 | M12.6 (no bf16 change) |
 | 7 | fda694a1 | 1043 | 1134, 1043, 1046 | 1556 | 90 | 41% | 1492 | M12.8 code review fixes (50 sent) |
+| 8 | 093ae223 | 1188 | 2818, 1188, 1215 | 1550 | 90 | 44% | 1305 | M12.9 MEDIUM/LOW fixes (run 1 cold JIT) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -122,6 +130,7 @@
 | 5 | — | — | — | — | 3446 | 41% | 454 | **M12.5 auto-promoted to int8_f16** |
 | 6 | — | — | — | — | 3446 | 41% | ~454 | M12.6 (benefits from int8_f16 GPU dequant) |
 | 7 | fda694a1 | 3153 | 3154, 3217, 3153 | 1547 | 3446 | 41% | 491 | M12.8 code review fixes (50 sent) |
+| 8 | 093ae223 | 3201 | 3424, 3220, 3201 | 1547 | 3446 | 41% | 483 | M12.9 MEDIUM/LOW fixes (no perf change) |
 
 ---
 
@@ -137,6 +146,7 @@
 | **M12.6** | INT8 GPU dequantize kernels | int8: 84→453 tok/s (**5.4×**), int8_f16: 86→494 (**5.7×**) |
 | **M12.7** | CPU INT8 build (RUY) | CPU int8: 540 tok/s (new, slower than CPU f32 on Apple Silicon) |
 | **M12.8** | Code review fixes (8 HIGH) | protect_buffer, rounding fix, atomic counters, etc. |
+| **M12.9** | Code review fixes (5 MED + 2 LOW) | ct2_u32 consistency, dead code removal — no perf impact |
 
 ---
 

@@ -124,13 +124,13 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 **Result**: **Architecturally infeasible.** `gather_beam_flat` immediately after hypothesis registration overwrites beam data in alive_seq. Token data for finished beams is destroyed before finalization. Current immediate copy is correct and necessary.
 **Report**: `agents/report/milestone-12.14-decode-bookkeeping-optimization.md`
 
-### 2.6 Object Pooling for Per-Step Temporaries (Priority: ★★★)
+### 2.6 Object Pooling for Per-Step Temporaries — ✅ REJECTED (M12.16)
 
-**Location**: `src/decoding.cc:713, 677, 826`
-**Issue**: `non_finished_index`, `gather_indices`, `keep_batches` allocated fresh each step.
-**Fix**: Allocate before the loop, clear and reuse.
-**Impact**: 3-5%
-**Effort**: Low-Medium
+**Location**: `src/decoding.cc:713, 677, 826` + `src/sampling.cc:20-21`
+**Issue**: `non_finished_index`, `gather_indices`, `active_beams`, sampler GPU buffers allocated fresh each step.
+**Fix implemented**: Hoisted all temporaries before the decode loop; added mutable GPU buffer members to Sampler class.
+**Result**: **REJECTED.** All 6 types within ±3% noise. Total theoretical savings: ~0.45ms per benchmark (<0.05%) — the Metal bucketed allocator already provides O(1) pool operations, and CPU overhead is only 0.4% of total decode time (M12.4). Code complexity not justified.
+**Report**: `agents/report/milestone-12.16-object-pooling-temporaries.md`
 
 ---
 
@@ -283,7 +283,7 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 | 4.1 | BiasAdd+Act+Residual fusion | **REJECTED** (±3% noise) | Medium | Code reverted |
 | 4.3 | GPU nucleus sampling | **N/A** (not in beam search) | Medium | Not implemented |
 | 5.2 | Metal Residency Sets | Robustness | Easy | `allocator.mm` |
-| 2.6 | Object pooling temporaries | All: 3-5% | Low-Med | `decoding.cc` |
+| 2.6 | Object pooling temporaries | **REJECTED** (±3% noise) | Low-Med | Code reverted |
 
 ### Phase 4: Future / Large Models
 

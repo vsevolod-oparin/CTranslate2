@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
-**Revised:** 2026-03-10
-**Status:** In progress — M11.29 complete (22.1x speedup on Whisper large-v3-turbo, Apple M4)
+**Revised:** 2026-03-11
+**Status:** In progress — M12 profiling complete (translation pipeline optimization), M11 done
 
 ---
 
@@ -75,7 +75,7 @@ StorageView stores a raw `void*`. For Metal, that pointer comes from `[MTLBuffer
 
 5. **Existing `DEVICE_AND_FLOAT_DISPATCH` has hard-coded CUDA guards**: `dispatch.h` line 29: `if (DEVICE != Device::CUDA) throw "FP16 is only supported on GPU"`. Adding Metal needs to update this guard to `if (DEVICE != Device::CUDA && DEVICE != Device::METAL)`.
 
-6. **Python bindings deferred to M12**: Device string enumeration can be exposed in Python as early as M1, allowing Python-level tests throughout development instead of waiting for the end.
+6. **Python bindings deferred to M13**: Device string enumeration can be exposed in Python as early as M1, allowing Python-level tests throughout development instead of waiting for the end.
 
 7. **INT8 placed too late (M8, Medium priority)**: Most production-deployed CT2 models are INT8. If INT8 is deferred until after full layer integration, end-to-end model tests (M9) only work for float models. Reordered to M9.
 
@@ -1018,45 +1018,107 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 
 ---
 
-### Milestone 12: Testing, CI, Documentation
-**Goal:** Lock in quality; add Metal to CI pipeline.
+### Milestone 12: Translation Pipeline Optimization
+**Goal:** Optimize MPS backend for encoder-decoder translation (OPUS-MT, MarianNMT) — eliminate sync bottlenecks, reduce ObjC overhead, achieve GPU utilization >70%.
 **Time:** 1 week
 **Depends on:** M11
 
-**12.1 C++ test parameterization**
-- All existing `tests/*.cc` suites parameterized with `{Device::CPU, Device::METAL}` where applicable
+**Context:** MPS benchmark (WMT14 En→De, 2737 sentences, beam=4, Apple M4) showed:
+- MPS float16: 1006 tok/s (1.08× CPU) — expected 2-3× for GPU
+- MPS float32: 269 tok/s (0.29× CPU) — GPU mostly idle
+- GPU utilization: ~40% — 60% of time spent in CPU overhead
+- Root cause: 288 commit_and_wait() calls per 100-sentence batch + ObjC alloc overhead
+
+**12.1 prepare_length_mask sync elimination**
+- Replace `CT2_COMMIT_AND_WAIT()` in `primitives_beam_search.mm:91` with `encode_barrier()`
+- The mask kernel only reads `lengths` on GPU and writes `mask` on GPU — no CPU access needed
+- Eliminates ~140 commits per batch (~50% of all syncs)
+- **PASS:** Translation output identical, commit count reduced by ~50%
+
+**12.2 ObjC overhead reduction in GEMM path**
+- Cache `MPSMatrixDescriptor` objects by (rows, cols, rowBytes, dataType)
+- Pool or cache `MPSMatrix` objects for the decode hot path (m=1)
+- Consider custom f32 GEMV kernel for m=1 decode (bypass MPS matrix wrapper entirely)
+- **PASS:** Per-GEMM ObjC overhead reduced; measurable wall-time improvement
+
+**12.3 Buffer lookup optimization**
+- Replace linear scan in `metal_buffer_for_ptr()` with sorted map (O(log n) lookup)
+- Called ~10,000+ times per translation batch (3× per GEMM + 2× per kernel)
+- **PASS:** Lookup time reduced; profiler shows lower CPU overhead
+
+**12.4 MPS benchmark and README update**
+- Run `tools/benchmark/benchmark_mps.py` with optimized backend
+- Update README.md MPS section with final numbers
+- Target: MPS float16 ≥ 2× CPU float32, GPU utilization ≥ 70%
+- **PASS:** README shows competitive MPS numbers
+
+**12.5 BF16 translation performance** (timed out at >20 min for 2737 sentences)
+- Root cause: MPSGraph `runWithMTLCommandQueue:` is inherently synchronous — each BF16 GEMM
+  blocks CPU+GPU (~1ms per graph run). ~144 graph runs per decode step at beam=4.
+- Options (pick best ROI):
+  - (a) `runAsyncWithMTLCommandQueue:` for deferred graph execution (risky, API behavior unclear)
+  - (b) Batched graph execution — single 3D matmul instead of B separate 2D runs
+  - (c) Auto-promote BF16 weights → FP16 at load time on MPS (lossy, immediate speedup)
+  - (d) Custom BF16 GEMV kernel for m=1 decode (bypass MPSGraph for decode hot path)
+- **PASS:** BF16 translation completes within 2× FP16 time, or auto-promotes to FP16
+
+**12.6 INT8 translation performance** (131 tok/s — 7× slower than CPU float32)
+- Root cause: No native Metal INT8 GEMM. Current: CPU int8→f32 + GPU f32 GEMM + CPU f32→i32
+  requires 2 commit_and_wait() per single GEMM (batched path: 2 total).
+- Options:
+  - (a) GPU int8→float32 + float32→int32 kernels (eliminate CPU conversion, 0 syncs)
+  - (b) INT8 dequantize-to-FP16 at model load (INT8 models run at FP16 speed, 2× memory)
+- **PASS:** INT8 translation ≥ 500 tok/s, or auto-promotes to FP16/FP32
+
+**12.7 CPU INT8 build support**
+- Error: "does not support efficient int8 computation" — build lacks RUY/MKL/DNNL
+- Fix: Build with `-DCT2_WITH_RUY=ON` (best for Apple Silicon ARM NEON)
+- Also fix benchmark script to detect and skip unsupported compute types gracefully
+- **PASS:** CPU INT8 benchmark runs successfully
+
+- Report: `agents/report/milestone-12-translation-pipeline-optimization.md`
+
+---
+
+### Milestone 13: Testing, CI, Documentation
+**Goal:** Lock in quality; add Metal to CI pipeline.
+**Time:** 1 week
+**Depends on:** M12
+
+**13.1 C++ test parameterization**
+- All existing `tests/*.cc` suites parameterized with `{Device::CPU, Device::MPS}` where applicable
 - **PASS:** `ctest` with Metal runner passes 100% of tests
 
-**12.2 Python test suite for Metal**
-- `python/tests/test_translator.py`: add `@pytest.mark.metal` tests
-- `python/tests/test_transformers.py`: add Metal device conversion test
-- **PASS:** `pytest python/tests/ -m metal` passes
+**13.2 Python test suite for Metal**
+- `python/tests/test_translator.py`: add `@pytest.mark.mps` tests
+- `python/tests/test_transformers.py`: add MPS device conversion test
+- **PASS:** `pytest python/tests/ -m mps` passes
 
-**12.3 CI configuration**
+**13.3 CI configuration**
 - `.github/workflows/ci.yml`: add `macos-14` runner (Apple Silicon, M1)
 - Build with `WITH_METAL=ON WITH_ACCELERATE=ON`
 - Run tests with small model (downloaded in CI)
 - Gate: new PR must not regress Metal test suite
 - **PASS:** CI green on macos-14 runner
 
-**12.4 Documentation**
+**13.4 Documentation**
 - `docs/hardware_support.md`: add Apple Silicon section
 - `docs/installation.md`: Metal build instructions
 - `ARCHITECTURE.md`: add Metal backend to Section 6 (dispatch) and Section 9 (memory/allocator)
-- `ARCHITECTURE.md` Section 12 (Runtime Configuration): add `CT2_METAL_ALLOW_BF16` to the env vars table (introduced in M11.3)
+- `ARCHITECTURE.md` Section 12 (Runtime Configuration): add `CT2_MPS_ALLOW_BF16` to the env vars table (introduced in M11.3)
 - Document known limitations:
-  - AWQ not supported on Metal (no INT8 matmul)
+  - AWQ not supported on MPS (no INT8 matmul)
   - Flash Attention (fused) not yet implemented (Phase 2)
   - BF16 requires macOS 14 + M3 or later
   - `gemm_pack_b` always returns 0 (weight pre-packing not supported)
 
-**12.5 Fuzz testing and edge cases**
+**13.5 Fuzz testing and edge cases**
 - Random input generation with varying sizes: `[1,1,1]` to `[32,1024,1024]`
 - Boundary conditions: zero-size tensors, negative strides (if supported), NaN/inf values
 - Numerical stability tests: extreme input values (1e10, 1e-10), quantization boundaries
 - **PASS:** All fuzz tests complete without crash/hang, outputs are finite (non-NaN, non-inf)
 
-**12.6 Stress testing**
+**13.6 Stress testing**
 - Continuous inference loop: run translator 1000 times with same input, verify no memory leak
 - Large batch test: `batch_size=32, beam_size=5, max_length=1024` - verify stable performance
 - Mixed precision stress: alternate between float16, float32, and INT8 in loop
@@ -1159,7 +1221,7 @@ Target performance benchmarks for Apple M4 Metal backend:
 - Python tests pass with `@pytest.mark.metal` marker
 - Known limitations clearly documented
 
-**Phase 3: Production-Ready (M10-M12)**
+**Phase 3: Production-Ready (M10-M13)**
 - Full feature parity with CPU for supported models
 - Metal passes all CI tests on every PR
 - Performance meets baseline targets (see above)

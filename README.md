@@ -121,6 +121,17 @@ Executed with 4 threads on a [*c5.2xlarge*](https://aws.amazon.com/ec2/instance-
 
 Executed with CUDA 11 on a [*g5.xlarge*](https://aws.amazon.com/ec2/instance-types/g5/) Amazon EC2 instance equipped with a NVIDIA A10G GPU (driver version: 510.47.03).
 
+#### MPS (Apple Metal)
+
+| | Tokens per second | Max. memory | BLEU |
+| --- | --- | --- | --- |
+| **OPUS-MT model** | | | |
+| CTranslate2 - CPU float32 (4 threads) | 933.9 | 1649MB | 27.65 |
+| CTranslate2 - MPS float32 | 268.7 | 1024MB | 27.65 |
+| CTranslate2 - MPS float16 | 1006.3 | 673MB | 26.81 |
+
+Executed on Apple M4 with Metal Performance Shaders. MPS float16 provides **1.08x speedup** over 4-thread CPU with **59% less memory**. MPS float32 is slower due to command buffer overhead dominating small per-op GEMMs. See the [benchmark scripts](tools/benchmark) for details.
+
 ## Contributing
 
 CTranslate2 is a community-driven project. We welcome contributions of all kinds:

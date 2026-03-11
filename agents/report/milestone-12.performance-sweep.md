@@ -10,24 +10,25 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1875 ms, 1549 tokens, 826 tok/s (M12.1, bucketed allocator)
 **CPU baseline**: float32, 4 threads, 50 sentences → 2092 ms, 1549 tokens, 741 tok/s (M12.8, post code review)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1904 ms, 1549 tokens, 813 tok/s (M12.9, post M/L fixes)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1865 ms, 1549 tokens, 830 tok/s (M13.1, protect_buffer)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
 
-## Final Summary (M12.9 — Post All Fixes, all compute types, 50 sentences)
+## Final Summary (M13.1 — INT8 protect_buffer sync elimination, all compute types, 50 sentences)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
-| **MPS** | **float16** | **1496** | **1036** | **1.84×** | 90 | 41% | Best overall |
-| **MPS** | **bfloat16** | **1305** | **1188** | **1.60×** | 90 | 44% | Auto-promoted to f16 (M12.5) |
-| **MPS** | **float32** | **1059** | **1458** | **1.30×** | 96 | 54% | Precision-sensitive |
-| CPU | float32 | 813 | 1904 | 1.00× | — | — | Baseline (4 threads, AMX) |
-| CPU | int8 (RUY) | 540 | 2882 | 0.66× | — | — | Memory-constrained only (M12.7) |
-| **MPS** | int8_float16 | 496 | 3122 | 0.61× | 3446 | 41% | GPU dequant (M12.6) |
-| **MPS** | int8_bfloat16 | 483 | 3201 | 0.59× | 3446 | 41% | Auto-promoted to int8_f16 |
-| **MPS** | int8 | 467 | 3321 | 0.57× | 3522 | 39% | GPU dequant (M12.6) |
+| **MPS** | **float16** | **1490** | **1040** | **1.80×** | 90 | 41% | Best overall |
+| **MPS** | **bfloat16** | **1490** | **1040** | **1.80×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
+| **MPS** | **float32** | **1053** | **1466** | **1.27×** | 96 | 54% | Precision-sensitive |
+| **MPS** | **int8_float16** | **889** | **1740** | **1.07×** | 93 | 44% | **M13.1: 1.79× vs M12.9** |
+| **MPS** | **int8_bfloat16** | **887** | **1745** | **1.07×** | 93 | 44% | **M13.1: 1.83× vs M12.9** |
+| CPU | float32 | 830 | 1865 | 1.00× | — | — | Baseline (4 threads, AMX) |
+| **MPS** | **int8** | **779** | **1993** | **0.94×** | 97 | 55% | **M13.1: 1.67× vs M12.9** |
+| CPU | int8 (RUY) | 540 | 2882 | 0.65× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratios above use the M12.9 baseline (813 tok/s). MPS absolute throughput is stable across M12.8→M12.9.
+Note: CPU baseline varies between runs (741–830 tok/s). The "vs CPU f32" ratios above use the M13.1 baseline (830 tok/s). INT8 types improved dramatically from protect_buffer sync elimination (3400–3500 commits → 93–97).
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -66,6 +67,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | — | — | — | 96 | 54% | ~1000 | M12.6 INT8 GPU dequant (no f32 change) | |
 | 7 | fda694a1 | 1515 | 1528, 1515, 1523 | 1544 | 96 | 54% | 1019 | M12.8 code review fixes | 1.38x |
 | 8 | 093ae223 | 1458 | 1493, 1480, 1458 | 1544 | 96 | 54% | 1059 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.30x |
+| 9 | 2c616b5d | 1466 | 1500, 1466, 1481 | 1544 | 96 | 54% | 1053 | M13.1 INT8 protect_buffer (no f32 change) | 1.27x |
 
 ## Float16 Results (50 sentences)
 
@@ -79,6 +81,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | 1049 | — | 1550 | 90 | 41% | 1464 | M12.6 INT8 GPU dequant (no f16 change) | |
 | 7 | fda694a1 | 1035 | 1084, 1035, 1036 | 1550 | 90 | 42% | 1497 | M12.8 code review fixes | 1.86x |
 | 8 | 093ae223 | 1036 | 1125, 1036, 1043 | 1550 | 90 | 41% | 1496 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.84x |
+| 9 | 2c616b5d | 1040 | 1086, 1040, 1043 | 1550 | 90 | 41% | 1490 | M13.1 INT8 protect_buffer (no f16 change) | 1.80x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -92,6 +95,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | — | — | 194 | 3522 | 40% | 453 | **M12.6 GPU dequant (5.4× speedup)** |
 | 7 | fda694a1 | 3363 | 3363, 3389, 3375 | 1552 | 3522 | 39% | 462 | M12.8 code review fixes (50 sent) |
 | 8 | 093ae223 | 3321 | 3451, 3325, 3321 | 1552 | 3522 | 39% | 467 | M12.9 MEDIUM/LOW fixes (no perf change) |
+| 9 | 2c616b5d | 1993 | 2052, 2003, 1993 | 1552 | 97 | 55% | 779 | **M13.1 protect_buffer (1.67× speedup, 97% fewer commits)** |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -105,6 +109,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | — | — | 193 | 3446 | 42% | 494 | **M12.6 GPU dequant (5.7× speedup)** |
 | 7 | fda694a1 | 3186 | 3186, 3242, 3196 | 1547 | 3446 | 42% | 486 | M12.8 code review fixes (50 sent) |
 | 8 | 093ae223 | 3122 | 3302, 3139, 3122 | 1547 | 3446 | 41% | 496 | M12.9 MEDIUM/LOW fixes (no perf change) |
+| 9 | 2c616b5d | 1740 | 1784, 1746, 1740 | 1547 | 93 | 44% | 889 | **M13.1 protect_buffer (1.79× speedup, 97% fewer commits)** |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -118,6 +123,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | — | — | — | 90 | 41% | ~1426 | M12.6 (no bf16 change) |
 | 7 | fda694a1 | 1043 | 1134, 1043, 1046 | 1556 | 90 | 41% | 1492 | M12.8 code review fixes (50 sent) |
 | 8 | 093ae223 | 1188 | 2818, 1188, 1215 | 1550 | 90 | 44% | 1305 | M12.9 MEDIUM/LOW fixes (run 1 cold JIT) |
+| 9 | 2c616b5d | 1040 | 1080, 1040, 1041 | 1550 | 90 | 41% | 1490 | M13.1 protect_buffer (no bf16 change) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -131,6 +137,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | 6 | — | — | — | — | 3446 | 41% | ~454 | M12.6 (benefits from int8_f16 GPU dequant) |
 | 7 | fda694a1 | 3153 | 3154, 3217, 3153 | 1547 | 3446 | 41% | 491 | M12.8 code review fixes (50 sent) |
 | 8 | 093ae223 | 3201 | 3424, 3220, 3201 | 1547 | 3446 | 41% | 483 | M12.9 MEDIUM/LOW fixes (no perf change) |
+| 9 | 2c616b5d | 1745 | 1769, 1756, 1745 | 1547 | 93 | 44% | 887 | **M13.1 protect_buffer (1.83× speedup, 97% fewer commits)** |
 
 ---
 
@@ -147,6 +154,7 @@ Note: CPU baseline varies between runs (741–813 tok/s). The "vs CPU f32" ratio
 | **M12.7** | CPU INT8 build (RUY) | CPU int8: 540 tok/s (new, slower than CPU f32 on Apple Silicon) |
 | **M12.8** | Code review fixes (8 HIGH) | protect_buffer, rounding fix, atomic counters, etc. |
 | **M12.9** | Code review fixes (5 MED + 2 LOW) | ct2_u32 consistency, dead code removal — no perf impact |
+| **M13.1** | INT8 protect_buffer sync elimination | int8: 467→779 tok/s (**1.67×**), int8_f16: 496→889 (**1.79×**), commits 3500→93-97 (**97% reduction**) |
 
 ---
 

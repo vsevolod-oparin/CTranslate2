@@ -9,6 +9,7 @@
 
 #ifdef CT2_WITH_MPS
 #include "metal/ops_metal.h"
+#include "metal/utils.h"
 #endif
 
 namespace ctranslate2 {
@@ -405,10 +406,17 @@ namespace ctranslate2 {
         if (residual)
           ops::Add()(*residual, output, output);
 
-        // Metal: flush pending GPU kernels (dequantize_gemm_output reads
-        // qoutput/qinput_scale) before these locals are destroyed.
-        if (device == Device::MPS)
-          synchronize_stream(device);
+        // Metal: protect local buffers so they survive scope exit.
+        // The GPU-encoded dequantize_gemm_output kernel reads qoutput and
+        // qinput_scale; protect_buffer() defers their free until the next
+        // commit_and_wait(), eliminating the per-Dense sync (M13.1).
+#ifdef CT2_WITH_MPS
+        if (device == Device::MPS) {
+          metal::protect_buffer(qinput.buffer());
+          metal::protect_buffer(qinput_scale.buffer());
+          metal::protect_buffer(qoutput.buffer());
+        }
+#endif
       } else if (_qzero && _qscale) {
 #ifdef CT2_USE_HIP
         (void)_activation_type;

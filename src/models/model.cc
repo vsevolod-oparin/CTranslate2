@@ -890,13 +890,17 @@ namespace ctranslate2 {
                        compute_type_to_str(model->saved_compute_type()),
                        compute_type_to_str(model->effective_compute_type()));
 
-        if (model->requested_compute_type() != ComputeType::DEFAULT
-            && model->effective_compute_type() != model->requested_compute_type())
-          spdlog::warn("Requested compute type {} was automatically promoted to {} on MPS "
-                       "for performance (BF16 uses synchronous MPSGraph, ~65x slower). "
-                       "Set CT2_MPS_NATIVE_BF16=1 to force native BF16.",
-                       compute_type_to_str(model->requested_compute_type()),
-                       compute_type_to_str(model->effective_compute_type()));
+        // M12.5: Warn when BF16→FP16 auto-promotion occurs on MPS.
+        {
+          const auto req = model->requested_compute_type();
+          const auto eff = model->effective_compute_type();
+          if ((req == ComputeType::BFLOAT16 && eff == ComputeType::FLOAT16)
+              || (req == ComputeType::INT8_BFLOAT16 && eff == ComputeType::INT8_FLOAT16))
+            spdlog::warn("Requested compute type {} was automatically promoted to {} on MPS "
+                         "for performance (BF16 uses synchronous MPSGraph, ~65x slower). "
+                         "Set CT2_MPS_NATIVE_BF16=1 to force native BF16.",
+                         compute_type_to_str(req), compute_type_to_str(eff));
+        }
 
         for (size_t i = 0; i < num_replicas_per_device; ++i)
           models.emplace_back(model);

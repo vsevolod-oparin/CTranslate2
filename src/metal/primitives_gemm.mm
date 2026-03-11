@@ -30,9 +30,114 @@ namespace {
 
 // ---------------------------------------------------------------------------
 // Vectorized int8 → float32 conversion using vDSP (Accelerate framework)
+// (Kept for reference/fallback; M12.6 GPU path is preferred.)
 // ---------------------------------------------------------------------------
 static inline void int8_to_float32(float* dst, const int8_t* src, NSUInteger count) {
   vDSP_vflt8(reinterpret_cast<const char*>(src), 1, dst, 1, (vDSP_Length)count);
+}
+
+// ---------------------------------------------------------------------------
+// M12.6: GPU kernels for INT8 GEMM — eliminates 2 CPU/GPU syncs per GEMM.
+//
+// int8_to_float32_strided:
+//   Reads int8 matrix [rows, cols] with element stride in_stride,
+//   writes float32 matrix with element stride out_stride.
+//
+// float32_round_to_int32_strided:
+//   Reads float32 matrix [rows, cols] with element stride in_stride,
+//   rounds each element to nearest int32, writes with element stride out_stride.
+// ---------------------------------------------------------------------------
+
+static constexpr const char* kInt8GemmHelperMSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void int8_to_float32_strided(
+    device const char* input  [[buffer(0)]],
+    device float*      output [[buffer(1)]],
+    constant uint4&    params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint rows = params[0], cols = params[1];
+    uint in_stride = params[2], out_stride = params[3];
+    if (gid >= rows * cols) return;
+    uint row = gid / cols, col = gid % cols;
+    output[row * out_stride + col] = float(input[row * in_stride + col]);
+}
+
+kernel void float32_round_to_int32_strided(
+    device const float* input  [[buffer(0)]],
+    device int*         output [[buffer(1)]],
+    constant uint4&     params [[buffer(2)]],
+    uint gid [[thread_position_in_grid]])
+{
+    uint rows = params[0], cols = params[1];
+    uint in_stride = params[2], out_stride = params[3];
+    if (gid >= rows * cols) return;
+    uint row = gid / cols, col = gid % cols;
+    output[row * out_stride + col] = int(round(input[row * in_stride + col]));
+}
+)";
+
+static id<MTLLibrary> get_int8_gemm_helper_library() {
+  static id<MTLLibrary>  lib  = nil;
+  static std::once_flag  flag;
+  return compile_library_once(flag, lib, kInt8GemmHelperMSL, "int8_gemm_helper");
+}
+
+static id<MTLComputePipelineState> get_int8_helper_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_int8_gemm_helper_library, name);
+}
+
+// Encode int8→float32 conversion on GPU (encode-only, no sync).
+// src_buf/src_off: MTLBuffer + byte offset for int8 data.
+// dst_buf: MTLBuffer for float32 output (offset 0 or specified).
+static void encode_int8_to_float32(
+    id<MTLBuffer> src_buf, NSUInteger src_off,
+    NSUInteger in_stride,
+    id<MTLBuffer> dst_buf, NSUInteger dst_off,
+    NSUInteger out_stride,
+    uint32_t rows, uint32_t cols) {
+  id<MTLComputePipelineState> pso =
+      get_int8_helper_pso("int8_to_float32_strided");
+  id<MTLComputeCommandEncoder> enc =
+      ctranslate2::metal::create_compute_encoder();
+  [enc setComputePipelineState:pso];
+  [enc setBuffer:src_buf offset:src_off atIndex:0];
+  [enc setBuffer:dst_buf offset:dst_off atIndex:1];
+  const uint32_t params[4] = { rows, cols, (uint32_t)in_stride, (uint32_t)out_stride };
+  [enc setBytes:params length:sizeof(params) atIndex:2];
+  const NSUInteger total = (NSUInteger)rows * cols;
+  const NSUInteger tpg = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreads:MTLSizeMake(total, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+  [enc endEncoding];
+  [enc release];
+}
+
+// Encode float32→int32 rounding on GPU (encode-only, no sync).
+static void encode_float32_to_int32(
+    id<MTLBuffer> src_buf, NSUInteger src_off,
+    NSUInteger in_stride,
+    id<MTLBuffer> dst_buf, NSUInteger dst_off,
+    NSUInteger out_stride,
+    uint32_t rows, uint32_t cols) {
+  id<MTLComputePipelineState> pso =
+      get_int8_helper_pso("float32_round_to_int32_strided");
+  id<MTLComputeCommandEncoder> enc =
+      ctranslate2::metal::create_compute_encoder();
+  [enc setComputePipelineState:pso];
+  [enc setBuffer:src_buf offset:src_off atIndex:0];
+  [enc setBuffer:dst_buf offset:dst_off atIndex:1];
+  const uint32_t params[4] = { rows, (uint32_t)cols, (uint32_t)in_stride, (uint32_t)out_stride };
+  [enc setBytes:params length:sizeof(params) atIndex:2];
+  const NSUInteger total = (NSUInteger)rows * cols;
+  const NSUInteger tpg = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreads:MTLSizeMake(total, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+  [enc endEncoding];
+  [enc release];
 }
 
 // ---------------------------------------------------------------------------
@@ -609,8 +714,11 @@ static void dispatch_mps_gemm_buf(
   }
 }
 
-// INT8 GEMM: convert int8 A and B to float32, run float32 MPS GEMM,
-// round float32 result to int32.  Only beta=0 is supported.
+// INT8 GEMM: convert int8 A and B to float32 on GPU, run float32 MPS GEMM,
+// round float32 result to int32 on GPU.  All encode-only, no CPU/GPU syncs.
+// Only beta=0 is supported.
+//
+// M12.6: Replaced CPU vDSP conversions + 2 commit_and_wait() with GPU kernels.
 static void dispatch_int8_gemm(
     bool transpose_a, bool transpose_b,
     ctranslate2::dim_t m, ctranslate2::dim_t n, ctranslate2::dim_t k,
@@ -626,14 +734,10 @@ static void dispatch_int8_gemm(
   // Physical layout of A and B in memory:
   //   !transpose_a → rows_a = m, cols_a = k
   //    transpose_a → rows_a = k, cols_a = m
-  // (Same for B with transpose_b, n, k.)
   const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
   const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
   const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
   const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
-
-  // Flush pending GPU work before CPU reads from a/b.
-  CT2_COMMIT_AND_WAIT();
 
   // M12.2: Use cached rowBytesForColumns for float32.
   const NSUInteger mps_rb_a = cached_row_bytes(cols_a, MPSDataTypeFloat32);
@@ -645,44 +749,37 @@ static void dispatch_int8_gemm(
   const NSUInteger rb_b = std::max((NSUInteger)ldb * sizeof(float), mps_rb_b);
   const NSUInteger rb_c = std::max((NSUInteger)n   * sizeof(float), mps_rb_c);
 
-  // Allocate float32 temporary buffers (Shared mode, CPU+GPU coherent).
+  // Allocate float32 temporary buffers (Shared mode).
   id<MTLBuffer> tmp_a = alloc_temp_buffer(rows_a * rb_a);
   id<MTLBuffer> tmp_b = alloc_temp_buffer(rows_b * rb_b);
   id<MTLBuffer> tmp_c = alloc_temp_buffer((NSUInteger)m * rb_c);
 
-  // CPU: convert int8 → float32 row by row, respecting lda / ldb strides.
-  for (NSUInteger r = 0; r < rows_a; ++r) {
-    float*        dst = reinterpret_cast<float*>(
-                      static_cast<uint8_t*>([tmp_a contents]) + r * rb_a);
-    const int8_t* src = a + r * (NSUInteger)lda;
-    int8_to_float32(dst, src, cols_a);
-  }
-  for (NSUInteger r = 0; r < rows_b; ++r) {
-    float*        dst = reinterpret_cast<float*>(
-                      static_cast<uint8_t*>([tmp_b contents]) + r * rb_b);
-    const int8_t* src = b + r * (NSUInteger)ldb;
-    int8_to_float32(dst, src, cols_b);
-  }
-  std::memset([tmp_c contents], 0, (NSUInteger)m * rb_c);
+  // M12.6: All-GPU path — encode-only, no CPU/GPU syncs.
+  NSUInteger off_a = 0, off_b = 0;
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  encode_int8_to_float32(buf_a, off_a, (NSUInteger)lda,
+                          tmp_a, 0, rb_a / sizeof(float),
+                          (uint32_t)rows_a, (uint32_t)cols_a);
+  encode_int8_to_float32(buf_b, off_b, (NSUInteger)ldb,
+                          tmp_b, 0, rb_b / sizeof(float),
+                          (uint32_t)rows_b, (uint32_t)cols_b);
 
-  // Encode float32 MPS GEMM using temp buffers directly.
+  // GPU: encode float32 MPS GEMM (encode-only).
   dispatch_mps_gemm_buf(
       transpose_a, transpose_b, m, n, k, alpha,
       tmp_a, 0, rb_a, rows_a, cols_a,
       tmp_b, 0, rb_b, rows_b, cols_b,
       tmp_c, 0, rb_c, MPSDataTypeFloat32);
 
-  // Wait for GPU, then round float32 → int32 (handles ldc stride).
-  CT2_COMMIT_AND_WAIT();
-  for (ctranslate2::dim_t row = 0; row < m; ++row) {
-    const float* src = reinterpret_cast<const float*>(
-        static_cast<const uint8_t*>([tmp_c contents]) + (NSUInteger)row * rb_c);
-    int32_t* dst = c + row * ldc;
-    for (ctranslate2::dim_t col = 0; col < n; ++col)
-      dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
-  }
+  // GPU: encode float32 → int32 rounding (encode-only).
+  NSUInteger off_c = 0;
+  id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+  encode_float32_to_int32(tmp_c, 0, rb_c / sizeof(float),
+                           buf_c, off_c, (NSUInteger)ldc,
+                           (uint32_t)m, (uint32_t)n);
 
-  // Release temp buffers (GPU completed, CPU readback done).
+  // Release temp buffers — CB retains them until GPU execution completes.
   [tmp_a release];
   [tmp_b release];
   [tmp_c release];
@@ -1470,16 +1567,12 @@ namespace ctranslate2 {
         dispatch_int8_gemm(transpose_a, transpose_b, m, n, k,
                            alpha, a, lda, b, ldb, beta, c, ldc);
       } else {
-        // Amortized path: 2 syncs total instead of 2*B.
-        // Phase 1: flush pending GPU work so CPU can read int8 inputs.
-        CT2_COMMIT_AND_WAIT();
-
+        // M12.6: All-GPU batched path — 0 syncs (all encode-only).
         const NSUInteger rows_a = (NSUInteger)(transpose_a ? k : m);
         const NSUInteger cols_a = (NSUInteger)(transpose_a ? m : k);
         const NSUInteger rows_b = (NSUInteger)(transpose_b ? n : k);
         const NSUInteger cols_b = (NSUInteger)(transpose_b ? k : n);
 
-        // M12.2: Use cached rowBytesForColumns.
         NSUInteger mps_rb_a = cached_row_bytes(cols_a, MPSDataTypeFloat32);
         NSUInteger mps_rb_b = cached_row_bytes(cols_b, MPSDataTypeFloat32);
         NSUInteger mps_rb_c = cached_row_bytes((NSUInteger)n, MPSDataTypeFloat32);
@@ -1495,25 +1588,27 @@ namespace ctranslate2 {
         id<MTLBuffer> tmp_a = alloc_temp_buffer(bytes_a * (NSUInteger)batch_size);
         id<MTLBuffer> tmp_b = alloc_temp_buffer(bytes_b * (NSUInteger)batch_size);
         id<MTLBuffer> tmp_c = alloc_temp_buffer(bytes_c * (NSUInteger)batch_size);
-        std::memset([tmp_c contents], 0, bytes_c * (NSUInteger)batch_size);
 
-        // Phase 2: CPU convert all batches int8→float32 (vectorized via vDSP).
+        const NSUInteger out_stride_a = rb_a / sizeof(float);
+        const NSUInteger out_stride_b = rb_b / sizeof(float);
+        const NSUInteger out_stride_c = rb_c / sizeof(float);
+
+        // Phase 1: GPU encode int8→float32 for all batches (encode-only).
         for (dim_t bi = 0; bi < batch_size; ++bi) {
           const int8_t* src_a = a + bi * stridea;
           const int8_t* src_b = b + bi * strideb;
-          for (NSUInteger r = 0; r < rows_a; ++r) {
-            float* dst = reinterpret_cast<float*>(
-                static_cast<uint8_t*>([tmp_a contents]) + bi * bytes_a + r * rb_a);
-            int8_to_float32(dst, src_a + r * (NSUInteger)lda, cols_a);
-          }
-          for (NSUInteger r = 0; r < rows_b; ++r) {
-            float* dst = reinterpret_cast<float*>(
-                static_cast<uint8_t*>([tmp_b contents]) + bi * bytes_b + r * rb_b);
-            int8_to_float32(dst, src_b + r * (NSUInteger)ldb, cols_b);
-          }
+          NSUInteger off_a = 0, off_b = 0;
+          id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(src_a, &off_a);
+          id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(src_b, &off_b);
+          encode_int8_to_float32(buf_a, off_a, (NSUInteger)lda,
+                                  tmp_a, bi * bytes_a, out_stride_a,
+                                  (uint32_t)rows_a, (uint32_t)cols_a);
+          encode_int8_to_float32(buf_b, off_b, (NSUInteger)ldb,
+                                  tmp_b, bi * bytes_b, out_stride_b,
+                                  (uint32_t)rows_b, (uint32_t)cols_b);
         }
 
-        // Phase 3: Encode all B MPS GEMMs (encode-only, no sync).
+        // Phase 2: GPU encode all MPS GEMMs (encode-only).
         for (dim_t bi = 0; bi < batch_size; ++bi) {
           dispatch_mps_gemm_buf(
               transpose_a, transpose_b, m, n, k, alpha,
@@ -1522,23 +1617,17 @@ namespace ctranslate2 {
               tmp_c, bi * bytes_c, rb_c, MPSDataTypeFloat32);
         }
 
-        // Phase 4: Wait for all GPU GEMMs.
-        CT2_COMMIT_AND_WAIT();
-
-        // Phase 5: CPU round all batches float32→int32.
+        // Phase 3: GPU encode float32→int32 for all batches (encode-only).
         for (dim_t bi = 0; bi < batch_size; ++bi) {
           int32_t* dst_c = c + bi * stridec;
-          for (dim_t row = 0; row < m; ++row) {
-            const float* src = reinterpret_cast<const float*>(
-                static_cast<const uint8_t*>([tmp_c contents])
-                + bi * bytes_c + (NSUInteger)row * rb_c);
-            int32_t* dst = dst_c + row * ldc;
-            for (dim_t col = 0; col < n; ++col)
-              dst[col] = static_cast<int32_t>(std::lroundf(src[col]));
-          }
+          NSUInteger off_c = 0;
+          id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(dst_c, &off_c);
+          encode_float32_to_int32(tmp_c, bi * bytes_c, out_stride_c,
+                                   buf_c, off_c, (NSUInteger)ldc,
+                                   (uint32_t)m, (uint32_t)n);
         }
 
-        // Release temp buffers (GPU completed, CPU readback done).
+        // Release temp buffers — CB retains them until GPU execution.
         [tmp_a release];
         [tmp_b release];
         [tmp_c release];

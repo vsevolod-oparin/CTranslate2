@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-11
-**Status:** In progress — M12.1-12.5 done, M12.6 next (INT8 GPU dequant)
+**Status:** In progress — M12.1-12.6 done, M12.7-12.8 next
 
 ---
 
@@ -1068,12 +1068,13 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - **Result**: bf16 9→1631 tok/s (181×), int8_bf16 9→574 tok/s (64×)
 - **DONE:** Report `agents/report/milestone-12.5-bf16-auto-promotion.md`
 
-**12.6 INT8 GPU dequantize** (HIGH PRIORITY — 3.5× improvement expected)
-- Root cause confirmed by M12.4: CPU int8→f32 dequant + 2 syncs/GEMM = 45.6ms/step (98% of decode)
-- GPU int8→f32 + f32→int32 kernels would eliminate all internal syncs (encode-only pipeline)
-- Expected: 45.6ms/step → ~13ms/step
-- Alt: INT8 dequantize-to-FP16 at model load (immediate, 2× memory)
-- **PASS:** INT8 translation ≥ 300 tok/s
+**12.6 INT8 GPU dequantize** ✅
+- Replaced CPU vDSP int8↔f32 conversions + 2 syncs/GEMM with GPU compute kernels.
+- All-encode-only pipeline: int8→f32 kernel → MPS GEMM → f32→int32 kernel. Zero syncs.
+- **Result**: int8 84→453 tok/s (5.4×), int8_f16 86→494 tok/s (5.7×)
+- Commits: 5692→3522 (int8), 5580→3446 (int8_f16)
+- Per-step: int8 46.5→29.8 ms/step, int8_f16 46.2→23.9 ms/step
+- **DONE:** Report `agents/report/milestone-12.6-int8-gpu-dequantize.md`
 
 **12.7 CPU INT8 build support**
 - Error: "does not support efficient int8 computation" — build lacks RUY/MKL/DNNL
@@ -1085,16 +1086,16 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Benchmark with larger model (Whisper large-v3-turbo d_model=1280, or NLLB) to confirm GPU scales
 - **PASS:** Larger model shows >3× CPU speedup with f16
 
-**Current performance (50 sentences, best-of-3, post M12.5):**
+**Current performance (50 sentences, beam=4, best-of-3, post M12.6):**
 
-| Type | tok/s | vs CPU | Status | Notes |
-|------|-------|--------|--------|-------|
-| float16 | 1585 | 1.92× | Optimal | GPU compute + sync balanced |
-| float32 | 1019 | 1.23× | Optimal | f32 GEMM slower, sync waits |
-| bfloat16 | 1631 | 1.97× | **Fixed M12.5** | Auto-promoted → float16 |
-| int8 | 84 | 0.10× | M12.6 target | CPU int8↔f32 + 2 syncs/GEMM |
-| int8_f16 | 568 | 0.69× | OK | CPU int8↔f32 + syncs |
-| int8_bf16 | 574 | 0.69× | **Fixed M12.5** | Auto-promoted → int8_float16 |
+| Type | tok/s | vs CPU | Commits | GPU% | Status |
+|------|-------|--------|---------|------|--------|
+| float16 | 1464 | 1.77× | 90 | 41% | Optimal |
+| float32 | 1000 | 1.21× | 96 | 54% | Optimal |
+| bfloat16 | 1426 | 1.73× | 90 | 41% | Fixed (M12.5) |
+| int8 | 453 | 0.55× | 3522 | 40% | **Improved (M12.6)** |
+| int8_f16 | 494 | 0.60× | 3446 | 42% | **Improved (M12.6)** |
+| int8_bf16 | 454 | 0.55× | 3446 | 40% | Fixed (M12.5+M12.6) |
 
 - Reports: `agents/report/milestone-12*.md`
 - Benchmark script: `tools/benchmark/m12_perf_sweep.py`

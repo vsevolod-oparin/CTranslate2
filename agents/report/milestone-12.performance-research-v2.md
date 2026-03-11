@@ -1,4 +1,4 @@
-# M13 Performance Research — Comprehensive Optimization Analysis
+# M12 Performance Research — Comprehensive Optimization Analysis
 
 **Date**: 2026-03-11
 **Hardware**: Apple M4 (10-core GPU), macOS 15, 16 GB unified memory
@@ -10,14 +10,16 @@
 
 ## Executive Summary
 
-CTranslate2's Metal backend has been optimized through M12 to near-theoretical limits for **float16/float32** paths (1 sync/step, 41-54% GPU utilization). The remaining performance gaps are:
+CTranslate2's Metal backend has been optimized through M12.11 to near-theoretical limits for **all float paths** (1 sync/step, 41-55% GPU utilization). INT8 sync elimination (M12.10) brought INT8_float16 above CPU baseline for the first time. Decode loop CPU overhead investigation (M12.11) confirmed **99.1% of time is GPU compute** — CPU-side optimizations (2.1-2.6) are not impactful.
 
-1. **INT8: 3522 commits vs 90 for f16** — 36 per-Dense syncs per step account for 80% of the speed gap
-2. **CPU decode overhead**: 46-59% of wall time is CPU-side (beam bookkeeping, hypothesis building, word ID conversion)
-3. **Pointer cache**: Only 20-24% hit rate (256-entry direct-mapped, heavy collisions)
-4. **Small-tensor dispatch**: Elementwise ops on ≤512K elements pay more dispatch overhead than compute
+**Remaining optimization opportunities**:
+1. **Faster GPU kernels** (GEMM, attention) — 52.8% of decode time
+2. **Reduced GPU idle time** between kernel dispatches — better pipelining
+3. **Larger models/batches** where GPU utilization naturally increases
+4. **Pointer cache**: Only 20-24% hit rate (256-entry direct-mapped, heavy collisions)
+5. **Small-tensor dispatch**: Elementwise ops on ≤512K elements pay more dispatch overhead than compute
 
-### Current Performance Baseline (M12.9)
+### Pre-Research Performance Baseline (M12.9)
 
 | Backend | Type | tok/s | ms | Commits | GPU% | vs CPU f32 |
 |---------|------|-------|-----|---------|------|-----------|
@@ -45,33 +47,21 @@ CTranslate2's Metal backend has been optimized through M12 to near-theoretical l
 
 ## Part 1: INT8 Optimization (CRITICAL — 3522 → ~90 commits)
 
-### 1.1 INT8 Per-Dense Sync Elimination (Priority: ★★★★★)
+### 1.1 INT8 Per-Dense Sync Elimination — ✅ COMPLETED (M12.10)
 
 **Root cause**: `src/layers/common.cc:411` — `synchronize_stream(Device::MPS)` fires after every quantized Dense layer because local temporaries (`qinput`, `qinput_scale`, `qoutput`) go out of scope and their MTLBuffers would be recycled before GPU reads them.
 
-**Current per-step commit math**:
-- OPUS-MT decoder: 6 layers × 6 Dense layers/layer = 36 syncs
-- Plus sampler (1) + other (1) = **38 syncs/step**
-- 38 × 0.4 ms = **15.2 ms overhead/step** (vs 0.4 ms for f16)
+**Fix applied**: Replaced `synchronize_stream()` with `protect_buffer()` for the three temporary buffers. See `agents/report/milestone-12.10-int8-protect-buffer.md`.
 
-**Fix**: Replace `synchronize_stream()` with `protect_buffer()` for the temporary buffers. The `protect_buffer` pattern is already proven (M11.21 gather, M12.6 INT8 GEMM inputs). Temporaries are protected from recycling until the next `commit_and_wait()`, which happens at the sampler sync.
+**Actual results** (vs estimated 3-4×):
 
-**Implementation**:
-```
-File: src/layers/common.cc:408-411
-Current:  synchronize_stream(Device::MPS);
-Proposed: protect_buffer(qinput); protect_buffer(qinput_scale); protect_buffer(qoutput);
-```
+| Type | M12.9 tok/s | M12.10 tok/s | Speedup | Commits |
+|------|-------------|-------------|---------|---------|
+| int8 | 467 | **779** | **1.67×** | 3522 → 97 (97% reduction) |
+| int8_float16 | 496 | **889** | **1.79×** | 3446 → 93 (97% reduction) |
+| int8_bfloat16 | 483 | **887** | **1.83×** | 3446 → 93 (97% reduction) |
 
-**Expected impact**: 36 syncs/step → 0 syncs/step (sampler sync remains)
-- INT8 commits: 3522 → ~90 (matching f16)
-- INT8 overhead: 15.2 ms → 0.4 ms per step
-- INT8 tok/s: 467 → **~1200-1400** (3-4× improvement)
-- INT8 would become **faster than CPU f32** (currently 0.57× CPU)
-
-**Risk**: Low. Pattern is proven. Only requires that temporaries aren't reused before GPU finishes (protect_buffer guarantees this).
-
-**Effort**: Small (5-10 lines of code)
+**Note**: The estimated 3-4× improvement was too optimistic. The actual 1.67-1.83× reflects that INT8 compute (GPU dequantize + GEMM) is inherently slower than FP16 GEMM, so removing sync overhead doesn't close the full gap. INT8_float16 at 889 tok/s now surpasses CPU float32 (830 tok/s) for the first time.
 
 ### 1.2 MPSGraph Fused Dequantize+MatMul (Priority: ★★★)
 
@@ -97,26 +87,21 @@ Proposed: protect_buffer(qinput); protect_buffer(qinput_scale); protect_buffer(q
 
 ## Part 2: CPU-Side Decode Loop Optimization
 
-### 2.1 Defer Word ID Conversion to Finalization (Priority: ★★★★★)
+### 2.1 Defer Word ID Conversion — ❌ INVESTIGATED, NOT IMPACTFUL (M12.11)
 
 **Location**: `src/decoding.cc:599`
-**Issue**: `convert_to_original_word_ids(decoder, topk_ids)` called every step, doing GPU→CPU→GPU roundtrip on MPS.
-**Fix**: Move conversion to after the decode loop (only needed for final results).
-**Impact**: Eliminates 1 GPU→CPU→GPU roundtrip per step = ~0.4 ms/step
-**Effort**: Low (move call to finalization)
+**Original estimate**: 3-5% (GPU→CPU→GPU roundtrip per step)
+**Actual finding**: `convert_to_original_word_ids()` is a **no-op** when `output_layer_is_updated()` returns false (the common case). Even when active, it operates on CPU data (topk_ids is already on CPU after sampler sync). Cannot be deferred because the decoder needs original word IDs for embedding lookup at the next step.
+**Profiler data**: beam_bookkeep + step_overhead = 0.5% of total time. No measurable target.
 
-### 2.2 Batch CPU Read of topk_scores (Priority: ★★★★★)
+### 2.2 Batch CPU Read of topk_scores — ❌ INVESTIGATED, NOT IMPACTFUL (M12.11)
 
 **Location**: `src/decoding.cc:743`
-**Issue**: `topk_scores.scalar_at<float>({i, k})` reads GPU memory per-beam in a loop. Each read may require a sync or at least a cache-line fetch from GPU-written unified memory.
-**Fix**: Copy entire scores array to CPU once before the bookkeeping loop:
-```cpp
-StorageView topk_scores_cpu = topk_scores.to(Device::CPU);
-const float* scores_data = topk_scores_cpu.data<float>();
-// In loop: scores_data[i * beam_size + k]
-```
-**Impact**: 5-10% of decode loop
-**Effort**: Low (3-5 lines)
+**Original estimate**: 5-10% (GPU memory per-beam reads causing sync overhead)
+**Actual finding**: The sampler copies topk_ids/topk_scores to CPU before returning (M11.26 optimization). So `at()` / `scalar_at()` are **plain CPU array access**, not GPU sync. With `StorageModeShared` and pool allocation, `.to(device)` copies ~16 bytes in ~0.1 µs. The entire beam bookkeeping section is **0.01%** of total time (0.2 ms / 2069 ms).
+**Why estimates were wrong**: Assumed topk data lived on GPU; in reality, sampler already copies to CPU.
+
+See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investigation including decode profiler breakdown.
 
 ### 2.3 Pre-allocate DecodingResult Containers (Priority: ★★★★)
 
@@ -177,12 +162,12 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 
 ### Sync Budget Per Step (After Proposed Optimizations)
 
-| Type | Current | After 1.1 | After RoPE GPU | Theoretical Min |
-|------|---------|-----------|----------------|-----------------|
+| Type | M12.9 | M12.10 (actual) | After RoPE GPU | Theoretical Min |
+|------|-------|-----------------|----------------|-----------------|
 | float16 | 2-3 | 2-3 | 1-2 | 1 |
 | float32 | 2-3 | 2-3 | 1-2 | 1 |
-| int8 | 38 | **2-3** | 1-2 | 1 |
-| int8_float16 | 38 | **2-3** | 1-2 | 1 |
+| int8 | 38 | **2-3** ✅ | 1-2 | 1 |
+| int8_float16 | 38 | **2-3** ✅ | 1-2 | 1 |
 | bfloat16 | 2-3 | 2-3 | 1-2 | 1 |
 
 ---
@@ -289,14 +274,14 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 
 ## Part 7: Implementation Roadmap
 
-### Phase 1: Critical (Expected: 3-4× INT8 improvement + 10-20% all types)
+### Phase 1: Critical
 
-| # | Task | Impact | Effort | Files |
-|---|------|--------|--------|-------|
-| 1.1 | INT8 protect_buffer sync elimination | INT8: 3-4× | Small | `common.cc:411` |
-| 2.1 | Defer word ID conversion | All: 3-5% | Low | `decoding.cc:599` |
-| 2.2 | Batch CPU read of topk_scores | All: 5-10% | Low | `decoding.cc:743` |
-| 5.1 | Pointer cache improvement | All: 2-5% | Low-Med | `allocator.mm` |
+| # | Task | Impact | Status | Result |
+|---|------|--------|--------|--------|
+| 1.1 | INT8 protect_buffer sync elimination | INT8: 1.67-1.83× | ✅ M12.10 | int8 467→779, int8_f16 496→889, commits 97% reduced |
+| 2.1 | Defer word ID conversion | ~~All: 3-5%~~ | ❌ M12.11 | No-op in common case; CPU data, not GPU roundtrip |
+| 2.2 | Batch CPU read of topk_scores | ~~All: 5-10%~~ | ❌ M12.11 | Already CPU after sampler sync; bookkeeping = 0.01% |
+| 5.1 | Pointer cache improvement | All: 2-5% | Pending | — |
 
 ### Phase 2: High Impact (Expected: 10-20% additional)
 
@@ -327,19 +312,23 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 
 ---
 
-## Part 8: Expected Final Performance (After Phase 1)
+## Part 8: Actual Performance After Phase 1 (M12.10 + M12.11)
 
-| Backend | Type | Current tok/s | Expected tok/s | Improvement |
-|---------|------|--------------|----------------|-------------|
-| MPS | float16 | 1496 | 1600-1700 | +7-14% |
-| MPS | float32 | 1059 | 1150-1250 | +9-18% |
-| MPS | **int8** | **467** | **1200-1400** | **+157-200%** |
-| MPS | **int8_float16** | **496** | **1300-1500** | **+162-202%** |
-| MPS | bfloat16 | 1305 | 1400-1500 | +7-15% |
-| MPS | **int8_bfloat16** | **483** | **1300-1500** | **+169-210%** |
-| CPU | float32 | 813 | 813 | — |
+| Backend | Type | Pre-M12 tok/s | M12.10 tok/s | Total Speedup | vs CPU f32 |
+|---------|------|--------------|-------------|---------------|-----------|
+| MPS | float16 | 1286 | **1490** | 1.16× | **1.80×** |
+| MPS | float32 | 923 | **1053** | 1.14× | **1.27×** |
+| MPS | **int8** | **77** | **779** | **10.1×** | **0.94×** |
+| MPS | **int8_float16** | **78** | **889** | **11.4×** | **1.07×** |
+| MPS | bfloat16 | 9 | **1490** | 166× | **1.80×** |
+| MPS | **int8_bfloat16** | **8** | **887** | **111×** | **1.07×** |
+| CPU | float32 | 813 | 830 | — | 1.00× |
 
-**INT8 would go from 0.57× CPU to 1.5-1.7× CPU** — a transformative improvement.
+**Key outcomes**:
+- INT8_float16 surpasses CPU f32 for the first time (1.07×)
+- Float16/bfloat16 are at near-theoretical limits (1 sync/step, 41% GPU utilization)
+- Decode loop CPU overhead is **0.5%** — further CPU-side optimizations (2.1-2.6) are not impactful
+- Remaining gains require faster GPU kernels (GEMM, attention) or larger models/batches
 
 ---
 

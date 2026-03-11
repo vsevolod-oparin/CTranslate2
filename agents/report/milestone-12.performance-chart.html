@@ -200,7 +200,7 @@
 
 <!-- Summary table -->
 <div class="table-container">
-  <div class="chart-title">Final Performance Summary (M13.1 — INT8 protect_buffer Sync Elimination)</div>
+  <div class="chart-title">Final Performance Summary (M12.10 — INT8 protect_buffer Sync Elimination)</div>
   <table id="summary-table">
     <thead>
       <tr>
@@ -224,7 +224,7 @@
 <script>
 
 // ── Raw data ──
-const cpuBaseline = 830;  // CPU f32, 4 threads, 50 sentences (M13.1)
+const cpuBaseline = 830;  // CPU f32, 4 threads, 50 sentences (M12.10)
 
 // Timeline data: tok/s at each milestone for each type
 const milestones = [
@@ -236,7 +236,7 @@ const milestones = [
   "M12.6\nINT8 GPU\nDequant",
   "M12.8\nHIGH\nFixes",
   "M12.9\nMED/LOW\nFixes",
-  "M13.1\nINT8\nprotect_buffer"
+  "M12.10\nINT8\nprotect_buffer"
 ];
 
 const timeline = {
@@ -261,10 +261,10 @@ const finalData = [
   {backend:"MPS",type:"float16",  toks:1490,ms:1040,vsCpu:"1.80×",commits:90,  gpu:"41%",notes:"Best overall",cls:"type-f16"},
   {backend:"MPS",type:"bfloat16", toks:1490,ms:1040,vsCpu:"1.80×",commits:90,  gpu:"41%",notes:"Auto-promoted to f16 (M12.5)",cls:"type-bf16"},
   {backend:"MPS",type:"float32",  toks:1053,ms:1466,vsCpu:"1.27×",commits:96,  gpu:"54%",notes:"Precision-sensitive",cls:"type-f32"},
-  {backend:"MPS",type:"int8_float16",toks:889,ms:1740,vsCpu:"1.07×",commits:93,gpu:"44%",notes:"M13.1: 1.79× vs M12.9",cls:"type-i8f16"},
-  {backend:"MPS",type:"int8_bfloat16",toks:887,ms:1745,vsCpu:"1.07×",commits:93,gpu:"44%",notes:"M13.1: 1.83× vs M12.9",cls:"type-i8bf16"},
+  {backend:"MPS",type:"int8_float16",toks:889,ms:1740,vsCpu:"1.07×",commits:93,gpu:"44%",notes:"M12.10: 1.79× vs M12.9",cls:"type-i8f16"},
+  {backend:"MPS",type:"int8_bfloat16",toks:887,ms:1745,vsCpu:"1.07×",commits:93,gpu:"44%",notes:"M12.10: 1.83× vs M12.9",cls:"type-i8bf16"},
   {backend:"CPU",type:"float32",  toks:830, ms:1865,vsCpu:"1.00×",commits:0,   gpu:"—",  notes:"Baseline (4 threads, AMX)",cls:"type-cpu"},
-  {backend:"MPS",type:"int8",     toks:779, ms:1993,vsCpu:"0.94×",commits:97,  gpu:"55%",notes:"M13.1: 1.67× vs M12.9",cls:"type-i8"},
+  {backend:"MPS",type:"int8",     toks:779, ms:1993,vsCpu:"0.94×",commits:97,  gpu:"55%",notes:"M12.10: 1.67× vs M12.9",cls:"type-i8"},
   {backend:"CPU",type:"int8 RUY", toks:540, ms:2882,vsCpu:"0.65×",commits:0,   gpu:"—",  notes:"Memory-constrained only (M12.7)",cls:"type-cpu"},
 ];
 
@@ -273,7 +273,7 @@ const summaryEl = document.getElementById("summary");
 const cards = [
   {value:"1,490", label:"Best tok/s (MPS f16)",cls:""},
   {value:"1.80×", label:"vs CPU f32 (830 tok/s)",cls:"highlight"},
-  {value:"1.79×", label:"INT8_f16 speedup (M13.1)",cls:"warn"},
+  {value:"1.79×", label:"INT8_f16 speedup (M12.10)",cls:"warn"},
   {value:"97%",   label:"INT8 commits reduced",cls:"cpu"},
   {value:"889",   label:"INT8_f16 tok/s (was 496)",cls:""},
   {value:"9",     label:"Milestones completed",cls:""},

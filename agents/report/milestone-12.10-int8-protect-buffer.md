@@ -1,4 +1,4 @@
-# M13.1 — INT8 Per-Dense Sync Elimination (protect_buffer)
+# M12.10 — INT8 Per-Dense Sync Elimination (protect_buffer)
 
 **Date**: 2026-03-11
 **Status**: COMPLETE
@@ -21,7 +21,7 @@ Replaced `synchronize_stream(device)` with `protect_buffer()` calls for the thre
 if (device == Device::MPS)
     synchronize_stream(device);
 
-// After (M13.1):
+// After (M12.10):
 #ifdef CT2_WITH_MPS
 if (device == Device::MPS) {
     metal::protect_buffer(qinput.buffer());
@@ -46,7 +46,7 @@ This is the same pattern used for Gather (M11.21) and INT8 GEMM input buffers (M
 
 ### Performance (50 sentences, beam=4, best-of-3)
 
-| Type | M12.9 tok/s | M13.1 tok/s | Speedup | Commits before → after |
+| Type | M12.9 tok/s | M12.10 tok/s | Speedup | Commits before → after |
 |------|-------------|-------------|---------|----------------------|
 | **int8** | 467 | **779** | **1.67×** | 3,522 → 97 (**97% reduction**) |
 | **int8_float16** | 496 | **889** | **1.79×** | 3,446 → 93 (**97% reduction**) |
@@ -70,7 +70,7 @@ This is the same pattern used for Gather (M11.21) and INT8 GEMM input buffers (M
 |-----------|-----------|---------------|------------|
 | Pre-M12 | 77 | 78 | CPU int8↔f32 conversion |
 | M12.6 | 453 | 494 | GPU dequantize kernels |
-| **M13.1** | **779** | **889** | **protect_buffer sync elimination** |
+| **M12.10** | **779** | **889** | **protect_buffer sync elimination** |
 | Total speedup | **10.1×** | **11.4×** | From pre-M12 baseline |
 
 ---

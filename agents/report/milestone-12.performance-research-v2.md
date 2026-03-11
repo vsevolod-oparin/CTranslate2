@@ -163,13 +163,13 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 
 ## Part 4: GPU Kernel Optimization
 
-### 4.1 BiasAdd + Activation + Residual Fusion (Priority: ★★★)
+### 4.1 BiasAdd + Activation + Residual Fusion — ✅ REJECTED (M12.15)
 
 **Current**: 3 separate kernel dispatches per transformer sub-layer
 **Proposed**: Single fused kernel: `out[i] = activation(value[i] + bias[i % bias_size]) + residual[i]`
 **Saves**: 24 dispatches → 12 per step (180 µs encoder overhead)
-**Impact**: ~2% for OPUS-MT (d_model=512), ~5-15% for d_model≥2048
-**Effort**: Medium (new MSL kernel + dispatch function)
+**Result**: **REJECTED.** Implemented full MSL kernel + dispatch + routing. Benchmark showed ±3% noise across all 6 compute types. Total savings ~3.6ms against 1000-2000ms runtime (<0.5%). Dispatch overhead is not the bottleneck — GEMM compute dominates.
+**Report**: `agents/report/milestone-12.15-biasadd-fusion-gpu-nucleus.md`
 
 ### 4.2 Aggressive GEMV Dispatch During Decode — ✅ REJECTED (M12.13)
 
@@ -178,13 +178,12 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 **Result**: **REJECTED.** Naive scalar GEMV is 20% *slower* than MPS for all shapes. MPS uses hardware matrix units; custom scalar dot-product kernel cannot compete. Both non-batched m≤4 routing and f32 batched m=1 routing caused severe regressions. All code reverted.
 **Report**: `agents/report/milestone-12.13-aggressive-gemv-decode.md`
 
-### 4.3 GPU Nucleus Sampling (Priority: ★★★)
+### 4.3 GPU Nucleus Sampling — ✅ NOT APPLICABLE (M12.15)
 
 **Current**: CPU `std::sort` on GPU probabilities (1-5 ms per step when topp<1.0)
 **Proposed**: MSL kernel for top-p marking (single pass + threadgroup tree reduction)
-**Impact**: 10-70% speedup when nucleus sampling is enabled
-**Effort**: Medium (MSL kernel)
-**Note**: Only matters when `topp < 1.0` (not default for beam search)
+**Result**: **NOT IMPLEMENTED.** Beam search benchmark uses `BestSampler` (TopK k=1), not `RandomSampler`. `TopPMask` is never invoked during the standard benchmark. Even in sampling mode, TopP overhead (~5ms/step) is marginal vs GEMM time (~10-20ms/step). Not worth the complexity.
+**Report**: `agents/report/milestone-12.15-biasadd-fusion-gpu-nucleus.md`
 
 ### 4.4 GPU Rotary Embeddings (Priority: ★★)
 
@@ -281,8 +280,8 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 
 | # | Task | Impact | Effort | Files |
 |---|------|--------|--------|-------|
-| 4.1 | BiasAdd+Act+Residual fusion | All: 2-5% | Medium | New MSL kernel |
-| 4.3 | GPU nucleus sampling | Sampling: 10-70% | Medium | New MSL kernel |
+| 4.1 | BiasAdd+Act+Residual fusion | **REJECTED** (±3% noise) | Medium | Code reverted |
+| 4.3 | GPU nucleus sampling | **N/A** (not in beam search) | Medium | Not implemented |
 | 5.2 | Metal Residency Sets | Robustness | Easy | `allocator.mm` |
 | 2.6 | Object pooling temporaries | All: 3-5% | Low-Med | `decoding.cc` |
 

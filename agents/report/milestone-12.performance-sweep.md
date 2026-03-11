@@ -16,7 +16,7 @@
 
 ---
 
-## Final Summary (M12.14 — Decode bookkeeping rejected, all compute types unchanged from M12.12)
+## Final Summary (M12.15 — BiasAdd fusion rejected, GPU nucleus N/A, all compute types unchanged from M12.12)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
@@ -29,7 +29,7 @@
 | **MPS** | **int8** | **769** | **2018** | **0.97×** | 97 | 55% | M12.10: 1.67× vs M12.9 |
 | CPU | int8 (RUY) | 540 | 2882 | 0.68× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping (DecodingResult reserve + direct memcpy append): **REJECTED** — consistent slight regression across all 6 types, all code reverted. Performance unchanged from M12.12.
+Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping (DecodingResult reserve + direct memcpy append): **REJECTED** — consistent slight regression across all 6 types, all code reverted. M12.15 BiasAdd+Act+Residual fusion: **REJECTED** — ±3% noise, <0.5% theoretical savings; GPU nucleus sampling: **NOT APPLICABLE** to beam search. Performance unchanged from M12.12.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -71,6 +71,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1466 | 1500, 1466, 1481 | 1544 | 96 | 54% | 1053 | M12.10 INT8 protect_buffer (no f32 change) | 1.27x |
 | 10 | — | 1505 | 1528, 1505, 1509 | 1544 | 96 | 53% | 1026 | M12.12 ptr cache 2-way+Fibonacci (within noise) | 1.29x |
 | 11 | 016804bd | 1517 | 1560, 1517, 1536 | 1544 | 96 | 55% | 1018 | M12.14 decode bookkeeping opt (within noise) | 1.28x |
+| 12 | — | 1488 | 1553, 1520, 1488 | 1544 | 96 | 54% | 1038 | M12.15 BiasAdd fusion (within noise, rejected) | 1.31x |
 
 ## Float16 Results (50 sentences)
 
@@ -87,6 +88,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1040 | 1086, 1040, 1043 | 1550 | 90 | 41% | 1490 | M12.10 INT8 protect_buffer (no f16 change) | 1.80x |
 | 10 | — | 1037 | 1077, 1037, 1050 | 1550 | 90 | 41% | 1495 | M12.12 ptr cache 2-way+Fibonacci (within noise) | 1.88x |
 | 11 | 016804bd | 1085 | 1296, 1085, 1090 | 1550 | 90 | 41% | 1429 | M12.14 decode bookkeeping opt (within noise) | 1.92x |
+| 12 | — | 1067 | 1124, 1129, 1067 | 1549 | 93 | 41% | 1452 | M12.15 BiasAdd fusion (within noise, rejected) | 1.83x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -103,6 +105,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1993 | 2052, 2003, 1993 | 1552 | 97 | 55% | 779 | **M12.10 protect_buffer (1.67× speedup, 97% fewer commits)** |
 | 10 | — | 2018 | 2162, 2018, 2022 | 1552 | 97 | 55% | 769 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
 | 11 | 016804bd | 2050 | 2110, 2068, 2050 | 1552 | 97 | 56% | 757 | M12.14 decode bookkeeping opt (within noise) |
+| 12 | — | 2076 | 2166, 2098, 2076 | 1552 | 97 | 54% | 748 | M12.15 BiasAdd fusion (within noise, rejected) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -119,6 +122,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1740 | 1784, 1746, 1740 | 1547 | 93 | 44% | 889 | **M12.10 protect_buffer (1.79× speedup, 97% fewer commits)** |
 | 10 | — | 1778 | 1826, 1821, 1778 | 1547 | 93 | 44% | 870 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
 | 11 | 016804bd | 1841 | 1851, 1841, 1853 | 1547 | 93 | 45% | 840 | M12.14 decode bookkeeping opt (within noise) |
+| 12 | — | 1797 | 1861, 1797, 1888 | 1547 | 93 | 43% | 861 | M12.15 BiasAdd fusion (within noise, rejected) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -135,6 +139,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1040 | 1080, 1040, 1041 | 1550 | 90 | 41% | 1490 | M12.10 protect_buffer (no bf16 change) |
 | 10 | — | 1064 | 1068, 1064, 1103 | 1550 | 90 | 41% | 1457 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
 | 11 | 016804bd | 1068 | 1119, 1073, 1068 | 1550 | 90 | 41% | 1451 | M12.14 decode bookkeeping opt (within noise) |
+| 12 | — | 1085 | 1102, 1086, 1085 | 1549 | 93 | 41% | 1428 | M12.15 BiasAdd fusion (within noise, rejected) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -151,6 +156,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 9 | 2c616b5d | 1745 | 1769, 1756, 1745 | 1547 | 93 | 44% | 887 | **M12.10 protect_buffer (1.83× speedup, 97% fewer commits)** |
 | 10 | — | 1832 | 1871, 1832, 1837 | 1547 | 93 | 44% | 844 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
 | 11 | 016804bd | 1847 | 1881, 1852, 1847 | 1547 | 93 | 45% | 837 | M12.14 decode bookkeeping opt (within noise) |
+| 12 | — | 1784 | 1827, 1784, 1925 | 1547 | 93 | 44% | 867 | M12.15 BiasAdd fusion (within noise, rejected) |
 
 ---
 
@@ -171,6 +177,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | **M12.12** | Pointer cache: 2-way set-associative + Fibonacci hash | Hit rate 20→49% (**2.5×**); no wall-time gain (within noise) |
 | **M12.13** | Aggressive GEMV for decode (**REJECTED**) | Naive scalar GEMV 20% slower than MPS; all code reverted |
 | **M12.14** | Decode bookkeeping (**REJECTED**) | Consistent slight regression across all types; all code reverted |
+| **M12.15** | BiasAdd fusion + GPU nucleus (**REJECTED/N/A**) | Fusion: ±3% noise, <0.5% theoretical; Nucleus: not exercised by beam search |
 
 ---
 

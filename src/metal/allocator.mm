@@ -2,6 +2,7 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdlib>
 #include <map>
 #include <mutex>
@@ -108,7 +109,7 @@ namespace ctranslate2 {
         auto& ce = _ptr_cache[idx];
         if (ce.base && byte_ptr >= ce.base &&
             byte_ptr < ce.base + ce.requested_size) {
-          ++_ptr_cache_hits;
+          _ptr_cache_hits.fetch_add(1, std::memory_order_relaxed);
           if (offset_out) {
             *offset_out = static_cast<NSUInteger>(byte_ptr - ce.base);
           }
@@ -116,7 +117,7 @@ namespace ctranslate2 {
         }
 
         // Slow path: std::map O(log n) lookup.
-        ++_ptr_cache_misses;
+        _ptr_cache_misses.fetch_add(1, std::memory_order_relaxed);
         auto it = _live.upper_bound(byte_ptr);
         if (it != _live.begin()) {
           --it;
@@ -176,10 +177,18 @@ namespace ctranslate2 {
           throw std::runtime_error("Metal: attempt to free unknown pointer");
         }
 
-        // M12.3: Invalidate pointer cache entry for this allocation.
-        const auto idx = ptr_cache_index(static_cast<const uint8_t*>(ptr));
-        if (_ptr_cache[idx].base == static_cast<const uint8_t*>(ptr)) {
-          _ptr_cache[idx].base = nullptr;
+        // M12.3: Invalidate pointer cache entries for this allocation.
+        // M12 review H6: Invalidate ALL cache entries that reference this
+        // allocation, not just the base-pointer slot.  Interior pointers
+        // may hash to different slots and become stale after free+realloc.
+        const uint8_t* freed_base = static_cast<const uint8_t*>(ptr);
+        const size_t freed_size = live_it->second.requested_size;
+        for (size_t ci = 0; ci < kPtrCacheSize; ++ci) {
+          if (_ptr_cache[ci].base == freed_base
+              || (_ptr_cache[ci].base && _ptr_cache[ci].base >= freed_base
+                  && _ptr_cache[ci].base < freed_base + freed_size)) {
+            _ptr_cache[ci].base = nullptr;
+          }
         }
 
         const size_t     bucket = live_it->second.bucket;
@@ -278,9 +287,12 @@ namespace ctranslate2 {
       }
 
       // M12.3: Pointer cache hit/miss counters for profiling.
-      uint64_t ptr_cache_hits() const { return _ptr_cache_hits; }
-      uint64_t ptr_cache_misses() const { return _ptr_cache_misses; }
-      void reset_ptr_cache_stats() { _ptr_cache_hits = 0; _ptr_cache_misses = 0; }
+      uint64_t ptr_cache_hits() const { return _ptr_cache_hits.load(std::memory_order_relaxed); }
+      uint64_t ptr_cache_misses() const { return _ptr_cache_misses.load(std::memory_order_relaxed); }
+      void reset_ptr_cache_stats() {
+        _ptr_cache_hits.store(0, std::memory_order_relaxed);
+        _ptr_cache_misses.store(0, std::memory_order_relaxed);
+      }
 
     private:
       struct LiveEntry {
@@ -294,7 +306,7 @@ namespace ctranslate2 {
       //
       // During autoregressive decoding, the same pointers (model weights,
       // persistent KV-cache buffers) are looked up thousands of times.
-      // A 64-entry direct-mapped cache converts these from O(log n) tree
+      // A 256-entry direct-mapped cache converts these from O(log n) tree
       // traversals to a single array index + range check.
       //
       // Invalidation: cache entries are cleared in free() when the base
@@ -336,8 +348,9 @@ namespace ctranslate2 {
       std::vector<LiveEntry>                                   _pending_free;
       size_t                                                   _pool_bytes = 0;
       PtrCacheEntry                                            _ptr_cache[kPtrCacheSize] = {};
-      uint64_t                                                 _ptr_cache_hits = 0;
-      uint64_t                                                 _ptr_cache_misses = 0;
+      // M12 review H7: Atomic counters — read without lock from profiling APIs.
+      std::atomic<uint64_t>                                    _ptr_cache_hits{0};
+      std::atomic<uint64_t>                                    _ptr_cache_misses{0};
     };
 
   }  // namespace metal

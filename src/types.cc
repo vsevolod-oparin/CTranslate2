@@ -171,6 +171,15 @@ namespace ctranslate2 {
     }
   }
 
+#ifdef CT2_WITH_MPS
+  // M12 review: Consolidated helper — single source of truth for the
+  // CT2_MPS_NATIVE_BF16 env var (was duplicated in BFLOAT16 and INT8_BFLOAT16 cases).
+  static bool mps_native_bf16() {
+    static const bool v = read_bool_from_env("CT2_MPS_NATIVE_BF16");
+    return v;
+  }
+#endif
+
   static inline void unsupported_compute_type(const std::string& name) {
     throw std::invalid_argument("Requested " + name + " compute type, but the target device "
                                 "or backend do not support efficient " + name + " computation.");
@@ -204,8 +213,7 @@ namespace ctranslate2 {
       if (support_bfloat16) {
 #ifdef CT2_WITH_MPS
         if (device == Device::MPS) {
-          static const bool native_bf16 = read_bool_from_env("CT2_MPS_NATIVE_BF16");
-          if (!native_bf16 && support_float16)
+          if (!mps_native_bf16() && support_float16)
             return ComputeType::FLOAT16;
         }
 #endif
@@ -289,8 +297,7 @@ namespace ctranslate2 {
       if (support_int8 && support_bfloat16) {
 #ifdef CT2_WITH_MPS
         if (device == Device::MPS) {
-          static const bool native_bf16 = read_bool_from_env("CT2_MPS_NATIVE_BF16");
-          if (!native_bf16 && support_float16)
+          if (!mps_native_bf16() && support_float16)
             return ComputeType::INT8_FLOAT16;
         }
 #endif

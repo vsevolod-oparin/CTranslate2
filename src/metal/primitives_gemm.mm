@@ -75,7 +75,7 @@ kernel void float32_round_to_int32_strided(
     uint in_stride = params[2], out_stride = params[3];
     if (gid >= rows * cols) return;
     uint row = gid / cols, col = gid % cols;
-    output[row * out_stride + col] = int(round(input[row * in_stride + col]));
+    output[row * out_stride + col] = int(floor(input[row * in_stride + col] + 0.5f));
 }
 )";
 
@@ -758,6 +758,13 @@ static void dispatch_int8_gemm(
   NSUInteger off_a = 0, off_b = 0;
   id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
   id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+
+  // M12 review H1: Protect input buffers from premature reuse.
+  // GPU kernels read A and B in encode-only mode; if the caller frees them
+  // before commit_and_wait(), the allocator could reuse the MTLBuffer.
+  ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
+
   encode_int8_to_float32(buf_a, off_a, (NSUInteger)lda,
                           tmp_a, 0, rb_a / sizeof(float),
                           (uint32_t)rows_a, (uint32_t)cols_a);
@@ -1592,6 +1599,17 @@ namespace ctranslate2 {
         const NSUInteger out_stride_a = rb_a / sizeof(float);
         const NSUInteger out_stride_b = rb_b / sizeof(float);
         const NSUInteger out_stride_c = rb_c / sizeof(float);
+
+        // M12 review M1: Protect input A and B buffers from premature reuse.
+        // All batch elements may share the same underlying MTLBuffer (e.g. weight matrix B),
+        // so protect once using the base pointer from the first element.
+        {
+          NSUInteger off_tmp = 0;
+          ctranslate2::metal::protect_buffer_by_base(
+              [ctranslate2::metal_buffer_for_ptr(a, &off_tmp) contents]);
+          ctranslate2::metal::protect_buffer_by_base(
+              [ctranslate2::metal_buffer_for_ptr(b, &off_tmp) contents]);
+        }
 
         // Phase 1: GPU encode int8→float32 for all batches (encode-only).
         for (dim_t bi = 0; bi < batch_size; ++bi) {

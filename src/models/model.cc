@@ -891,7 +891,9 @@ namespace ctranslate2 {
                        compute_type_to_str(model->effective_compute_type()));
 
         // M12.5: Warn when BF16→FP16 auto-promotion occurs on MPS.
-        {
+        // M12 review: Added device == Device::MPS guard to prevent misleading
+        // "on MPS" message when CUDA falls back from BF16→FP16.
+        if (device == Device::MPS) {
           const auto req = model->requested_compute_type();
           const auto eff = model->effective_compute_type();
           if ((req == ComputeType::BFLOAT16 && eff == ComputeType::FLOAT16)

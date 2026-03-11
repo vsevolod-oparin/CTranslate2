@@ -26,7 +26,7 @@ namespace ctranslate2 {
     return v;
   }
 
-  using hrclock = std::chrono::high_resolution_clock;
+  using hrclock = std::chrono::steady_clock;
 
   struct DecodeProfiler {
     bool enabled = false;
@@ -587,6 +587,10 @@ namespace ctranslate2 {
     auto loop_t0 = hrclock::now();
 
     for (dim_t step = 0; step < max_step; ++step) {
+      // M12 review H5: Increment step count at loop top so early-exit breaks
+      // don't skip the count for the final step.
+      ++prof.steps;
+
       const bool is_expanded = (!expand_after_first_step || step > 0);
 
       // --- decoder call ---
@@ -842,8 +846,6 @@ namespace ctranslate2 {
       if (bias_towards_prefix)
         bias_towards_prefix = !all_beams_diverged_from_prefix(beams_diverged_from_prefix);
       if (prof.enabled) prof.state_update_us += prof.tock_us();
-
-      ++prof.steps;
     }
 
     if (prof.enabled) {

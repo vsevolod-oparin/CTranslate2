@@ -92,7 +92,8 @@ def main():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     parser.add_argument("--compute_type", type=str, default="float16",
-                        choices=["float32", "float16", "bfloat16"])
+                        choices=["float32", "float16", "bfloat16",
+                                 "int8", "int8_float16", "int8_bfloat16"])
     parser.add_argument("--label", type=str, default="",
                         help="Label for this run (e.g. commit message)")
     parser.add_argument("--cpu_baseline", action="store_true",
@@ -108,6 +109,9 @@ def main():
         "float32": os.path.join(data_dir, "opus-mt-en-de"),
         "float16": os.path.join(data_dir, "opus-mt-en-de-f16"),
         "bfloat16": os.path.join(data_dir, "opus-mt-en-de"),
+        "int8": os.path.join(data_dir, "opus-mt-en-de"),
+        "int8_float16": os.path.join(data_dir, "opus-mt-en-de"),
+        "int8_bfloat16": os.path.join(data_dir, "opus-mt-en-de"),
     }
     model_path = model_map[args.compute_type]
     if not os.path.isdir(model_path):

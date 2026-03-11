@@ -185,12 +185,13 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 **Result**: **NOT IMPLEMENTED.** Beam search benchmark uses `BestSampler` (TopK k=1), not `RandomSampler`. `TopPMask` is never invoked during the standard benchmark. Even in sampling mode, TopP overhead (~5ms/step) is marginal vs GEMM time (~10-20ms/step). Not worth the complexity.
 **Report**: `agents/report/milestone-12.15-biasadd-fusion-gpu-nucleus.md`
 
-### 4.4 GPU Rotary Embeddings (Priority: ★★)
+### 4.4 GPU Rotary Embeddings — ✅ REJECTED (M12.17)
 
-**Current**: CPU RoPE on GPU K/V requires `commit_and_wait()` — 0.4 ms per step
-**Proposed**: MSL kernel for batch RoPE
-**Impact**: ~0.4 ms/step savings
-**Effort**: High (interleaved-pair layout is complex on GPU)
+**Before**: CPU RoPE on GPU K/V requires `commit_and_wait()` — 0.4 ms per step (FlashAttention decode path)
+**After**: MSL kernel `decode_rope_<T>` with half-table format, encode-only (no sync)
+**GPU kernel**: Correct — 9/9 tests pass (f32/f16/bf16, interleave/non-interleave, partial rotation, GQA, full pipeline)
+**Verdict**: **REJECTED** — the FlashAttention decode RoPE path is dead code on MPS. MPS Generator uses `MultiHeadAttention` (not `FlashMultiHeadAttention`), which applies RoPE via the standard `rotary_metal` GPU kernel without sync. Enabling `flash_attention=True` on MPS produces garbage output (465 commits/token). The GPU kernel is harmless and will become useful when `FlashMultiHeadAttention` is properly supported on MPS.
+**Report**: `agents/report/milestone-12.17-gpu-rotary-embeddings.md`
 
 ---
 
@@ -289,7 +290,7 @@ See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investi
 
 | # | Task | Impact | Effort | Files |
 |---|------|--------|--------|-------|
-| 4.4 | GPU Rotary Embeddings | 0.4 ms/step | High | New MSL kernel |
+| 4.4 | GPU Rotary Embeddings | ✅ M12.17 | REJECTED | Dead code on MPS — FlashAttention decode RoPE path not reachable; kernel correct but unused |
 | 1.2 | MPSGraph fused dequant+matmul | INT8 2× | High | New MPSGraph path |
 | — | Tiled Flash Attention | Large models | Very High | New MSL kernel |
 | — | Metal 4 migration | M5+: 2-4× | High | Architecture |

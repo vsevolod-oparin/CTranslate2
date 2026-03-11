@@ -46,6 +46,7 @@
 
 #include <cstring>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include "metal/ops_metal.h"
@@ -179,11 +180,6 @@ namespace ctranslate2 {
 
         const bool need_rope = (rotary_cos != nullptr && rotary_sin != nullptr);
 
-        if (need_rope) {
-          // RoPE requires CPU access to GPU-computed K/V — must sync.
-          CT2_COMMIT_AND_WAIT();
-        }
-
         TYPE_DISPATCH(queries.dtype(), {
           T*       q_ptr   = queries.data<T>();
           T*       k_new   = keys.data<T>();
@@ -191,36 +187,38 @@ namespace ctranslate2 {
           T*       v_cache = cached_values->data<T>();
           const T* v_new   = values.data<T>();
 
-          // M6.3: Apply RoPE to Q and new K using the half-sized cos/sin tables.
+          // M12.17: GPU decode RoPE — encode-only, no sync needed.
+          // Replaces the M6.3 CPU path (commit_and_wait + CPU RoPE + memcpy).
           if (need_rope) {
-            const dim_t half_dim = rotary_cos->dim(1);
-            const dim_t ndims    = half_dim * 2;
-            const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
-            const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
+            if constexpr (std::is_same_v<T, float>
+                       || std::is_same_v<T, float16_t>
+                       || std::is_same_v<T, bfloat16_t>) {
+              const dim_t half_dim = rotary_cos->dim(1);
+              const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
+              const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
 
-            for (dim_t b = 0; b < batch_size; ++b) {
-              for (dim_t h = 0; h < num_heads; ++h) {
-                T* xq = q_ptr + (b * num_heads + h) * head_dim;
-                apply_rope_half(xq, cos_row, sin_row, ndims, head_dim,
-                                rotary_interleave);
-              }
-            }
-            for (dim_t b = 0; b < batch_size; ++b) {
-              for (dim_t hk = 0; hk < num_heads_k; ++hk) {
-                T* xk = k_new + (b * num_heads_k + hk) * head_dim;
-                apply_rope_half(xk, cos_row, sin_row, ndims, head_dim,
-                                rotary_interleave);
-              }
+              // Apply RoPE to Q: [batch_size * num_heads] vectors of [head_dim].
+              metal::decode_rope_metal<T>(
+                  q_ptr, cos_row, sin_row,
+                  batch_size * num_heads, head_dim, half_dim,
+                  rotary_interleave);
+
+              // Apply RoPE to new K: [batch_size * num_heads_k] vectors of [head_dim].
+              metal::decode_rope_metal<T>(
+                  k_new, cos_row, sin_row,
+                  batch_size * num_heads_k, head_dim, half_dim,
+                  rotary_interleave);
             }
 
-            // After CPU RoPE, write to cache with CPU memcpy (data already on CPU).
+            // Copy new K/V to cache via GPU blit (no sync needed).
+            const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
             for (dim_t b = 0; b < batch_size; ++b) {
               T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
               T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
               const T* ks = k_new   +  b * seqlen_new * row_elements;
               const T* vs = v_new   +  b * seqlen_new * row_elements;
-              std::memcpy(kd, ks, seqlen_new * row_elements * sizeof(T));
-              std::memcpy(vd, vs, seqlen_new * row_elements * sizeof(T));
+              metal::blit_copy(ks, kd, row_bytes);
+              metal::blit_copy(vs, vd, row_bytes);
             }
           } else {
             // No RoPE — use GPU blit copy, no sync needed.

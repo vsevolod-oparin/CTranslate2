@@ -16,7 +16,7 @@
 
 ---
 
-## Final Summary (M12.16 — Object pooling rejected, all compute types unchanged from M12.12)
+## Final Summary (M12.17 — GPU decode RoPE REJECTED, dead code on MPS; no change on OPUS-MT benchmark)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
@@ -29,7 +29,7 @@
 | **MPS** | **int8** | **769** | **2018** | **0.97×** | 97 | 55% | M12.10: 1.67× vs M12.9 |
 | CPU | int8 (RUY) | 540 | 2882 | 0.68× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping (DecodingResult reserve + direct memcpy append): **REJECTED** — consistent slight regression across all 6 types, all code reverted. M12.15 BiasAdd+Act+Residual fusion: **REJECTED** — ±3% noise, <0.5% theoretical savings; GPU nucleus sampling: **NOT APPLICABLE** to beam search. M12.16 object pooling temporaries: **REJECTED** — ±3% noise, <0.05% theoretical savings (Metal bucketed allocator already O(1)). Performance unchanged from M12.12.
+Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping (DecodingResult reserve + direct memcpy append): **REJECTED** — consistent slight regression across all 6 types, all code reverted. M12.15 BiasAdd+Act+Residual fusion: **REJECTED** — ±3% noise, <0.5% theoretical savings; GPU nucleus sampling: **NOT APPLICABLE** to beam search. M12.16 object pooling temporaries: **REJECTED** — ±3% noise, <0.05% theoretical savings (Metal bucketed allocator already O(1)). M12.17 GPU decode RoPE: **REJECTED** — FlashAttention decode RoPE path is dead code on MPS (Generator uses MultiHeadAttention with existing GPU `rotary_metal`; FlashAttention+RoPE not functional on MPS). GPU kernel correct (9/9 tests pass) but no production path exercises it. Performance unchanged from M12.12.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -73,6 +73,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 1517 | 1560, 1517, 1536 | 1544 | 96 | 55% | 1018 | M12.14 decode bookkeeping opt (within noise) | 1.28x |
 | 12 | — | 1488 | 1553, 1520, 1488 | 1544 | 96 | 54% | 1038 | M12.15 BiasAdd fusion (within noise, rejected) | 1.31x |
 | 13 | — | 1486 | 1532, 1521, 1486 | 1544 | 96 | 54% | 1039 | M12.16 object pooling (within noise, rejected) | 1.31x |
+| 14 | — | 1467 | 1545, 1490, 1467 | 1544 | 96 | 54% | 1053 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.30x |
 
 ## Float16 Results (50 sentences)
 
@@ -91,6 +92,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 1085 | 1296, 1085, 1090 | 1550 | 90 | 41% | 1429 | M12.14 decode bookkeeping opt (within noise) | 1.92x |
 | 12 | — | 1067 | 1124, 1129, 1067 | 1549 | 93 | 41% | 1452 | M12.15 BiasAdd fusion (within noise, rejected) | 1.83x |
 | 13 | — | 1050 | 1111, 1068, 1050 | 1550 | 90 | 41% | 1476 | M12.16 object pooling (within noise, rejected) | 1.86x |
+| 14 | — | 1051 | 1103, 1053, 1051 | 1550 | 90 | 41% | 1475 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.83x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -109,6 +111,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 2050 | 2110, 2068, 2050 | 1552 | 97 | 56% | 757 | M12.14 decode bookkeeping opt (within noise) |
 | 12 | — | 2076 | 2166, 2098, 2076 | 1552 | 97 | 54% | 748 | M12.15 BiasAdd fusion (within noise, rejected) |
 | 13 | — | 2057 | 2080, 2057, 2088 | 1552 | 97 | 55% | 754 | M12.16 object pooling (within noise, rejected) |
+| 14 | — | 2038 | 2047, 2045, 2038 | 1552 | 97 | 55% | 761 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -127,6 +130,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 1841 | 1851, 1841, 1853 | 1547 | 93 | 45% | 840 | M12.14 decode bookkeeping opt (within noise) |
 | 12 | — | 1797 | 1861, 1797, 1888 | 1547 | 93 | 43% | 861 | M12.15 BiasAdd fusion (within noise, rejected) |
 | 13 | — | 1831 | 1927, 1861, 1831 | 1547 | 93 | 44% | 845 | M12.16 object pooling (within noise, rejected) |
+| 14 | — | 1769 | 2365, 2009, 1769 | 1547 | 93 | 44% | 875 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -145,6 +149,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 1068 | 1119, 1073, 1068 | 1550 | 90 | 41% | 1451 | M12.14 decode bookkeeping opt (within noise) |
 | 12 | — | 1085 | 1102, 1086, 1085 | 1549 | 93 | 41% | 1428 | M12.15 BiasAdd fusion (within noise, rejected) |
 | 13 | — | 1068 | 1102, 1068, 1071 | 1550 | 90 | 41% | 1452 | M12.16 object pooling (within noise, rejected) |
+| 14 | — | 1547 | 1606, 1626, 1547 | 1550 | 90 | 41% | 1002 | M12.17 GPU decode RoPE (run variance, no RoPE in OPUS-MT) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -163,6 +168,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 11 | 016804bd | 1847 | 1881, 1852, 1847 | 1547 | 93 | 45% | 837 | M12.14 decode bookkeeping opt (within noise) |
 | 12 | — | 1784 | 1827, 1784, 1925 | 1547 | 93 | 44% | 867 | M12.15 BiasAdd fusion (within noise, rejected) |
 | 13 | — | 1838 | 1898, 1864, 1838 | 1547 | 93 | 44% | 841 | M12.16 object pooling (within noise, rejected) |
+| 14 | — | 1760 | 1776, 1760, 1765 | 1547 | 93 | 45% | 879 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ---
 
@@ -185,6 +191,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | **M12.14** | Decode bookkeeping (**REJECTED**) | Consistent slight regression across all types; all code reverted |
 | **M12.15** | BiasAdd fusion + GPU nucleus (**REJECTED/N/A**) | Fusion: ±3% noise, <0.5% theoretical; Nucleus: not exercised by beam search |
 | **M12.16** | Object pooling temporaries (**REJECTED**) | ±3% noise, <0.05% theoretical; Metal bucketed allocator already O(1) |
+| **M12.17** | GPU decode RoPE (**REJECTED**) | Dead code on MPS: FlashAttention decode RoPE path never reached; GPU kernel correct but no production MPS workload exercises it |
 
 ---
 

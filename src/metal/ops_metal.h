@@ -76,6 +76,19 @@ namespace ctranslate2 {
                       dim_t max_time, dim_t head_size,
                       bool interleave, bool is_transposed);
 
+    // M12.17: decode_rope_metal: apply RoPE in-place using half-table format.
+    //   data: [num_vecs, depth] — Q or K head vectors for a single token.
+    //   cos_row/sin_row: [half_dim] — single position row from half-tables.
+    //   Encode-only (no sync).
+    template <typename T>
+    void decode_rope_metal(T* data,
+                           const T* cos_row,
+                           const T* sin_row,
+                           dim_t num_vecs,
+                           dim_t depth,
+                           dim_t half_dim,
+                           bool interleave);
+
     // sdpa_metal: scaled dot-product attention.
     //   q/k/v layout: [batch, seqlen, num_heads, head_dim] (interleaved heads).
     //   output layout: same shape as q.

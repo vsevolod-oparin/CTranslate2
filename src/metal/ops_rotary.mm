@@ -105,6 +105,77 @@ DEFINE_ROTARY(bfloat)
 )msl";
 
 // ---------------------------------------------------------------------------
+// M12.17 — Decode RoPE kernel using half-sized cos/sin tables.
+//
+// Grid:   [num_vecs, depth, 1]  — one thread per element.
+// Each thread computes RoPE for one (vec, d) using the cos/sin row at
+// the given position (passed as a pointer offset, not computed from time).
+//
+// Half-table format: cos_row/sin_row have half_dim elements.
+//   Non-interleave:
+//     d < half_dim:        y[d]             = x[d]             * cos[d] - x[d+half_dim] * sin[d]
+//     half_dim <= d < 2*half_dim: y[d]      = x[d]             * cos[d-half_dim] + x[d-half_dim] * sin[d-half_dim]
+//   Interleave:
+//     d even:              y[d]   = x[d]   * cos[d/2] - x[d+1] * sin[d/2]
+//     d odd:               y[d]   = x[d]   * cos[d/2] + x[d-1] * sin[d/2]
+// Elements d >= ndims are unchanged.
+// ---------------------------------------------------------------------------
+static constexpr const char* kDecodeRopeMSL = R"msl(
+#include <metal_stdlib>
+using namespace metal;
+
+#define DEFINE_DECODE_ROPE(T)                                                  \
+kernel void decode_rope_##T(                                                   \
+    device       T*    data      [[buffer(0)]],                                \
+    device const T*    cos_row   [[buffer(1)]],                                \
+    device const T*    sin_row   [[buffer(2)]],                                \
+    constant  uint&    half_dim  [[buffer(3)]],                                \
+    constant  uint&    depth     [[buffer(4)]],                                \
+    constant  uint&    interleave[[buffer(5)]],                                \
+    uint2 gid [[thread_position_in_grid]])                                     \
+{                                                                              \
+    uint vec = gid.x;                                                          \
+    uint d   = gid.y;                                                          \
+    uint ndims = half_dim * 2u;                                                \
+    if (d >= ndims) return;                                                    \
+    float xi = float(data[vec * depth + d]);                                   \
+    float result;                                                              \
+    if (interleave == 0u) {                                                    \
+        if (d < half_dim) {                                                    \
+            float c = float(cos_row[d]);                                       \
+            float s = float(sin_row[d]);                                       \
+            float partner = float(data[vec * depth + d + half_dim]);           \
+            result = xi * c - partner * s;                                     \
+        } else {                                                               \
+            uint partner_d = d - half_dim;                                     \
+            float c = float(cos_row[partner_d]);                               \
+            float s = float(sin_row[partner_d]);                               \
+            float partner = float(data[vec * depth + partner_d]);              \
+            result = xi * c + partner * s;                                     \
+        }                                                                      \
+    } else {                                                                   \
+        uint pair_idx = d / 2u;                                                \
+        float c = float(cos_row[pair_idx]);                                    \
+        float s = float(sin_row[pair_idx]);                                    \
+        if (d % 2u == 0u) {                                                    \
+            float partner = float(data[vec * depth + d + 1u]);                 \
+            result = xi * c - partner * s;                                     \
+        } else {                                                               \
+            float partner = float(data[vec * depth + d - 1u]);                 \
+            result = xi * c + partner * s;                                     \
+        }                                                                      \
+    }                                                                          \
+    data[vec * depth + d] = (T)result;                                         \
+}
+
+DEFINE_DECODE_ROPE(float)
+DEFINE_DECODE_ROPE(half)
+#if defined(__HAVE_BFLOAT__)
+DEFINE_DECODE_ROPE(bfloat)
+#endif
+)msl";
+
+// ---------------------------------------------------------------------------
 // Library / PSO cache
 // ---------------------------------------------------------------------------
 
@@ -119,6 +190,17 @@ static id<MTLLibrary> get_rotary_library() {
 static id<MTLComputePipelineState> get_rotary_pso(const char* name) {
   static PSOCache cache;
   return cache.get(get_rotary_library, name);
+}
+
+static id<MTLLibrary> get_decode_rope_library() {
+  static id<MTLLibrary> lib = nil;
+  static std::once_flag flag;
+  return compile_library_once(flag, lib, kDecodeRopeMSL, "decode_rope");
+}
+
+static id<MTLComputePipelineState> get_decode_rope_pso(const char* name) {
+  static PSOCache cache;
+  return cache.get(get_decode_rope_library, name);
 }
 
 }  // namespace
@@ -180,6 +262,57 @@ namespace ctranslate2 {
     DECLARE_ROTARY_METAL(ct2_f16)
     DECLARE_ROTARY_METAL(ct2_bf16)
 #undef DECLARE_ROTARY_METAL
+
+    // -----------------------------------------------------------------------
+    // M12.17 — GPU decode RoPE with half-table format (encode-only).
+    //
+    // Applies RoPE in-place to `num_vecs` head vectors of size `depth`.
+    // cos_row / sin_row point to the single position row in half-tables
+    // (half_dim elements each).
+    // -----------------------------------------------------------------------
+    template <typename T>
+    void decode_rope_metal(T* data,
+                           const T* cos_row,
+                           const T* sin_row,
+                           dim_t num_vecs,
+                           dim_t depth,
+                           dim_t half_dim,
+                           bool interleave) {
+      char kname[kKernelNameBufSize];
+      std::snprintf(kname, sizeof(kname), "decode_rope_%s", MetalTypeName<T>::value);
+      id<MTLComputePipelineState> pso = get_decode_rope_pso(kname);
+
+      const uint32_t u_half_dim    = ct2_u32(half_dim);
+      const uint32_t u_depth       = ct2_u32(depth);
+      const uint32_t u_interleave  = interleave ? 1u : 0u;
+
+      id<MTLComputeCommandEncoder> enc = create_compute_encoder();
+      [enc setComputePipelineState:pso];
+
+      NSUInteger off_data = 0, off_cos = 0, off_sin = 0;
+      [enc setBuffer:metal_buffer_for_ptr(data,    &off_data) offset:off_data atIndex:0];
+      [enc setBuffer:metal_buffer_for_ptr(cos_row, &off_cos)  offset:off_cos  atIndex:1];
+      [enc setBuffer:metal_buffer_for_ptr(sin_row, &off_sin)  offset:off_sin  atIndex:2];
+      [enc setBytes:&u_half_dim    length:sizeof(uint32_t) atIndex:3];
+      [enc setBytes:&u_depth       length:sizeof(uint32_t) atIndex:4];
+      [enc setBytes:&u_interleave  length:sizeof(uint32_t) atIndex:5];
+
+      const NSUInteger depth_ns = static_cast<NSUInteger>(depth);
+      NSUInteger tg_depth = std::min(depth_ns,
+          static_cast<NSUInteger>(pso.maxTotalThreadsPerThreadgroup));
+      [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(num_vecs), depth_ns, 1)
+          threadsPerThreadgroup:MTLSizeMake(1, tg_depth, 1)];
+      [enc endEncoding];
+      [enc release];
+    }
+
+#define DECLARE_DECODE_ROPE_METAL(T)                                          \
+    template void decode_rope_metal<T>(T*, const T*, const T*,                \
+                                       dim_t, dim_t, dim_t, bool);
+    DECLARE_DECODE_ROPE_METAL(float)
+    DECLARE_DECODE_ROPE_METAL(ct2_f16)
+    DECLARE_DECODE_ROPE_METAL(ct2_bf16)
+#undef DECLARE_DECODE_ROPE_METAL
 
   }  // namespace metal
 }  // namespace ctranslate2

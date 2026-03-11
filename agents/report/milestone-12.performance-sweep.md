@@ -8,10 +8,36 @@
 **Script**: `tools/benchmark/m12_perf_sweep.py`
 **CPU baseline**: float32, 4 threads, 50 sentences → 1969 ms, 1549 tokens, 787 tok/s (M12.0)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1875 ms, 1549 tokens, 826 tok/s (M12.1, bucketed allocator)
+**CPU baseline**: float32, 4 threads, 50 sentences → 2092 ms, 1549 tokens, 741 tok/s (M12.8, post code review)
+**Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
 
-## Baseline Summary (all compute types)
+## Final Summary (M12.8 — Post Code Review, all compute types, 50 sentences)
+
+| Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
+|---------|------|-------|-----|-----------|---------|------|-------|
+| **MPS** | **float16** | **1497** | **1035** | **2.02×** | 90 | 42% | Best overall |
+| **MPS** | **bfloat16** | **1492** | **1043** | **2.01×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
+| **MPS** | **float32** | **1019** | **1515** | **1.38×** | 96 | 54% | Precision-sensitive |
+| CPU | float32 | 741 | 2092 | 1.00× | — | — | Baseline (4 threads, AMX) |
+| CPU | int8 (RUY) | 540 | 2882 | 0.73× | — | — | Memory-constrained only (M12.7) |
+| **MPS** | int8_float16 | 486 | 3186 | 0.66× | 3446 | 42% | GPU dequant (M12.6) |
+| **MPS** | int8_bfloat16 | 491 | 3153 | 0.66× | 3446 | 41% | Auto-promoted to int8_f16 |
+| **MPS** | int8 | 462 | 3363 | 0.62× | 3522 | 39% | GPU dequant (M12.6) |
+
+### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
+
+| Threads | CPU f32 tok/s | CPU int8 tok/s | INT8/FP32 ratio |
+|---------|--------------|---------------|-----------------|
+| 1 | — | 257 | — |
+| 2 | — | 424 | — |
+| 4 | 741 | 540 | 0.73× |
+| 8 | — | 460 | — |
+
+---
+
+## Pre-M12 Baseline (all compute types)
 
 | Compute Type | Sentences | Best (ms) | tok/s | Commits | GPU% | Status |
 |-------------|-----------|-----------|-------|---------|------|--------|
@@ -33,6 +59,9 @@
 | 2 | 8e325364 | 1480 | 1516, 1516, 1480 | 1544 | 96 | 55% | 1043 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.29x |
 | 3 | cbe1afee | 1462 | 1485, 1462, 1481 | 1544 | 96 | 53% | 1056 | M12.2 cached rowBytes (ObjC overhead <0.5%, negligible) | 1.28x |
 | 4 | 1ef14c1a | 1515 | 1537, 1520, 1515 | 1544 | 96 | 54% | 1019 | M12.3 256-entry ptr cache (within noise) | |
+| 5 | — | — | — | — | 96 | 54% | ~1000 | M12.5 BF16 auto-promotion (no f32 change) | |
+| 6 | — | — | — | — | 96 | 54% | ~1000 | M12.6 INT8 GPU dequant (no f32 change) | |
+| 7 | fda694a1 | 1515 | 1528, 1515, 1523 | 1544 | 96 | 54% | 1019 | M12.8 code review fixes | 1.38x |
 
 ## Float16 Results (50 sentences)
 
@@ -42,8 +71,11 @@
 | 2 | 8e325364 | 1033 | 1084, 1034, 1033 | 1550 | 90 | 42% | 1500 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.81x |
 | 3 | cbe1afee | 1012 | 1078, 1021, 1012 | 1550 | 90 | 42% | 1531 | M12.2 cached rowBytes (negligible delta) | 1.85x |
 | 4 | 1ef14c1a | 1050 | 1094, 1056, 1050 | 1550 | 90 | 41% | 1476 | M12.3 256-entry ptr cache (within noise) | |
+| 5 | — | — | — | — | 90 | 41% | ~1476 | M12.5 BF16 auto-promotion (no f16 change) | |
+| 6 | — | 1049 | — | 1550 | 90 | 41% | 1464 | M12.6 INT8 GPU dequant (no f16 change) | |
+| 7 | fda694a1 | 1035 | 1084, 1035, 1036 | 1550 | 90 | 42% | 1497 | M12.8 code review fixes | 1.86x |
 
-## INT8 Results (10 sentences)
+## INT8 Results (50 sentences, post-M12.6)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
@@ -51,8 +83,11 @@
 | 2 | 8e325364 | 2336 | 2380, 2348, 2336 | 194 | 5692 | 15% | 83 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 2303 | 2346, 2303, 2310 | 194 | 5692 | 15% | 84 | M12.2 cached rowBytes |
 | 4 | 1ef14c1a | 2315 | 2361, 2331, 2315 | 194 | 5692 | 15% | 84 | M12.3 256-entry ptr cache |
+| 5 | — | — | — | — | — | — | — | M12.5 (no int8 change) |
+| 6 | — | — | — | 194 | 3522 | 40% | 453 | **M12.6 GPU dequant (5.4× speedup)** |
+| 7 | fda694a1 | 3363 | 3363, 3389, 3375 | 1552 | 3522 | 39% | 462 | M12.8 code review fixes (50 sent) |
 
-## INT8+Float16 Results (10 sentences)
+## INT8+Float16 Results (50 sentences, post-M12.6)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
@@ -60,8 +95,11 @@
 | 2 | 8e325364 | 2266 | 2286, 2266, 2276 | 193 | 5580 | 15% | 85 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 2252 | 2278, 2252, 2343 | 193 | 5580 | 15% | 86 | M12.2 cached rowBytes |
 | 4 | 1ef14c1a | 2254 | 2290, 2254, 2271 | 193 | 5580 | 15% | 86 | M12.3 256-entry ptr cache |
+| 5 | — | — | — | — | — | — | — | M12.5 (no int8_f16 change) |
+| 6 | — | — | — | 193 | 3446 | 42% | 494 | **M12.6 GPU dequant (5.7× speedup)** |
+| 7 | fda694a1 | 3186 | 3186, 3242, 3196 | 1547 | 3446 | 42% | 486 | M12.8 code review fixes (50 sent) |
 
-## BFloat16 Results (10 sentences)
+## BFloat16 Results (50 sentences, post-M12.5)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
@@ -69,8 +107,11 @@
 | 2 | 8e325364 | 21387 | 21401, 21501, 21387 | 195 | 2844 | 1% | 9 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 21329 | 21344, 21511, 21329 | 195 | 2844 | 1% | 9 | M12.2 cached rowBytes |
 | 4 | 1ef14c1a | 21245 | 21361, 21328, 21245 | 195 | 2844 | 1% | 9 | M12.3 256-entry ptr cache |
+| 5 | — | — | — | 1556 | 90 | 41% | 1426 | **M12.5 BF16→FP16 auto-promotion (158× speedup)** |
+| 6 | — | — | — | — | 90 | 41% | ~1426 | M12.6 (no bf16 change) |
+| 7 | fda694a1 | 1043 | 1134, 1043, 1046 | 1556 | 90 | 41% | 1492 | M12.8 code review fixes (50 sent) |
 
-## INT8+BFloat16 Results (10 sentences)
+## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
 | # | Commit | Best (ms) | Runs (ms) | Tokens | Commits | GPU% | tok/s | Label |
 |---|--------|-----------|-----------|--------|---------|------|-------|-------|
@@ -78,6 +119,24 @@
 | 2 | 8e325364 | 22042 | 22528, 22042, 22251 | 195 | 6904 | 2% | 9 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 22664 | 22707, 22806, 22664 | 195 | 6904 | 2% | 9 | M12.2 cached rowBytes |
 | 4 | 1ef14c1a | 22690 | 22785, 22766, 22690 | 195 | 6904 | 2% | 9 | M12.3 256-entry ptr cache |
+| 5 | — | — | — | — | 3446 | 41% | 454 | **M12.5 auto-promoted to int8_f16** |
+| 6 | — | — | — | — | 3446 | 41% | ~454 | M12.6 (benefits from int8_f16 GPU dequant) |
+| 7 | fda694a1 | 3153 | 3154, 3217, 3153 | 1547 | 3446 | 41% | 491 | M12.8 code review fixes (50 sent) |
+
+---
+
+## M12 Optimization Impact Summary
+
+| Milestone | Change | Biggest Impact |
+|-----------|--------|----------------|
+| **M12.0** | Baseline measurements | — |
+| **M12.1** | Bucketed allocator + encode_barrier | f16: 1286→1500 tok/s (+17%), commits 188→90 (−52%) |
+| **M12.2** | Cached rowBytesForColumns | <1% (within noise) |
+| **M12.3** | 256-entry pointer cache | <1% (within noise) |
+| **M12.5** | BF16→FP16 auto-promotion | bf16: 9→1426 tok/s (**158× speedup**) |
+| **M12.6** | INT8 GPU dequantize kernels | int8: 84→453 tok/s (**5.4×**), int8_f16: 86→494 (**5.7×**) |
+| **M12.7** | CPU INT8 build (RUY) | CPU int8: 540 tok/s (new, slower than CPU f32 on Apple Silicon) |
+| **M12.8** | Code review fixes (8 HIGH) | protect_buffer, rounding fix, atomic counters, etc. |
 
 ---
 

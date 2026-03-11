@@ -209,22 +209,19 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 
 ## Part 5: Memory & Allocator Optimization
 
-### 5.1 Pointer Cache Improvement (Priority: ★★★★)
+### 5.1 Pointer Cache Improvement — ✅ COMPLETED (M12.12)
 
-**Current**: 256-entry direct-mapped cache, 20-24% hit rate
-- float16: 295K hits / 1.19M misses (19.9%)
-- float32: 734K hits / 1.56M misses (32.0%)
-- int8: 709K hits / 1.63M misses (30.3%)
+**Before (M12.3)**: 256-entry direct-mapped cache, 20-30% hit rate
+**After (M12.12)**: 512-set × 2-way set-associative + Fibonacci hash, **~49% hit rate**
 
-**Root cause**: Direct-mapped cache with `(ptr >> 12) ^ ((ptr >> 8) & 0x3F)` hash — heavy collisions from Metal's allocation patterns.
+**Changes applied**:
+1. Multiplicative (Fibonacci) hash: `(v >> 4) * golden_ratio >> (64 - bits)` — eliminates clustering from Metal's page-aligned allocations
+2. 2-way set-associative: prevents temporary tensor lookups from evicting stable model weight entries
+3. 1024 total entries (512 sets × 2 ways)
 
-**Options**:
-1. Increase to 1024 or 2048 entries (simple, ~4× less collisions)
-2. Switch to 4-way set-associative (better collision handling)
-3. Use better hash function (e.g., multiplicative hash)
+**Result**: Hit rate improved 2.5× (20-30% → 49%), **no wall-time gain** (within ±5% noise). O(log n) fallback on ~50-100 live entries is ~20 ns — too fast for cache optimization to matter. See `agents/report/milestone-12.12-pointer-cache-improvement.md`.
 
-**Impact**: Faster `buffer_for_ptr()` lookups → less CPU overhead per Metal op
-**Effort**: Low-Medium
+**Effort**: Low (allocator.mm only)
 
 ### 5.2 Metal Residency Sets (Priority: ★★★)
 
@@ -281,7 +278,7 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 | 1.1 | INT8 protect_buffer sync elimination | INT8: 1.67-1.83× | ✅ M12.10 | int8 467→779, int8_f16 496→889, commits 97% reduced |
 | 2.1 | Defer word ID conversion | ~~All: 3-5%~~ | ❌ M12.11 | No-op in common case; CPU data, not GPU roundtrip |
 | 2.2 | Batch CPU read of topk_scores | ~~All: 5-10%~~ | ❌ M12.11 | Already CPU after sampler sync; bookkeeping = 0.01% |
-| 5.1 | Pointer cache improvement | All: 2-5% | Pending | — |
+| 5.1 | Pointer cache improvement | ~~All: 2-5%~~ | ✅ M12.12 | Hit rate 20→49%; no wall-time gain (O(log n) fast enough) |
 
 ### Phase 2: High Impact (Expected: 10-20% additional)
 

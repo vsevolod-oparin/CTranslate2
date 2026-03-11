@@ -93,27 +93,31 @@ namespace ctranslate2 {
       // byte offset of ptr within that buffer.  Needed by compute encoders
       // (which take id<MTLBuffer> + offset, not raw void*).
       //
-      // M12.3: Two-level lookup for O(1) amortised performance:
-      //   1. Direct-mapped pointer cache (64 entries, O(1) hash lookup)
+      // M12.3/M12.12: Two-level lookup for O(1) amortised performance:
+      //   1. 2-way set-associative pointer cache (512 sets × 2 ways, O(1))
       //   2. Fallback: sorted std::map with upper_bound (O(log n))
       //
       // The cache exploits temporal locality: model weight pointers are
-      // stable across decode steps, so after the first step ~90%+ of
-      // lookups hit the cache.  Cache entries are invalidated on free().
+      // stable across decode steps.  2-way associativity prevents temporary
+      // tensors from evicting stable weight entries (the primary cause of
+      // cache thrashing with direct-mapped design).
       id<MTLBuffer> buffer_for_ptr(const void* ptr, NSUInteger* offset_out) {
         const uint8_t* byte_ptr = static_cast<const uint8_t*>(ptr);
         std::lock_guard<std::mutex> lock(_mutex);
 
-        // Fast path: check direct-mapped pointer cache.
-        const auto idx = ptr_cache_index(byte_ptr);
-        auto& ce = _ptr_cache[idx];
-        if (ce.base && byte_ptr >= ce.base &&
-            byte_ptr < ce.base + ce.requested_size) {
-          _ptr_cache_hits.fetch_add(1, std::memory_order_relaxed);
-          if (offset_out) {
-            *offset_out = static_cast<NSUInteger>(byte_ptr - ce.base);
+        // Fast path: check 2-way set-associative pointer cache.
+        const auto set = ptr_cache_index(byte_ptr);
+        const auto base_idx = set * kPtrCacheWays;
+        for (size_t w = 0; w < kPtrCacheWays; ++w) {
+          auto& ce = _ptr_cache[base_idx + w];
+          if (ce.base && byte_ptr >= ce.base &&
+              byte_ptr < ce.base + ce.requested_size) {
+            _ptr_cache_hits.fetch_add(1, std::memory_order_relaxed);
+            if (offset_out) {
+              *offset_out = static_cast<NSUInteger>(byte_ptr - ce.base);
+            }
+            return ce.buffer;
           }
-          return ce.buffer;
         }
 
         // Slow path: std::map O(log n) lookup.
@@ -122,10 +126,25 @@ namespace ctranslate2 {
         if (it != _live.begin()) {
           --it;
           if (byte_ptr < it->first + it->second.requested_size) {
-            // Populate cache for future lookups.
-            ce.base = it->first;
-            ce.requested_size = it->second.requested_size;
-            ce.buffer = it->second.buffer;
+            // Populate cache: use first empty way, else evict way 0
+            // (shift way 0 out, insert at way 1 = MRU position).
+            auto& way0 = _ptr_cache[base_idx];
+            auto& way1 = _ptr_cache[base_idx + 1];
+            if (!way0.base) {
+              way0.base = it->first;
+              way0.requested_size = it->second.requested_size;
+              way0.buffer = it->second.buffer;
+            } else if (!way1.base) {
+              way1.base = it->first;
+              way1.requested_size = it->second.requested_size;
+              way1.buffer = it->second.buffer;
+            } else {
+              // Both full — evict way 0 (LRU), promote way 1, insert new at way 1.
+              way0 = way1;
+              way1.base = it->first;
+              way1.requested_size = it->second.requested_size;
+              way1.buffer = it->second.buffer;
+            }
             if (offset_out) {
               *offset_out = static_cast<NSUInteger>(byte_ptr - it->first);
             }
@@ -302,20 +321,24 @@ namespace ctranslate2 {
         bool          gpu_protected = false;  // M11.18: deferred free
       };
 
-      // M12.3: Direct-mapped pointer cache for O(1) buffer_for_ptr lookups.
+      // M12.12: 2-way set-associative pointer cache for O(1) buffer_for_ptr lookups.
       //
       // During autoregressive decoding, the same pointers (model weights,
       // persistent KV-cache buffers) are looked up thousands of times.
-      // A 256-entry direct-mapped cache converts these from O(log n) tree
-      // traversals to a single array index + range check.
+      // A 512-set × 2-way cache converts these from O(log n) tree
+      // traversals to 1-2 array index + range checks.
       //
-      // Invalidation: cache entries are cleared in free() when the base
-      // pointer matches.  This is O(1) since we hash directly to the slot.
-      // Stale entries from reallocated addresses are impossible because
-      // free() always clears before allocate() can reuse the address.
-      static constexpr size_t kPtrCacheBits = 8;   // 256 entries
-      static constexpr size_t kPtrCacheSize = 1u << kPtrCacheBits;
-      static constexpr size_t kPtrCacheMask = kPtrCacheSize - 1;
+      // 2-way associativity prevents temporary tensors from evicting stable
+      // model weight entries — the main cause of thrashing in the original
+      // 256-entry direct-mapped cache (M12.3).
+      //
+      // Invalidation: all entries are scanned in free() when the base
+      // pointer falls within the freed range.
+      static constexpr size_t kPtrCacheBits = 9;   // 512 sets
+      static constexpr size_t kPtrCacheSets = 1u << kPtrCacheBits;
+      static constexpr size_t kPtrCacheMask = kPtrCacheSets - 1;
+      static constexpr size_t kPtrCacheWays = 2;   // 2-way set-associative
+      static constexpr size_t kPtrCacheSize = kPtrCacheSets * kPtrCacheWays;  // 1024 total entries
 
       struct PtrCacheEntry {
         const uint8_t* base = nullptr;
@@ -323,11 +346,15 @@ namespace ctranslate2 {
         id<MTLBuffer>  buffer = nil;
       };
 
-      // Hash a pointer to a cache index.  Shift right by 12 (page-aligned
-      // allocations share low bits) and mix with bits 8-13 for variety.
+      // Hash a pointer to a cache index.  Multiplicative (Fibonacci) hashing
+      // distributes pointers uniformly across the cache, avoiding the clustering
+      // caused by Metal's page-aligned allocation patterns.
+      // M12.12: Replaced shift-XOR hash with golden-ratio multiplicative hash.
       static size_t ptr_cache_index(const uint8_t* ptr) {
         auto v = reinterpret_cast<uintptr_t>(ptr);
-        return ((v >> 12) ^ (v >> 6)) & kPtrCacheMask;
+        // Strip low alignment bits (Metal buffers are 16-byte aligned),
+        // then multiply by 2^64/phi for near-perfect distribution.
+        return ((v >> 4) * 11400714819323198485ULL) >> (64 - kPtrCacheBits);
       }
 
       // Pool or release a buffer, respecting the optional cap.

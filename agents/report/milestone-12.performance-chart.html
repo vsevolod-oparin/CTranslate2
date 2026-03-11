@@ -200,7 +200,7 @@
 
 <!-- Summary table -->
 <div class="table-container">
-  <div class="chart-title">Final Performance Summary (M12.12 — Pointer Cache Improvement)</div>
+  <div class="chart-title">Final Performance Summary (M12.13 — GEMV rejected, unchanged from M12.12)</div>
   <table id="summary-table">
     <thead>
       <tr>
@@ -237,24 +237,25 @@ const milestones = [
   "M12.8\nHIGH\nFixes",
   "M12.9\nMED/LOW\nFixes",
   "M12.10\nINT8\nprotect_buffer",
-  "M12.12\n2-way\nPtr Cache"
+  "M12.12\n2-way\nPtr Cache",
+  "M12.13\nGEMV\n(rejected)"
 ];
 
 const timeline = {
-  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497, 1496, 1490, 1495],
-  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019, 1059, 1053, 1026],
-  int8:         [  77,   83,   84,   84,   84,  453,  462,  467,  779,  769],
-  int8_float16: [  78,   85,   86,   86,   86,  494,  486,  496,  889,  870],
-  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492, 1305, 1490, 1457],
+  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497, 1496, 1490, 1495, 1495],
+  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019, 1059, 1053, 1026, 1026],
+  int8:         [  77,   83,   84,   84,   84,  453,  462,  467,  779,  769,  769],
+  int8_float16: [  78,   85,   86,   86,   86,  494,  486,  496,  889,  870,  870],
+  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492, 1305, 1490, 1457, 1457],
 };
 
 // Commit counts timeline
 const commitTimeline = {
-  float16:      [188, 90, 90, 90, 90, 90, 90, 90, 90, 90],
-  float32:      [188, 96, 96, 96, 96, 96, 96, 96, 96, 96],
-  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522, 3522, 97, 97],
-  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446, 3446, 93, 93],
-  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90, 90, 90, 90],
+  float16:      [188, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90],
+  float32:      [188, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96],
+  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522, 3522, 97, 97, 97],
+  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446, 3446, 93, 93, 93],
+  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90, 90, 90, 90, 90],
 };
 
 // Final summary table data
@@ -277,7 +278,7 @@ const cards = [
   {value:"49%",   label:"Ptr cache hit rate (was 20%)",cls:"warn"},
   {value:"97%",   label:"INT8 commits reduced",cls:"cpu"},
   {value:"870",   label:"INT8_f16 tok/s (was 496)",cls:""},
-  {value:"10",    label:"Milestones completed",cls:""},
+  {value:"11",    label:"Milestones completed",cls:""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");

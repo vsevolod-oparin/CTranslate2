@@ -182,13 +182,12 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 **Impact**: ~2% for OPUS-MT (d_model=512), ~5-15% for d_model≥2048
 **Effort**: Medium (new MSL kernel + dispatch function)
 
-### 4.2 Aggressive GEMV Dispatch During Decode (Priority: ★★★)
+### 4.2 Aggressive GEMV Dispatch During Decode — ✅ REJECTED (M12.13)
 
-**Location**: `src/metal/primitives_gemm.mm:1003-1156` — GEMV kernels already exist (`kGemvF16MSL`, `kGemvF32MSL`)
-**Issue**: During decode, one dimension is typically 1 or beam_size. Custom GEMV can be 20-40% faster than MPS for these narrow shapes.
-**Current state**: GEMV is used for some paths; could be used more aggressively.
-**Impact**: 20-40% for single-token decode GEMM
-**Effort**: Medium (dispatch logic routing)
+**Location**: `src/metal/primitives_gemm.mm:1003-1156` — GEMV kernels exist (`kGemvF16MSL`, `kGemvF32MSL`)
+**Issue**: During decode, one dimension is typically 1 or beam_size. Custom GEMV was hypothesized to be 20-40% faster than MPS for these narrow shapes.
+**Result**: **REJECTED.** Naive scalar GEMV is 20% *slower* than MPS for all shapes. MPS uses hardware matrix units; custom scalar dot-product kernel cannot compete. Both non-batched m≤4 routing and f32 batched m=1 routing caused severe regressions. All code reverted.
+**Report**: `agents/report/milestone-12.13-aggressive-gemv-decode.md`
 
 ### 4.3 GPU Nucleus Sampling (Priority: ★★★)
 
@@ -286,7 +285,7 @@ StorageView alive_seq({batch * beam, max_steps}, DataType::INT32, device);
 |---|------|--------|--------|-------|
 | 2.3 | Pre-allocate DecodingResult | All: 10-15% alloc | Low | `decoding.cc:555` |
 | 2.4 | Eliminate alive_seq concat | All: 5-10% | Medium | `decoding.cc:208-220` |
-| 4.2 | Aggressive GEMV for decode | f16/f32: 20-40% GEMM | Medium | `primitives_gemm.mm` |
+| 4.2 | ~~Aggressive GEMV for decode~~ | ✅ REJECTED (M12.13) | — | Naive GEMV 20% slower than MPS |
 | 2.5 | Lazy hypothesis construction | All: 3-5% | Medium | `decoding.cc:742-749` |
 
 ### Phase 3: Medium Impact (Expected: 5-10% additional)

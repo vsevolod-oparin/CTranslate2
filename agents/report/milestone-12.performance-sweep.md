@@ -16,7 +16,7 @@
 
 ---
 
-## Final Summary (M12.12 — Pointer cache improvement, all compute types, 50 sentences)
+## Final Summary (M12.13 — Aggressive GEMV rejected, all compute types unchanged from M12.12)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
@@ -29,7 +29,7 @@
 | **MPS** | **int8** | **769** | **2018** | **0.97×** | 97 | 55% | M12.10: 1.67× vs M12.9 |
 | CPU | int8 (RUY) | 540 | 2882 | 0.68× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache improvement (2-way set-associative + Fibonacci hash): hit rate ~20→49%, **no wall-time gain** (within ±5% noise). All performance numbers unchanged from M12.10.
+Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache improvement: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV for decode: **REJECTED** — naive scalar GEMV 20% slower than MPS for all shapes, all code reverted. Performance unchanged from M12.12.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -163,6 +163,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache i
 | **M12.9** | Code review fixes (5 MED + 2 LOW) | ct2_u32 consistency, dead code removal — no perf impact |
 | **M12.10** | INT8 protect_buffer sync elimination | int8: 467→779 tok/s (**1.67×**), int8_f16: 496→889 (**1.79×**), commits 3500→93-97 (**97% reduction**) |
 | **M12.12** | Pointer cache: 2-way set-associative + Fibonacci hash | Hit rate 20→49% (**2.5×**); no wall-time gain (within noise) |
+| **M12.13** | Aggressive GEMV for decode (**REJECTED**) | Naive scalar GEMV 20% slower than MPS; all code reverted |
 
 ---
 

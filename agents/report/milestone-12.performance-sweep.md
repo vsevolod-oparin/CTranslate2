@@ -32,6 +32,7 @@
 | 1 | c55d4e9d | 1673 | 1818, 1673, 1673 | 1544 | 188 | 54% | 923 | M12 baseline (pre-optimization) | 1.18x |
 | 2 | 8e325364 | 1480 | 1516, 1516, 1480 | 1544 | 96 | 55% | 1043 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.29x |
 | 3 | cbe1afee | 1462 | 1485, 1462, 1481 | 1544 | 96 | 53% | 1056 | M12.2 cached rowBytes (ObjC overhead <0.5%, negligible) | 1.28x |
+| 4 | 1ef14c1a | 1515 | 1537, 1520, 1515 | 1544 | 96 | 54% | 1019 | M12.3 256-entry ptr cache (within noise) | |
 
 ## Float16 Results (50 sentences)
 
@@ -40,6 +41,7 @@
 | 1 | c55d4e9d | 1201 | 1216, 1224, 1201 | 1544 | 188 | 41% | 1286 | M12 baseline (pre-optimization) | 1.64x |
 | 2 | 8e325364 | 1033 | 1084, 1034, 1033 | 1550 | 90 | 42% | 1500 | M12.1 prepare_length_mask non-blocking commit + bucketed allocator | 1.81x |
 | 3 | cbe1afee | 1012 | 1078, 1021, 1012 | 1550 | 90 | 42% | 1531 | M12.2 cached rowBytes (negligible delta) | 1.85x |
+| 4 | 1ef14c1a | 1050 | 1094, 1056, 1050 | 1550 | 90 | 41% | 1476 | M12.3 256-entry ptr cache (within noise) | |
 
 ## INT8 Results (10 sentences)
 
@@ -48,6 +50,7 @@
 | 1 | 051a64f5 | 2512 | 2638, 2591, 2512 | 194 | 5743 | 14% | 77 | M12 baseline |
 | 2 | 8e325364 | 2336 | 2380, 2348, 2336 | 194 | 5692 | 15% | 83 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 2303 | 2346, 2303, 2310 | 194 | 5692 | 15% | 84 | M12.2 cached rowBytes |
+| 4 | 1ef14c1a | 2315 | 2361, 2331, 2315 | 194 | 5692 | 15% | 84 | M12.3 256-entry ptr cache |
 
 ## INT8+Float16 Results (10 sentences)
 
@@ -56,6 +59,7 @@
 | 1 | 051a64f5 | 2447 | 2630, 2447, 2460 | 192 | 5630 | 16% | 78 | M12 baseline |
 | 2 | 8e325364 | 2266 | 2286, 2266, 2276 | 193 | 5580 | 15% | 85 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 2252 | 2278, 2252, 2343 | 193 | 5580 | 15% | 86 | M12.2 cached rowBytes |
+| 4 | 1ef14c1a | 2254 | 2290, 2254, 2271 | 193 | 5580 | 15% | 86 | M12.3 256-entry ptr cache |
 
 ## BFloat16 Results (10 sentences)
 
@@ -64,6 +68,7 @@
 | 1 | a8a2bf16 | 22261 | 22261, 22410, 22334 | 195 | 2895 | 1% | 9 | M12 baseline |
 | 2 | 8e325364 | 21387 | 21401, 21501, 21387 | 195 | 2844 | 1% | 9 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 21329 | 21344, 21511, 21329 | 195 | 2844 | 1% | 9 | M12.2 cached rowBytes |
+| 4 | 1ef14c1a | 21245 | 21361, 21328, 21245 | 195 | 2844 | 1% | 9 | M12.3 256-entry ptr cache |
 
 ## INT8+BFloat16 Results (10 sentences)
 
@@ -72,6 +77,7 @@
 | 1 | 051a64f5 | 23786 | 27672, 25010, 23786 | 195 | 6955 | 2% | 8 | M12 baseline |
 | 2 | 8e325364 | 22042 | 22528, 22042, 22251 | 195 | 6904 | 2% | 9 | M12.1 bucketed allocator |
 | 3 | cbe1afee | 22664 | 22707, 22806, 22664 | 195 | 6904 | 2% | 9 | M12.2 cached rowBytes |
+| 4 | 1ef14c1a | 22690 | 22785, 22766, 22690 | 195 | 6904 | 2% | 9 | M12.3 256-entry ptr cache |
 
 ---
 

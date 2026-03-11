@@ -70,6 +70,11 @@ namespace ctranslate2 {
     size_t pool_bytes();   // Cached but unused (reclaimable via clear_cache).
     size_t live_bytes();   // Currently in use by StorageView/tensors.
 
+    // M12.3: Pointer cache profiling counters.
+    uint64_t ptr_cache_hits();
+    uint64_t ptr_cache_misses();
+    void reset_ptr_cache_stats();
+
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
     uint64_t pso_hit_count();

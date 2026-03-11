@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-11
-**Status:** In progress — M12.1-12.4 done (profiling + sync elimination), M12.5-12.6 next (BF16/INT8 fix)
+**Status:** In progress — M12.1-12.5 done, M12.6 next (INT8 GPU dequant)
 
 ---
 
@@ -1060,12 +1060,13 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Beam bookkeeping, ObjC overhead, buffer lookup: all **0.0%** of loop time
 - **DONE:** Report `agents/report/milestone-12.4-decode-loop-profiling.md`
 
-**12.5 BF16 GEMM fix** (HIGHEST PRIORITY — 65× improvement expected)
-- Root cause confirmed by M12.4: MPSGraph `runWithMTLCommandQueue:` is synchronous,
-  424ms/step (99.8% of decode time). Each BF16 GEMM: ~11ms (pre-flush + graph sync + readBytes).
-- Best option: auto-promote BF16 weights → FP16 at load time on MPS (424ms→6.5ms/step)
-- Alt: async MPSGraph, batched graph, or custom BF16 GEMV for m=1
-- **PASS:** BF16 translation at FP16-equivalent speed (~1400 tok/s)
+**12.5 BF16→FP16 auto-promotion** ✅
+- Root cause (M12.4): MPSGraph `runWithMTLCommandQueue:` is synchronous, 424ms/step (99.8%).
+- **Fix**: `resolve_compute_type()` promotes BF16→FP16 and INT8_BF16→INT8_FP16 on MPS.
+- Escape hatch: `CT2_MPS_NATIVE_BF16=1` forces native BF16 (accepting 65× slowdown).
+- Warning logged when promotion occurs.
+- **Result**: bf16 9→1631 tok/s (181×), int8_bf16 9→574 tok/s (64×)
+- **DONE:** Report `agents/report/milestone-12.5-bf16-auto-promotion.md`
 
 **12.6 INT8 GPU dequantize** (HIGH PRIORITY — 3.5× improvement expected)
 - Root cause confirmed by M12.4: CPU int8→f32 dequant + 2 syncs/GEMM = 45.6ms/step (98% of decode)
@@ -1084,16 +1085,16 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Benchmark with larger model (Whisper large-v3-turbo d_model=1280, or NLLB) to confirm GPU scales
 - **PASS:** Larger model shows >3× CPU speedup with f16
 
-**Current performance (50 sentences, best-of-3, post M12.1-12.4):**
+**Current performance (50 sentences, best-of-3, post M12.5):**
 
-| Type | tok/s | vs CPU | Commits | Bottleneck (M12.4 finding) |
-|------|-------|--------|---------|---------------------------|
-| float16 | 1476 | 1.79× | 90 | GPU compute + sync balanced |
-| float32 | 1019 | 1.23× | 96 | GPU compute + sync balanced |
-| int8 | 84 | 0.10× | 5692 | CPU int8↔f32 + 2 syncs/GEMM |
-| int8_f16 | 86 | 0.10× | 5580 | CPU int8↔f32 + 2 syncs/GEMM |
-| bfloat16 | 9 | 0.01× | 2844 | MPSGraph synchronous GEMM |
-| int8_bf16 | 9 | 0.01× | 6904 | Both INT8 + MPSGraph |
+| Type | tok/s | vs CPU | Status | Notes |
+|------|-------|--------|--------|-------|
+| float16 | 1585 | 1.92× | Optimal | GPU compute + sync balanced |
+| float32 | 1019 | 1.23× | Optimal | f32 GEMM slower, sync waits |
+| bfloat16 | 1631 | 1.97× | **Fixed M12.5** | Auto-promoted → float16 |
+| int8 | 84 | 0.10× | M12.6 target | CPU int8↔f32 + 2 syncs/GEMM |
+| int8_f16 | 568 | 0.69× | OK | CPU int8↔f32 + syncs |
+| int8_bf16 | 574 | 0.69× | **Fixed M12.5** | Auto-promoted → int8_float16 |
 
 - Reports: `agents/report/milestone-12*.md`
 - Benchmark script: `tools/benchmark/m12_perf_sweep.py`

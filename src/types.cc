@@ -201,10 +201,20 @@ namespace ctranslate2 {
     }
 
     case ComputeType::BFLOAT16: {
-      if (support_bfloat16)
+      if (support_bfloat16) {
+#ifdef CT2_WITH_MPS
+        if (device == Device::MPS) {
+          static const bool native_bf16 = read_bool_from_env("CT2_MPS_NATIVE_BF16");
+          if (!native_bf16 && support_float16)
+            return ComputeType::FLOAT16;
+        }
+#endif
         return ComputeType::BFLOAT16;
+      }
       if (!enable_fallback)
         unsupported_compute_type("bfloat16");
+      if (support_float16)
+        return ComputeType::FLOAT16;
       return ComputeType::FLOAT32;
     }
 
@@ -276,10 +286,20 @@ namespace ctranslate2 {
     }
 
     case ComputeType::INT8_BFLOAT16: {
-      if (support_int8 && support_bfloat16)
+      if (support_int8 && support_bfloat16) {
+#ifdef CT2_WITH_MPS
+        if (device == Device::MPS) {
+          static const bool native_bf16 = read_bool_from_env("CT2_MPS_NATIVE_BF16");
+          if (!native_bf16 && support_float16)
+            return ComputeType::INT8_FLOAT16;
+        }
+#endif
         return ComputeType::INT8_BFLOAT16;
+      }
       if (!enable_fallback)
         unsupported_compute_type("int8_bfloat16");
+      if (support_int8 && support_float16)
+        return ComputeType::INT8_FLOAT16;
       if (support_int8)
         return ComputeType::INT8_FLOAT32;
       if (support_bfloat16)

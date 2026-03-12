@@ -78,6 +78,14 @@ namespace ctranslate2 {
     uint64_t ptr_cache_misses();
     void reset_ptr_cache_stats();
 
+    // Metal Residency Sets (macOS 15+): pin model weight buffers in physical
+    // memory so the OS cannot evict them under memory pressure.
+    // request_residency() creates an MTLResidencySet from all current live
+    // allocations and pins them.  end_residency() releases the pin.
+    // No-op on macOS < 15 or if no live allocations exist.
+    void request_residency();
+    void end_residency();
+
     // M11.2: Global PSO cache hit/miss counters.
     // Incremented by PSOCache::get() in primitives_infra.h.
     uint64_t pso_hit_count();

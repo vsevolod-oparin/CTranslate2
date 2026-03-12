@@ -79,6 +79,7 @@ namespace ctranslate2 {
     class MetalAllocator : public Allocator {
     public:
       ~MetalAllocator() {
+        end_residency_locked();
         for (auto& [sz, bufs] : _pool)
           for (id<MTLBuffer> buf : bufs)
             [buf release];
@@ -265,12 +266,53 @@ namespace ctranslate2 {
         _pending_free.clear();
       }
 
+      // Metal Residency Sets (macOS 15+): pin all current live buffers in
+      // physical memory to prevent OS eviction under memory pressure.
+      // Creates an MTLResidencySet, adds all live MTLBuffers, and calls
+      // requestResidency.  Subsequent allocations are NOT automatically added.
+      // Call again after loading a new model to update the set.
+      void request_residency() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        end_residency_locked();
+
+        if (_live.empty()) return;
+
+        if (@available(macOS 15.0, *)) {
+          id<MTLDevice> dev = get_metal_device();
+          MTLResidencySetDescriptor* desc = [[MTLResidencySetDescriptor alloc] init];
+          desc.label = @"ct2_model_weights";
+          desc.initialCapacity = _live.size();
+
+          NSError* error = nil;
+          _residency_set = [dev newResidencySetWithDescriptor:desc error:&error];
+          [desc release];
+
+          if (_residency_set == nil) {
+            // Not fatal — residency is a performance hint, not required.
+            return;
+          }
+
+          for (const auto& [ptr, entry] : _live) {
+            [_residency_set addAllocation:entry.buffer];
+          }
+          [_residency_set commit];
+          [_residency_set requestResidency];
+        }
+      }
+
+      void end_residency() {
+        std::lock_guard<std::mutex> lock(_mutex);
+        end_residency_locked();
+      }
+
       void clear_cache() override {
         // Flush any in-flight GPU work so _pending_free buffers are no longer
         // referenced by uncommitted command buffers.
         // Note: clear_cache() is NOT thread-safe.  Callers (ReplicaPool::clear_cache,
         // unload_model) must ensure no concurrent GPU work or allocations.
         metal::commit_and_wait();
+
+        end_residency();
 
         // Release cached MPS GEMM objects (WEAK-1: prevents unbounded growth).
         metal::clear_gemm_cache();
@@ -357,6 +399,17 @@ namespace ctranslate2 {
         return ((v >> 4) * 11400714819323198485ULL) >> (64 - kPtrCacheBits);
       }
 
+      // Release the residency set if active.  Caller must hold _mutex.
+      void end_residency_locked() {
+        if (@available(macOS 15.0, *)) {
+          if (_residency_set != nil) {
+            [_residency_set endResidency];
+            [_residency_set release];
+            _residency_set = nil;
+          }
+        }
+      }
+
       // Pool or release a buffer, respecting the optional cap.
       // Caller must hold _mutex.
       void pool_or_release_locked(size_t bucket, id<MTLBuffer> buf) {
@@ -378,6 +431,8 @@ namespace ctranslate2 {
       // M12 review H7: Atomic counters — read without lock from profiling APIs.
       std::atomic<uint64_t>                                    _ptr_cache_hits{0};
       std::atomic<uint64_t>                                    _ptr_cache_misses{0};
+      // Metal Residency Set (macOS 15+): pins live buffers in physical memory.
+      id<MTLResidencySet>                                      _residency_set = nil;
     };
 
   }  // namespace metal
@@ -446,6 +501,18 @@ namespace ctranslate2 {
       static_cast<MetalAllocator&>(
           get_allocator<Device::MPS>())
           .reset_ptr_cache_stats();
+    }
+
+    void request_residency() {
+      static_cast<MetalAllocator&>(
+          get_allocator<Device::MPS>())
+          .request_residency();
+    }
+
+    void end_residency() {
+      static_cast<MetalAllocator&>(
+          get_allocator<Device::MPS>())
+          .end_residency();
     }
   }  // namespace metal
 

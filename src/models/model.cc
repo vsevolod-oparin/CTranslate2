@@ -11,6 +11,10 @@
 #  include "cuda/utils.h"
 #endif
 
+#ifdef CT2_WITH_METAL
+#  include "metal/utils.h"
+#endif
+
 #include "cpu/backend.h"
 
 namespace ctranslate2 {
@@ -761,6 +765,13 @@ namespace ctranslate2 {
 
       // Move variables to the target device.
       model->set_device(device, device_index);
+
+#ifdef CT2_WITH_METAL
+      // Pin model weight buffers in physical memory (macOS 15+) to prevent
+      // OS eviction under memory pressure.  No-op on older macOS.
+      if (device == Device::MPS)
+        metal::request_residency();
+#endif
 
       // Register variable aliases.
       if (binary_version >= 3) {

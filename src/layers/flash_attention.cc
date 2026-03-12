@@ -1,5 +1,7 @@
 #include "ctranslate2/layers/flash_attention.h"
 
+#include "ctranslate2/devices.h"
+
 namespace ctranslate2 {
   namespace layers {
     FlashMultiHeadAttention::FlashMultiHeadAttention(const models::Model& model,
@@ -105,7 +107,12 @@ namespace ctranslate2 {
       StorageView* rotary_cos = nullptr;
       StorageView* rotary_sin = nullptr;
       bool rotary_interleaved = false;
-      if (_rotary_embeddings && offset > 0) {
+      // For f32 on MPS, skip CPU RoPE (leave rotary_cos/sin=nullptr) so the
+      // layer's GPU Rotary kernel handles all offsets.  This matches the
+      // standard path's numerical behavior and prevents f32 divergence.
+      const bool force_layer_rope = (dtype == DataType::FLOAT32 && device == Device::MPS);
+      if (_rotary_embeddings && offset > 0
+          && !force_layer_rope) {
         rotary_cos = &(_rotary_embeddings->get_cos_half());
         rotary_sin = &(_rotary_embeddings->get_sin_half());
         rotary_interleaved = _rotary_embeddings->get_interleave();
@@ -137,6 +144,15 @@ namespace ctranslate2 {
       }
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
+
+      // F32 MPS: flush GPU work after each attention layer.  The per-head GPU
+      // SDPA encodes many small MPS GEMMs; without a layer-boundary flush,
+      // accumulated CB complexity causes non-deterministic numerical drift
+      // that compounds through 22 transformer layers and eventually diverges
+      // from the standard attention path.  Cost: 22 commit_and_waits per step.
+      if (dtype == DataType::FLOAT32 && device == Device::MPS)
+        synchronize_stream(device);
+
     }
 
     void FlashMultiHeadAttention::split_heads(StorageView& x,

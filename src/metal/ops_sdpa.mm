@@ -584,8 +584,16 @@ namespace ctranslate2 {
       // The CT2_COMMIT_AND_WAIT cost (~0.4ms × 22 layers) is far less than
       // the per-head GPU loop (32 × 22 × ~50µs GEMM overhead).
       // Also covers short prefill (sq*sk ≤ 32).
+      //
+      // Exception: for float32, CPU SDPA produces slightly different results
+      // from GPU GEMM due to different accumulation order.  These differences
+      // compound through 22 transformer layers and cause token divergence
+      // vs the standard attention path (which uses GPU GEMM).  For f16,
+      // rounding masks the differences.  So f32 always uses GPU SDPA to
+      // match the standard path's numerical behavior.
       constexpr dim_t kCpuSdpaThresh = 32;
-      if (seqlen_q == 1 || seqlen_q * seqlen_k <= kCpuSdpaThresh) {
+      const bool is_f32 = std::is_same_v<T, float>;
+      if (!is_f32 && (seqlen_q == 1 || seqlen_q * seqlen_k <= kCpuSdpaThresh)) {
         // Flush any pending GPU writes so CPU can read Q/K/V.
         CT2_COMMIT_AND_WAIT();
         sdpa_cpu<T>(q, k, v, output, batch_size, seqlen_q, seqlen_k,

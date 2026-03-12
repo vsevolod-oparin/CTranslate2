@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <numeric>
 
 #include "dispatch.h"
@@ -216,6 +217,12 @@ namespace ctranslate2 {
       const dim_t max_time = _transpose ? x.dim(-2) : x.dim(-3);
       const dim_t dim = _dim == 0 ? x.dim(-1) : _dim;
 
+      // For f32 on MPS with flash attention, the layer must apply GPU RoPE at
+      // ALL offsets (not just offset=0).  CPU apply_rope_half in the flash
+      // decode path produces slightly different results from GPU RoPE, and
+      // these differences compound through 22 layers causing f32 divergence.
+      const bool force_layer_rope = (dtype == DataType::FLOAT32 && device == Device::MPS);
+
       if (!_sin || offset + max_time > _sin.dim(0)) {
         const dim_t cur_num_positions = _sin ? _sin.dim(0) : 0;
         const dim_t new_num_positions = std::max(offset + max_time, cur_num_positions + _num_initial_positions);
@@ -229,11 +236,11 @@ namespace ctranslate2 {
           const ops::Slide slide_op(1, 0, dim / 2);
           slide_op(_cos, *_cos_half);
           slide_op(_sin, *_sin_half);
-          if (offset != 0)
+          if (offset != 0 && !force_layer_rope)
             return;
         }
       }
-      if (offset != 0 && fa2)
+      if (offset != 0 && fa2 && !force_layer_rope)
         return;
 
       StorageView sin(dtype, device);

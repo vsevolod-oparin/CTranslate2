@@ -688,6 +688,7 @@ namespace ctranslate2 {
       }
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
+
     }
 
     void MultiHeadAttention::split_heads(StorageView& x,

@@ -12,6 +12,7 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1904 ms, 1549 tokens, 813 tok/s (M12.9, post M/L fixes)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1865 ms, 1549 tokens, 830 tok/s (M12.10, protect_buffer)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1950 ms, 1549 tokens, 794 tok/s (M12.12, ptr cache)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1895 ms, 1549 tokens, 817 tok/s (M12.25, final)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
@@ -59,14 +60,14 @@ Code review fixes (critical bugs, defensive gaps, SDPA GEMM cache, float4 vector
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
-| **MPS** | **float16** | **1495** | **1037** | **1.88×** | 90 | 41% | Best overall |
-| **MPS** | **bfloat16** | **1457** | **1064** | **1.84×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
-| **MPS** | **float32** | **1026** | **1505** | **1.29×** | 96 | 53% | Precision-sensitive |
-| **MPS** | **int8_float16** | **870** | **1778** | **1.10×** | 93 | 44% | M12.10: 1.79× vs M12.9 |
-| **MPS** | **int8_bfloat16** | **844** | **1832** | **1.06×** | 93 | 44% | Auto-promoted to int8_f16 |
-| CPU | float32 | 794 | 1950 | 1.00× | — | — | Baseline (4 threads, AMX) |
-| **MPS** | **int8** | **769** | **2018** | **0.97×** | 97 | 55% | M12.10: 1.67× vs M12.9 |
-| CPU | int8 (RUY) | 540 | 2882 | 0.68× | — | — | Memory-constrained only (M12.7) |
+| **MPS** | **float16** | **1462** | **1060** | **1.79×** | 90 | 41% | Best overall |
+| **MPS** | **bfloat16** | **1461** | **1061** | **1.79×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
+| **MPS** | **float32** | **1032** | **1496** | **1.26×** | 96 | 54% | Precision-sensitive |
+| **MPS** | **int8_float16** | **901** | **1717** | **1.10×** | 93 | 45% | M12.10: 1.79× vs M12.9 |
+| **MPS** | **int8_bfloat16** | **899** | **1721** | **1.10×** | 93 | 45% | Auto-promoted to int8_f16 |
+| CPU | float32 | 817 | 1895 | 1.00× | — | — | Baseline (4 threads, AMX) |
+| **MPS** | **int8** | **773** | **2008** | **0.95×** | 97 | 56% | M12.10: 1.67× vs M12.9 |
+| CPU | int8 (RUY) | 540 | 2882 | 0.66× | — | — | Memory-constrained only (M12.7) |
 
 Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation uses standard MHA (not FlashMHA), so M12.18–M12.25 (FlashMHA work) have no impact on these numbers. Translation performance stabilized at M12.12 levels. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping: **REJECTED** — consistent slight regression. M12.15 BiasAdd fusion: **REJECTED** — ±3% noise. M12.16 object pooling: **REJECTED** — ±3% noise. M12.17 GPU decode RoPE: **REJECTED** — dead code on MPS. M12.18–M12.25: FlashMHA optimizations (correctness, commit count, fused INT8 GEMV, code review) — Generator/decoder-only path only.
 
@@ -113,6 +114,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 1488 | 1553, 1520, 1488 | 1544 | 96 | 54% | 1038 | M12.15 BiasAdd fusion (REJECTED) | 1.31x |
 | 13 | — | 1486 | 1532, 1521, 1486 | 1544 | 96 | 54% | 1039 | M12.16 object pooling (REJECTED) | 1.31x |
 | 14 | — | 1467 | 1545, 1490, 1467 | 1544 | 96 | 54% | 1053 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.30x |
+| 15 | 0547660b | 1496 | 1535, 1496, 1528 | 1544 | 96 | 54% | 1032 | M12.25 FlashMHA code review complete (within noise, no OPUS-MT impact) | 1.27x |
 
 ## Float16 Results (50 sentences)
 
@@ -132,6 +134,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 1067 | 1124, 1129, 1067 | 1549 | 93 | 41% | 1452 | M12.15 BiasAdd fusion (REJECTED) | 1.83x |
 | 13 | — | 1050 | 1111, 1068, 1050 | 1550 | 90 | 41% | 1476 | M12.16 object pooling (REJECTED) | 1.86x |
 | 14 | — | 1051 | 1103, 1053, 1051 | 1550 | 90 | 41% | 1475 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.83x |
+| 15 | 0547660b | 1060 | 1120, 1060, 1105 | 1550 | 90 | 41% | 1462 | M12.25 FlashMHA code review complete (within noise) | 1.79x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -151,6 +154,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 2076 | 2166, 2098, 2076 | 1552 | 97 | 54% | 748 | M12.15 BiasAdd fusion (REJECTED) |
 | 13 | — | 2057 | 2080, 2057, 2088 | 1552 | 97 | 55% | 754 | M12.16 object pooling (REJECTED) |
 | 14 | — | 2038 | 2047, 2045, 2038 | 1552 | 97 | 55% | 761 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
+| 15 | 0547660b | 2008 | 2054, 2008, 2051 | 1552 | 97 | 56% | 773 | M12.25 FlashMHA code review complete (within noise) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -170,6 +174,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 1797 | 1861, 1797, 1888 | 1547 | 93 | 43% | 861 | M12.15 BiasAdd fusion (REJECTED) |
 | 13 | — | 1831 | 1927, 1861, 1831 | 1547 | 93 | 44% | 845 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1769 | 2365, 2009, 1769 | 1547 | 93 | 44% | 875 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
+| 15 | 0547660b | 1717 | 1764, 1725, 1717 | 1547 | 93 | 45% | 901 | M12.25 FlashMHA code review complete (within noise) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -189,6 +194,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 1085 | 1102, 1086, 1085 | 1549 | 93 | 41% | 1428 | M12.15 BiasAdd fusion (REJECTED) |
 | 13 | — | 1068 | 1102, 1068, 1071 | 1550 | 90 | 41% | 1452 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1547 | 1606, 1626, 1547 | 1550 | 90 | 41% | 1002 | M12.17 GPU decode RoPE (run variance, no RoPE in OPUS-MT) |
+| 15 | 0547660b | 1061 | 1094, 1061, 1061 | 1550 | 90 | 41% | 1461 | M12.25 FlashMHA code review complete (within noise) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -208,6 +214,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 12 | — | 1784 | 1827, 1784, 1925 | 1547 | 93 | 44% | 867 | M12.15 BiasAdd fusion (REJECTED) |
 | 13 | — | 1838 | 1898, 1864, 1838 | 1547 | 93 | 44% | 841 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1760 | 1776, 1760, 1765 | 1547 | 93 | 45% | 879 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
+| 15 | 0547660b | 1721 | 1795, 1733, 1721 | 1547 | 93 | 45% | 899 | M12.25 FlashMHA code review complete (within noise) |
 
 ---
 

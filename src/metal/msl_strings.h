@@ -1067,7 +1067,7 @@ kernel void causal_mask_bfloat(
 //
 // Replaces per-head MPS GEMM loop (2 GEMMs × num_heads per layer).
 // Threadgroup memory: seqlen_k × sizeof(T) (set from host).
-// Max sk: 32768/sizeof(T) (8192 for float, 16384 for half).
+// Max sk: 32768/sizeof(float) = 8192 (tg_scores always uses float regardless of T).
 // Dispatch: threadgroups(batch, num_heads, 1), threads(256, 1, 1).
 // ---------------------------------------------------------------------------
 
@@ -1089,7 +1089,8 @@ kernel void FNAME(                                                           \
     device const TYPE* V   [[buffer(2)]],                                    \
     device TYPE*       out [[buffer(3)]],                                    \
     constant FusedSdpaDecodeParams& p [[buffer(4)]],                         \
-    threadgroup float* tg_scores [[threadgroup(0)]],                         \
+    threadgroup float* tg_scores  [[threadgroup(0)]],                        \
+    threadgroup float* tg_reduce [[threadgroup(1)]],                        \
     uint3 tgid3  [[threadgroup_position_in_grid]],                            \
     uint3 tid3   [[thread_position_in_threadgroup]],                          \
     uint3 tgsz3  [[threads_per_threadgroup]])                               \
@@ -1117,7 +1118,6 @@ kernel void FNAME(                                                           \
     threadgroup_barrier(mem_flags::mem_threadgroup);                          \
                                                                              \
     /* Step 2: Softmax — parallel max reduction */                           \
-    threadgroup float tg_reduce[256];                                        \
     float local_val = -1e30f;                                                \
     for (uint j = tid; j < p.seqlen_k; j += tg_size)                        \
         local_val = max(local_val, tg_scores[j]);                            \

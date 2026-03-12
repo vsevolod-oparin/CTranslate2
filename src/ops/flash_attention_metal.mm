@@ -89,11 +89,20 @@ namespace ctranslate2 {
 
       if (!interleave) {
         // Non-interleave: load ndims elements, compute, write back.
-        // Stack buffer — avoids heap alloc; ndims ≤ head_dim ≤ 256 in practice.
         // Write back only 2*half elements: for odd ndims, the last unpaired
         // element (index 2*half = ndims-1) is left unchanged rather than
         // silently zeroed (Bug 1.1 fix — matches rotary_cpu.cc behaviour).
-        float tmp[512];  // generous bound: head_dim never exceeds 512
+        //
+        // Stack buffer for small ndims (≤ 512), heap for larger.
+        // 2*half floats are needed (one for each rotated element).
+        constexpr dim_t kStackLimit = 512;
+        float stack_tmp[kStackLimit];
+        std::unique_ptr<float[]> heap_tmp;
+        float* tmp = stack_tmp;
+        if (2 * half > kStackLimit) {
+          heap_tmp.reset(new float[2 * half]);
+          tmp = heap_tmp.get();
+        }
         for (dim_t d = 0; d < half; ++d) {
           const float xd  = float(x[d]);
           const float xp  = float(x[d + half]);

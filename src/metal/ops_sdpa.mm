@@ -478,9 +478,9 @@ static void sdpa_head_bf16(const ctranslate2::bfloat16_t* q_row0,
 // one kernel dispatch for all (batch, head) pairs.  Reduces ObjC overhead
 // from 1408 MPS GEMM calls/step to 22 kernel dispatches (one per layer).
 //
-// The kernel uses threadgroup memory for softmax scores, limiting max seqlen_k
-// to 32768/sizeof(T) (8192 for float, 16384 for half).  Falls back to the
-// per-head MPS GEMM path for larger sequences.
+// The kernel uses threadgroup memory for softmax scores (always float32
+// regardless of T), limiting max seqlen_k to 32768/sizeof(float) = 8192.
+// Falls back to the per-head MPS GEMM path for larger sequences.
 // ---------------------------------------------------------------------------
 
 // FusedSdpaDecodeParams must match the MSL struct layout in kSdpaMSL.
@@ -539,12 +539,16 @@ static void dispatch_fused_sdpa_decode(
   [enc setBuffer:buf_o offset:off_o atIndex:3];
   [enc setBytes:&params length:sizeof(params) atIndex:4];
 
-  // Threadgroup memory for softmax scores: seqlen_k floats.
-  // (Scores are always float in the kernel, regardless of T.)
-  NSUInteger tg_mem = static_cast<NSUInteger>(seqlen_k) * sizeof(float);
-  [enc setThreadgroupMemoryLength:tg_mem atIndex:0];
+  // Threadgroup memory index 0: softmax scores (seqlen_k floats).
+  // Scores are always float in the kernel, regardless of T.
+  NSUInteger tg_scores_bytes = static_cast<NSUInteger>(seqlen_k) * sizeof(float);
+  [enc setThreadgroupMemoryLength:tg_scores_bytes atIndex:0];
 
+  // Threadgroup memory index 1: reduction scratch (kTgSize floats).
+  // Must match [[threadgroup(1)]] in the MSL kernel.
   constexpr NSUInteger kTgSize = 256;
+  NSUInteger tg_reduce_bytes = kTgSize * sizeof(float);
+  [enc setThreadgroupMemoryLength:tg_reduce_bytes atIndex:1];
   [enc dispatchThreadgroups:MTLSizeMake(static_cast<NSUInteger>(batch_size),
                                          static_cast<NSUInteger>(num_heads), 1)
        threadsPerThreadgroup:MTLSizeMake(kTgSize, 1, 1)];

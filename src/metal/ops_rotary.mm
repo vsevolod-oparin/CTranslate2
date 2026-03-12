@@ -120,6 +120,13 @@ DEFINE_ROTARY(bfloat)
 //     d odd:               y[d]   = x[d]   * cos[d/2] + x[d-1] * sin[d/2]
 // Elements d >= ndims are unchanged.
 // ---------------------------------------------------------------------------
+// M12.18: Fixed WAR race condition from M12.17.
+// Original kernel read partner element data[d±half_dim] while another thread
+// simultaneously wrote to it.  Fix: load entire vector into threadgroup
+// memory, barrier, then compute RoPE from the scratch copy.
+// Threadgroup memory: depth * sizeof(float) per threadgroup (~256 bytes).
+// Dispatch: (num_vecs, depth, 1) with threadgroup (1, depth, 1).
+// Requires depth == threadgroup y-dimension (all elements in one threadgroup).
 static constexpr const char* kDecodeRopeMSL = R"msl(
 #include <metal_stdlib>
 using namespace metal;
@@ -132,37 +139,39 @@ kernel void decode_rope_##T(                                                   \
     constant  uint&    half_dim  [[buffer(3)]],                                \
     constant  uint&    depth     [[buffer(4)]],                                \
     constant  uint&    interleave[[buffer(5)]],                                \
+    threadgroup float* scratch   [[threadgroup(0)]],                           \
     uint2 gid [[thread_position_in_grid]])                                     \
 {                                                                              \
     uint vec = gid.x;                                                          \
     uint d   = gid.y;                                                          \
     uint ndims = half_dim * 2u;                                                \
+    /* Load entire vector into threadgroup memory (all threads in this */      \
+    /* threadgroup share the same vec). */                                     \
+    if (d < depth)                                                             \
+        scratch[d] = float(data[vec * depth + d]);                             \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                            \
     if (d >= ndims) return;                                                    \
-    float xi = float(data[vec * depth + d]);                                   \
+    float xi = scratch[d];                                                     \
     float result;                                                              \
     if (interleave == 0u) {                                                    \
         if (d < half_dim) {                                                    \
             float c = float(cos_row[d]);                                       \
             float s = float(sin_row[d]);                                       \
-            float partner = float(data[vec * depth + d + half_dim]);           \
-            result = xi * c - partner * s;                                     \
+            result = xi * c - scratch[d + half_dim] * s;                       \
         } else {                                                               \
             uint partner_d = d - half_dim;                                     \
             float c = float(cos_row[partner_d]);                               \
             float s = float(sin_row[partner_d]);                               \
-            float partner = float(data[vec * depth + partner_d]);              \
-            result = xi * c + partner * s;                                     \
+            result = xi * c + scratch[partner_d] * s;                          \
         }                                                                      \
     } else {                                                                   \
         uint pair_idx = d / 2u;                                                \
         float c = float(cos_row[pair_idx]);                                    \
         float s = float(sin_row[pair_idx]);                                    \
         if (d % 2u == 0u) {                                                    \
-            float partner = float(data[vec * depth + d + 1u]);                 \
-            result = xi * c - partner * s;                                     \
+            result = xi * c - scratch[d + 1u] * s;                             \
         } else {                                                               \
-            float partner = float(data[vec * depth + d - 1u]);                 \
-            result = xi * c + partner * s;                                     \
+            result = xi * c + scratch[d - 1u] * s;                             \
         }                                                                      \
     }                                                                          \
     data[vec * depth + d] = (T)result;                                         \
@@ -297,7 +306,13 @@ namespace ctranslate2 {
       [enc setBytes:&u_depth       length:sizeof(uint32_t) atIndex:4];
       [enc setBytes:&u_interleave  length:sizeof(uint32_t) atIndex:5];
 
+      // Threadgroup memory for scratch buffer (WAR race fix).
+      // depth floats per threadgroup — one full head vector.
       const NSUInteger depth_ns = static_cast<NSUInteger>(depth);
+      [enc setThreadgroupMemoryLength:depth_ns * sizeof(float) atIndex:0];
+
+      // All depth elements must be in the same threadgroup for the barrier
+      // to synchronize the scratch load.  depth <= 512 in practice.
       NSUInteger tg_depth = std::min(depth_ns,
           static_cast<NSUInteger>(pso.maxTotalThreadsPerThreadgroup));
       [enc dispatchThreads:MTLSizeMake(static_cast<NSUInteger>(num_vecs), depth_ns, 1)

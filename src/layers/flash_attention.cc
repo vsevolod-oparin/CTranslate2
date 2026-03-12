@@ -107,10 +107,12 @@ namespace ctranslate2 {
       StorageView* rotary_cos = nullptr;
       StorageView* rotary_sin = nullptr;
       bool rotary_interleaved = false;
-      // For f32 on MPS, skip CPU RoPE (leave rotary_cos/sin=nullptr) so the
-      // layer's GPU Rotary kernel handles all offsets.  This matches the
-      // standard path's numerical behavior and prevents f32 divergence.
-      const bool force_layer_rope = (dtype == DataType::FLOAT32 && device == Device::MPS);
+      // For f32/f16 on MPS, skip CPU RoPE (leave rotary_cos/sin=nullptr) so
+      // the layer's GPU Rotary kernel handles all offsets.  This matches the
+      // standard path's numerical behavior (both use the same GPU kernel) and
+      // enables the GPU blit copy path for KV cache (no commit_and_wait needed).
+      const bool force_layer_rope = ((dtype == DataType::FLOAT32 || dtype == DataType::FLOAT16)
+                                     && device == Device::MPS);
       if (_rotary_embeddings && offset > 0
           && !force_layer_rope) {
         rotary_cos = &(_rotary_embeddings->get_cos_half());

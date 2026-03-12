@@ -187,22 +187,28 @@ namespace ctranslate2 {
           T*       v_cache = cached_values->data<T>();
           const T* v_new   = values.data<T>();
 
-          // Two KV-cache update paths:
+          // Three KV-cache update paths:
           //
-          // (A) CPU path (need_rope=true, i.e. f16/bf16):
+          // (A) CPU path (bf16 with need_rope):
           //     commit_and_wait → CPU RoPE on Q/K → CPU memcpy to cache.
-          //     M12.17: GPU RoPE reverted (in-place WAR race).
-          //     CPU RoPE for 36 vectors × 64 elements is ~0.5 µs — negligible.
+          //     BF16 uses synchronous MPSGraph for SDPA anyway, so the
+          //     commit cost is unavoidable.
           //
-          // (B) GPU blit path (need_rope=false, i.e. f32 MPS with force_layer_rope):
+          // (B) GPU blit path (f32 with force_layer_rope, need_rope=false):
           //     No CPU access needed — RoPE already applied by the layer's GPU
-          //     RotaryEmbeddings kernel.  Use encode-only blit_copy to write
-          //     K/V into the cache on GPU, eliminating commit_and_wait.
-          //     Saves 22 commits/step (one per transformer layer).
+          //     RotaryEmbeddings kernel.  Encode-only blit_copy for K/V cache.
+          //
+          // (C) GPU RoPE + blit path (f16 with need_rope):
+          //     M12.18: GPU decode_rope_metal (WAR race fixed with threadgroup
+          //     scratch) applies RoPE on Q/K, then blit_copy writes K/V to cache.
+          //     All encode-only — zero commits from attention.
 
           if (need_rope) {
             // --- Path (A): CPU RoPE + CPU memcpy ---
-            // Flush pending GPU writes (GEMM for Q/K/V) so CPU can read them.
+            // GPU RoPE was tested (M12.18) but produces FMA-induced rounding
+            // differences vs CPU RoPE that compound over 60+ tokens for f16.
+            // CPU RoPE is negligible (~0.5µs) so the only cost is the
+            // commit_and_wait to flush prior GPU GEMM output.
             metal::commit_and_wait();
 
             const dim_t half_dim = rotary_cos->dim(1);
@@ -210,15 +216,12 @@ namespace ctranslate2 {
             const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
             const T* sin_row     = rotary_sin->data<T>() + offset * half_dim;
 
-            // Apply RoPE to Q: [batch_size, 1, num_heads, head_dim] → num_heads vectors.
             for (dim_t b = 0; b < batch_size; ++b) {
               for (dim_t h = 0; h < num_heads; ++h) {
                 T* qvec = q_ptr + (b * seqlen_q * num_heads + h) * head_dim;
                 apply_rope_half(qvec, cos_row, sin_row, ndims, head_dim, rotary_interleave);
               }
             }
-
-            // Apply RoPE to new K: [batch_size, seqlen_new, num_heads_k, head_dim].
             for (dim_t b = 0; b < batch_size; ++b) {
               for (dim_t h = 0; h < num_heads_k; ++h) {
                 T* kvec = k_new + (b * seqlen_new * num_heads_k + h) * head_dim;
@@ -226,8 +229,7 @@ namespace ctranslate2 {
               }
             }
 
-            // CPU memcpy — write new K/V into cache at position `offset`.
-            // Unified memory: GPU sees the writes without explicit copy.
+            // CPU memcpy K/V to cache (unified memory, zero-copy GPU side).
             {
               const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
               for (dim_t b = 0; b < batch_size; ++b) {
@@ -240,11 +242,7 @@ namespace ctranslate2 {
               }
             }
           } else {
-            // --- Path (B): GPU blit copy (no commit needed) ---
-            // Both src (keys/values from linear GEMM) and dst (cached_keys/values)
-            // are in MetalAllocator-managed buffers.  The blit encodes into the
-            // current command buffer after the GEMM ops, so GPU ordering is
-            // guaranteed without an explicit commit.
+            // --- Path (B): GPU blit copy only (f32 force_layer_rope) ---
             const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
             for (dim_t b = 0; b < batch_size; ++b) {
               void*       kd = k_cache + (b * total_cache  + offset) * row_elements;

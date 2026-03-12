@@ -217,11 +217,14 @@ namespace ctranslate2 {
       const dim_t max_time = _transpose ? x.dim(-2) : x.dim(-3);
       const dim_t dim = _dim == 0 ? x.dim(-1) : _dim;
 
-      // For f32 on MPS with flash attention, the layer must apply GPU RoPE at
-      // ALL offsets (not just offset=0).  CPU apply_rope_half in the flash
-      // decode path produces slightly different results from GPU RoPE, and
-      // these differences compound through 22 layers causing f32 divergence.
-      const bool force_layer_rope = (dtype == DataType::FLOAT32 && device == Device::MPS);
+      // For f32/f16 on MPS with flash attention, the layer must apply GPU RoPE
+      // at ALL offsets (not just offset=0).  CPU apply_rope_half in the flash
+      // decode path uses a different execution path (CPU FMA vs GPU FMA) that
+      // produces slightly different rounding, compounding through 22 layers.
+      // Using the same GPU rotary kernel as the standard attention path ensures
+      // flash and standard produce identical RoPE outputs.
+      const bool force_layer_rope = ((dtype == DataType::FLOAT32 || dtype == DataType::FLOAT16)
+                                     && device == Device::MPS);
 
       if (!_sin || offset + max_time > _sin.dim(0)) {
         const dim_t cur_num_positions = _sin ? _sin.dim(0) : 0;

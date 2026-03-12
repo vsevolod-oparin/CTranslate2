@@ -675,9 +675,11 @@ namespace ctranslate2 {
       // vs the standard attention path (which uses GPU GEMM).  For f16,
       // rounding masks the differences.  So f32 always uses GPU SDPA to
       // match the standard path's numerical behavior.
+      // CPU fast-path for bf16 and small prefill (not f32/f16 decode, which
+      // uses the fused GPU kernel below).
       constexpr dim_t kCpuSdpaThresh = 32;
-      const bool is_f32 = std::is_same_v<T, float>;
-      if (!is_f32 && (seqlen_q == 1 || seqlen_q * seqlen_k <= kCpuSdpaThresh)) {
+      const bool is_f32_or_f16 = std::is_same_v<T, float> || std::is_same_v<T, float16_t>;
+      if (!is_f32_or_f16 && (seqlen_q == 1 || seqlen_q * seqlen_k <= kCpuSdpaThresh)) {
         // Flush any pending GPU writes so CPU can read Q/K/V.
         CT2_COMMIT_AND_WAIT();
         sdpa_cpu<T>(q, k, v, output, batch_size, seqlen_q, seqlen_k,
@@ -690,11 +692,11 @@ namespace ctranslate2 {
                                    ? kv_batch_stride
                                    : seqlen_k * num_heads_k * head_dim;
 
-      // Fused decode kernel (f32 only): single dispatch for all (batch, head)
-      // pairs.  Replaces 2 × num_heads MPS GEMM calls per layer with one
-      // compute kernel.  F16 keeps the CPU SDPA path (identical numerics to
-      // standard, zero beam-search divergence).
-      if constexpr (std::is_same_v<T, float>) {
+      // Fused decode kernel (f32/f16): single dispatch for all (batch, head)
+      // pairs.  Replaces per-head MPS GEMM loop (1408 ObjC calls/step → 22
+      // kernel dispatches) and CPU SDPA (22 commits/step → 0 commits).
+      // The kernel uses float32 accumulation for both f32 and f16 types.
+      if constexpr (std::is_same_v<T, float> || std::is_same_v<T, float16_t>) {
         if (seqlen_q == 1 && seqlen_k <= kFusedSdpaMaxSk) {
           dispatch_fused_sdpa_decode<T>(
               q, k, v, output,

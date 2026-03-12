@@ -1,4 +1,4 @@
-# M12.15 — FlashMHA Correctness Fix (3 bugs)
+# M12.18 — FlashMHA Correctness Fix (3 bugs)
 
 **Date**: 2026-03-11
 **Status**: COMPLETE

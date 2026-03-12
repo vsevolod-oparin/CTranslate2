@@ -16,9 +16,11 @@
 
 ---
 
-## Generator / FlashMHA Benchmark (M12.14/M12.15 — TinyLlama, Apple M4, greedy beam=1, max_length=100)
+## Generator / FlashMHA Benchmark (TinyLlama, Apple M4, greedy beam=1, max_length=100)
 
 FlashMultiHeadAttention optimization: fused MSL SDPA decode kernel + GPU blit KV cache + force_layer_rope for f32/f16.
+
+### M12.19 — FlashMHA Commit Optimization (fused SDPA + GPU blit)
 
 | Path | std tok/s | flash tok/s | Flash speedup |
 |------|-----------|-------------|---------------|
@@ -31,7 +33,7 @@ FlashMultiHeadAttention optimization: fused MSL SDPA decode kernel + GPU blit KV
 
 Flash attention is faster than standard across all compute types. Flash f16 (38.1 tok/s) is the fastest overall path.
 
-### After Fused INT8 GEMV (M12.14b)
+### M12.21 — Fused INT8 GEMV Kernel
 
 Fused MSL kernel reads int8 A and B directly (no f32 temp buffers). Decode-only (m=1), ~9× bandwidth reduction.
 
@@ -47,9 +49,13 @@ Fused MSL kernel reads int8 A and B directly (no f32 temp buffers). Decode-only 
 INT8 standard MHA: **3.1 → 34.3 tok/s (11.1×)**. Flash INT8 at 41.2 tok/s is the fastest overall path.
 INT8 is now the fastest standard MHA path, beating f16 (25.3 tok/s) by 1.36×.
 
+### M12.22–M12.25 — FlashMHA Code Review Fixes
+
+Code review fixes (critical bugs, defensive gaps, SDPA GEMM cache, float4 vectorization, tests). No OPUS-MT translation impact (standard MHA), but SDPA decode kernel improvements (P3 float4 vectorization: 5-24% in isolated benchmarks). No regressions measured.
+
 ---
 
-## Translation / OPUS-MT Summary (M12.17 — GPU decode RoPE REJECTED, dead code on MPS; no change on OPUS-MT benchmark)
+## Translation / OPUS-MT Summary (M12.25 — final, all FlashMHA code review fixes complete)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
@@ -62,7 +68,7 @@ INT8 is now the fastest standard MHA path, beating f16 (25.3 tok/s) by 1.36×.
 | **MPS** | **int8** | **769** | **2018** | **0.97×** | 97 | 55% | M12.10: 1.67× vs M12.9 |
 | CPU | int8 (RUY) | 540 | 2882 | 0.68× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: hit rate ~20→49%, no wall-time gain. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping (DecodingResult reserve + direct memcpy append): **REJECTED** — consistent slight regression across all 6 types, all code reverted. M12.15 BiasAdd+Act+Residual fusion: **REJECTED** — ±3% noise, <0.5% theoretical savings; GPU nucleus sampling: **NOT APPLICABLE** to beam search. M12.16 object pooling temporaries: **REJECTED** — ±3% noise, <0.05% theoretical savings (Metal bucketed allocator already O(1)). M12.17 GPU decode RoPE: **REJECTED** — FlashAttention decode RoPE path is dead code on MPS (Generator uses MultiHeadAttention with existing GPU `rotary_metal`; FlashAttention+RoPE not functional on MPS). GPU kernel correct (9/9 tests pass) but no production path exercises it. Performance unchanged from M12.12.
+Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation uses standard MHA (not FlashMHA), so M12.18–M12.25 (FlashMHA work) have no impact on these numbers. Translation performance stabilized at M12.12 levels. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping: **REJECTED** — consistent slight regression. M12.15 BiasAdd fusion: **REJECTED** — ±3% noise. M12.16 object pooling: **REJECTED** — ±3% noise. M12.17 GPU decode RoPE: **REJECTED** — dead code on MPS. M12.18–M12.25: FlashMHA optimizations (correctness, commit count, fused INT8 GEMV, code review) — Generator/decoder-only path only.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -103,9 +109,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 1458 | 1493, 1480, 1458 | 1544 | 96 | 54% | 1059 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.30x |
 | 9 | 2c616b5d | 1466 | 1500, 1466, 1481 | 1544 | 96 | 54% | 1053 | M12.10 INT8 protect_buffer (no f32 change) | 1.27x |
 | 10 | — | 1505 | 1528, 1505, 1509 | 1544 | 96 | 53% | 1026 | M12.12 ptr cache 2-way+Fibonacci (within noise) | 1.29x |
-| 11 | 016804bd | 1517 | 1560, 1517, 1536 | 1544 | 96 | 55% | 1018 | M12.14 decode bookkeeping opt (within noise) | 1.28x |
-| 12 | — | 1488 | 1553, 1520, 1488 | 1544 | 96 | 54% | 1038 | M12.15 BiasAdd fusion (within noise, rejected) | 1.31x |
-| 13 | — | 1486 | 1532, 1521, 1486 | 1544 | 96 | 54% | 1039 | M12.16 object pooling (within noise, rejected) | 1.31x |
+| 11 | 016804bd | 1517 | 1560, 1517, 1536 | 1544 | 96 | 55% | 1018 | M12.14 decode bookkeeping opt (REJECTED) (within noise) | 1.28x |
+| 12 | — | 1488 | 1553, 1520, 1488 | 1544 | 96 | 54% | 1038 | M12.15 BiasAdd fusion (REJECTED) | 1.31x |
+| 13 | — | 1486 | 1532, 1521, 1486 | 1544 | 96 | 54% | 1039 | M12.16 object pooling (REJECTED) | 1.31x |
 | 14 | — | 1467 | 1545, 1490, 1467 | 1544 | 96 | 54% | 1053 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.30x |
 
 ## Float16 Results (50 sentences)
@@ -122,9 +128,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 1036 | 1125, 1036, 1043 | 1550 | 90 | 41% | 1496 | M12.9 MEDIUM/LOW fixes (no perf change) | 1.84x |
 | 9 | 2c616b5d | 1040 | 1086, 1040, 1043 | 1550 | 90 | 41% | 1490 | M12.10 INT8 protect_buffer (no f16 change) | 1.80x |
 | 10 | — | 1037 | 1077, 1037, 1050 | 1550 | 90 | 41% | 1495 | M12.12 ptr cache 2-way+Fibonacci (within noise) | 1.88x |
-| 11 | 016804bd | 1085 | 1296, 1085, 1090 | 1550 | 90 | 41% | 1429 | M12.14 decode bookkeeping opt (within noise) | 1.92x |
-| 12 | — | 1067 | 1124, 1129, 1067 | 1549 | 93 | 41% | 1452 | M12.15 BiasAdd fusion (within noise, rejected) | 1.83x |
-| 13 | — | 1050 | 1111, 1068, 1050 | 1550 | 90 | 41% | 1476 | M12.16 object pooling (within noise, rejected) | 1.86x |
+| 11 | 016804bd | 1085 | 1296, 1085, 1090 | 1550 | 90 | 41% | 1429 | M12.14 decode bookkeeping opt (REJECTED) (within noise) | 1.92x |
+| 12 | — | 1067 | 1124, 1129, 1067 | 1549 | 93 | 41% | 1452 | M12.15 BiasAdd fusion (REJECTED) | 1.83x |
+| 13 | — | 1050 | 1111, 1068, 1050 | 1550 | 90 | 41% | 1476 | M12.16 object pooling (REJECTED) | 1.86x |
 | 14 | — | 1051 | 1103, 1053, 1051 | 1550 | 90 | 41% | 1475 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.83x |
 
 ## INT8 Results (50 sentences, post-M12.6)
@@ -141,9 +147,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 3321 | 3451, 3325, 3321 | 1552 | 3522 | 39% | 467 | M12.9 MEDIUM/LOW fixes (no perf change) |
 | 9 | 2c616b5d | 1993 | 2052, 2003, 1993 | 1552 | 97 | 55% | 779 | **M12.10 protect_buffer (1.67× speedup, 97% fewer commits)** |
 | 10 | — | 2018 | 2162, 2018, 2022 | 1552 | 97 | 55% | 769 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
-| 11 | 016804bd | 2050 | 2110, 2068, 2050 | 1552 | 97 | 56% | 757 | M12.14 decode bookkeeping opt (within noise) |
-| 12 | — | 2076 | 2166, 2098, 2076 | 1552 | 97 | 54% | 748 | M12.15 BiasAdd fusion (within noise, rejected) |
-| 13 | — | 2057 | 2080, 2057, 2088 | 1552 | 97 | 55% | 754 | M12.16 object pooling (within noise, rejected) |
+| 11 | 016804bd | 2050 | 2110, 2068, 2050 | 1552 | 97 | 56% | 757 | M12.14 decode bookkeeping opt (REJECTED) (within noise) |
+| 12 | — | 2076 | 2166, 2098, 2076 | 1552 | 97 | 54% | 748 | M12.15 BiasAdd fusion (REJECTED) |
+| 13 | — | 2057 | 2080, 2057, 2088 | 1552 | 97 | 55% | 754 | M12.16 object pooling (REJECTED) |
 | 14 | — | 2038 | 2047, 2045, 2038 | 1552 | 97 | 55% | 761 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
@@ -160,9 +166,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 3122 | 3302, 3139, 3122 | 1547 | 3446 | 41% | 496 | M12.9 MEDIUM/LOW fixes (no perf change) |
 | 9 | 2c616b5d | 1740 | 1784, 1746, 1740 | 1547 | 93 | 44% | 889 | **M12.10 protect_buffer (1.79× speedup, 97% fewer commits)** |
 | 10 | — | 1778 | 1826, 1821, 1778 | 1547 | 93 | 44% | 870 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
-| 11 | 016804bd | 1841 | 1851, 1841, 1853 | 1547 | 93 | 45% | 840 | M12.14 decode bookkeeping opt (within noise) |
-| 12 | — | 1797 | 1861, 1797, 1888 | 1547 | 93 | 43% | 861 | M12.15 BiasAdd fusion (within noise, rejected) |
-| 13 | — | 1831 | 1927, 1861, 1831 | 1547 | 93 | 44% | 845 | M12.16 object pooling (within noise, rejected) |
+| 11 | 016804bd | 1841 | 1851, 1841, 1853 | 1547 | 93 | 45% | 840 | M12.14 decode bookkeeping opt (REJECTED) (within noise) |
+| 12 | — | 1797 | 1861, 1797, 1888 | 1547 | 93 | 43% | 861 | M12.15 BiasAdd fusion (REJECTED) |
+| 13 | — | 1831 | 1927, 1861, 1831 | 1547 | 93 | 44% | 845 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1769 | 2365, 2009, 1769 | 1547 | 93 | 44% | 875 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
@@ -179,9 +185,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 1188 | 2818, 1188, 1215 | 1550 | 90 | 44% | 1305 | M12.9 MEDIUM/LOW fixes (run 1 cold JIT) |
 | 9 | 2c616b5d | 1040 | 1080, 1040, 1041 | 1550 | 90 | 41% | 1490 | M12.10 protect_buffer (no bf16 change) |
 | 10 | — | 1064 | 1068, 1064, 1103 | 1550 | 90 | 41% | 1457 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
-| 11 | 016804bd | 1068 | 1119, 1073, 1068 | 1550 | 90 | 41% | 1451 | M12.14 decode bookkeeping opt (within noise) |
-| 12 | — | 1085 | 1102, 1086, 1085 | 1549 | 93 | 41% | 1428 | M12.15 BiasAdd fusion (within noise, rejected) |
-| 13 | — | 1068 | 1102, 1068, 1071 | 1550 | 90 | 41% | 1452 | M12.16 object pooling (within noise, rejected) |
+| 11 | 016804bd | 1068 | 1119, 1073, 1068 | 1550 | 90 | 41% | 1451 | M12.14 decode bookkeeping opt (REJECTED) (within noise) |
+| 12 | — | 1085 | 1102, 1086, 1085 | 1549 | 93 | 41% | 1428 | M12.15 BiasAdd fusion (REJECTED) |
+| 13 | — | 1068 | 1102, 1068, 1071 | 1550 | 90 | 41% | 1452 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1547 | 1606, 1626, 1547 | 1550 | 90 | 41% | 1002 | M12.17 GPU decode RoPE (run variance, no RoPE in OPUS-MT) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
@@ -198,9 +204,9 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | 8 | 093ae223 | 3201 | 3424, 3220, 3201 | 1547 | 3446 | 41% | 483 | M12.9 MEDIUM/LOW fixes (no perf change) |
 | 9 | 2c616b5d | 1745 | 1769, 1756, 1745 | 1547 | 93 | 44% | 887 | **M12.10 protect_buffer (1.83× speedup, 97% fewer commits)** |
 | 10 | — | 1832 | 1871, 1832, 1837 | 1547 | 93 | 44% | 844 | M12.12 ptr cache 2-way+Fibonacci (within noise) |
-| 11 | 016804bd | 1847 | 1881, 1852, 1847 | 1547 | 93 | 45% | 837 | M12.14 decode bookkeeping opt (within noise) |
-| 12 | — | 1784 | 1827, 1784, 1925 | 1547 | 93 | 44% | 867 | M12.15 BiasAdd fusion (within noise, rejected) |
-| 13 | — | 1838 | 1898, 1864, 1838 | 1547 | 93 | 44% | 841 | M12.16 object pooling (within noise, rejected) |
+| 11 | 016804bd | 1847 | 1881, 1852, 1847 | 1547 | 93 | 45% | 837 | M12.14 decode bookkeeping opt (REJECTED) (within noise) |
+| 12 | — | 1784 | 1827, 1784, 1925 | 1547 | 93 | 44% | 867 | M12.15 BiasAdd fusion (REJECTED) |
+| 13 | — | 1838 | 1898, 1864, 1838 | 1547 | 93 | 44% | 841 | M12.16 object pooling (REJECTED) |
 | 14 | — | 1760 | 1776, 1760, 1765 | 1547 | 93 | 45% | 879 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 
 ---
@@ -225,6 +231,14 @@ Note: CPU baseline varies between runs (741–830 tok/s). M12.12 pointer cache: 
 | **M12.15** | BiasAdd fusion + GPU nucleus (**REJECTED/N/A**) | Fusion: ±3% noise, <0.5% theoretical; Nucleus: not exercised by beam search |
 | **M12.16** | Object pooling temporaries (**REJECTED**) | ±3% noise, <0.05% theoretical; Metal bucketed allocator already O(1) |
 | **M12.17** | GPU decode RoPE (**REJECTED**) | Dead code on MPS: FlashAttention decode RoPE path never reached; GPU kernel correct but no production MPS workload exercises it |
+| **M12.18** | FlashMHA correctness fix (3 bugs) | GQA head mapping, CPU SDPA threshold, decode_rope WAR race — flash now correct and faster than standard |
+| **M12.19** | FlashMHA commit optimization (f32+f16) | Fused SDPA kernel + GPU blit copy: flash f32 3.5→17.4 tok/s (**5.0×**), f16 29.7→38.1 (**1.28×**) |
+| **M12.20** | FlashMHA TinyLlama benchmark | Flash f16 38.1 tok/s fastest path; flash faster than standard across all 6 types |
+| **M12.21** | Fused INT8 GEMV kernel | Standard INT8: 3.1→34.3 tok/s (**11.1×**); Flash INT8: 41.2 tok/s fastest overall |
+| **M12.22** | FlashMHA code review: critical fixes (C1-C3) | Stack overflow guard, host-allocated tg_reduce, threadgroup memory comment |
+| **M12.23** | FlashMHA code review: HIGH fixes (H1-H3) | protect_buffer for fused SDPA, MetalTempBuf, parameterized causal offset |
+| **M12.24** | FlashMHA code review: MEDIUM perf (P1-P3) | SDPA GEMM cache, cached rowBytes, float4 vectorization (5-24% SDPA decode) |
+| **M12.25** | FlashMHA code review: quality + tests (Q1-Q4, T1-T6) | Dead code removal, magic number docs, 22+16 unit tests, GQA ref bug fix |
 
 ---
 

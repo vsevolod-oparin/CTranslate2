@@ -103,7 +103,7 @@ CTranslate2's Metal backend has been optimized through M12.11 to near-theoretica
 
 See `agents/report/milestone-12.11-decode-loop-cpu-overhead.md` for full investigation including decode profiler breakdown.
 
-### 2.3 Pre-allocate DecodingResult Containers — ✅ REJECTED (M12.14)
+### 2.3 Pre-allocate DecodingResult Containers — REJECTED (M12.14)
 
 **Location**: `src/decoding.cc:555`
 **Tested**: Added `reserve(num_hypotheses)` for hypotheses, scores, attention vectors.

@@ -1,4 +1,4 @@
-# M12.14 — FlashMHA Commit Count Optimization
+# M12.19 — FlashMHA Commit Count Optimization
 
 **Date**: 2026-03-12
 **Status**: COMPLETE
@@ -23,7 +23,7 @@ Optimized FlashMultiHeadAttention decode performance on MPS for both f32 and f16
 
 ### Optimization progression (flash f32 / flash f16)
 
-| Path | Before (M12.13) | After f32 opt (M12.14) | After f16 opt (M12.15) |
+| Path | Before (M12.17) | After f32 opt (M12.19) | After f16 opt (M12.19) |
 |------|-----------------|------------------------|------------------------|
 | **flash f32** | **3.5 tok/s** | **17.4 tok/s (5.0x)** | 17.4 tok/s |
 | **flash f16** | **29.7 tok/s** | 29.7 tok/s | **38.1 tok/s (1.28x)** |
@@ -120,7 +120,7 @@ Dispatch: `MTLSizeMake(batch_size, num_heads, 1)` with threadgroup size 256.
 
 The per-layer `synchronize_stream` is still required for f32 correctness. Without it, linear projection MPS GEMMs (Q/K/V/output projections — 4 per layer, 88 total) accumulate across 22 layers and cause non-deterministic drift. The fused SDPA kernel eliminated SDPA-internal drift, but the linear projection GEMMs remain the source.
 
-## F16 Optimization (M12.15)
+## F16 Optimization
 
 ### Before optimization
 

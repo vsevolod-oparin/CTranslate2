@@ -1,4 +1,4 @@
-# M12.14 — Fused INT8 GEMV Kernel
+# M12.21 — Fused INT8 GEMV Kernel
 
 **Date**: 2026-03-12
 **Status**: COMPLETE

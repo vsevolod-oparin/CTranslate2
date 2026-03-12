@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
-**Revised:** 2026-03-11
-**Status:** In progress — M12.1-12.7 done, M12.8 next (larger model benchmarks)
+**Revised:** 2026-03-12
+**Status:** In progress — M12.1-12.25 done, M12.8 done (criterion not met, decode-dominated)
 
 ---
 
@@ -1084,25 +1084,73 @@ Report: `agents/report/milestone-7-remaining-ops.md`
   - INT8 useful for memory reduction only, not speed, on this hardware
 - **DONE:** Report `agents/report/milestone-12.7-cpu-int8-build.md`
 
-**12.8 Larger model benchmarks** (validates scaling)
-- OPUS-MT (d_model=512) is too small — GPU:CPU ratio unfavorable (0.5ms GPU vs 6ms sync/step)
-- Benchmark with larger model (Whisper large-v3-turbo d_model=1280, or NLLB) to confirm GPU scales
-- **PASS:** Larger model shows >3× CPU speedup with f16
+**12.8 Larger model benchmarks** ⚠️ (criterion not met)
+- Whisper-large-v3-turbo (d_model=1280, 32 enc / 4 dec layers, 60s audio)
+- Beam=1: f16 1.43×, f32 0.98×. Beam=5: f16 2.46× (f32 beam=5 unreliable — early termination)
+- **Finding**: Decode-dominated workloads (many sq=1 steps) are CPU AMX–competitive
+- 3× criterion was calibrated for balanced prefill/decode; whisper's 4 decoder layers don't provide enough GPU work
+- **DONE:** Report `agents/report/milestone-12.8-larger-model-benchmarks.md`
 
-**Current performance (50 sentences, beam=4, best-of-3, post M12.6):**
+**12.8–12.9 Code review** ✅
+- M12.8: 8 HIGH priority fixes (protect_buffer, rounding, atomic counters)
+- M12.9: 5 MEDIUM + 2 LOW fixes (ct2_u32 consistency, dead code removal)
+- **DONE:** Report `agents/report/milestone-12-code-review.md`
+
+**12.10 INT8 protect_buffer sync elimination** ✅
+- Replaced `synchronize_stream()` with `protect_buffer()` for 3 temp buffers in quantized Dense layer
+- int8: 467→779 tok/s (1.67×), int8_f16: 496→889 (1.79×), commits 3500→97 (97% reduction)
+- **DONE:** Report `agents/report/milestone-12.10-int8-protect-buffer.md`
+
+**12.11 Decode loop CPU overhead investigation** ✅
+- Confirmed beam bookkeeping 0.01%, step overhead 0.5%, 99.1% GPU time
+- **DONE:** Report `agents/report/milestone-12.11-decode-loop-cpu-overhead.md`
+
+**12.12 Pointer cache improvement** ✅
+- 2-way set-associative (512×2) + Fibonacci hash. Hit rate 20→49% (2.5×), no wall-time gain
+- **DONE:** Report `agents/report/milestone-12.12-pointer-cache-improvement.md`
+
+**12.13–12.17 Exploration (all REJECTED)** ❌
+- M12.13: Aggressive GEMV — 20% slower than MPS AMX
+- M12.14: Decode bookkeeping — slight regression, all reverted
+- M12.15: BiasAdd fusion — ±3% noise; GPU nucleus N/A for beam search
+- M12.16: Object pooling — ±3% noise, allocator already O(1)
+- M12.17: GPU decode RoPE — dead code on MPS (FlashAttention decode path not reachable)
+
+**12.18 FlashMHA correctness fix** ✅
+- Fixed 3 bugs: GQA head mapping, CPU SDPA threshold, decode_rope WAR race
+- **DONE:** Report `agents/report/milestone-12.18-flashmha-correctness-fix.md`
+
+**12.19 FlashMHA commit optimization** ✅
+- Fused SDPA kernel + GPU blit copy: f32 3.5→17.4 tok/s (5×), f16 29.7→38.1 (1.28×)
+- **DONE:** Report `agents/report/milestone-12.19-flashmha-commit-optimization.md`
+
+**12.20 FlashMHA TinyLlama benchmark** ✅
+- Flash faster than standard across all 6 compute types
+
+**12.21 Fused INT8 GEMV kernel** ✅
+- Fused MSL kernel: int8 3.1→34.3 tok/s (11.1×), flash int8 41.2 tok/s fastest overall
+- **DONE:** Report `agents/report/milestone-12.21-fused-int8-gemv.md`
+
+**12.22–12.25 FlashMHA code review** ✅
+- C1-C3 critical fixes, H1-H3 defensive gaps, P1-P3 performance (SDPA GEMM cache, float4)
+- Q1-Q4 code quality, T1-T6 missing tests (22+16 unit tests), GQA reference bug fix
+- **DONE:** Report `agents/report/flashmha-code-review.md`
+
+**Current performance (M12.25, 50 sentences, beam=4, best-of-3, CPU baseline 817 tok/s):**
 
 | Type | tok/s | vs CPU | Commits | GPU% | Status |
 |------|-------|--------|---------|------|--------|
-| float16 | 1464 | 1.77× | 90 | 41% | Optimal |
-| float32 | 1000 | 1.21× | 96 | 54% | Optimal |
-| bfloat16 | 1426 | 1.73× | 90 | 41% | Fixed (M12.5) |
-| int8 | 453 | 0.55× | 3522 | 40% | **Improved (M12.6)** |
-| int8_f16 | 494 | 0.60× | 3446 | 42% | **Improved (M12.6)** |
-| int8_bf16 | 454 | 0.55× | 3446 | 40% | Fixed (M12.5+M12.6) |
+| float16 | 1462 | 1.79× | 90 | 41% | Optimal |
+| bfloat16 | 1461 | 1.79× | 90 | 41% | Fixed (M12.5) |
+| float32 | 1032 | 1.26× | 96 | 54% | Optimal |
+| int8_f16 | 901 | 1.10× | 93 | 45% | **Fixed (M12.10)** |
+| int8_bf16 | 899 | 1.10× | 93 | 45% | Fixed (M12.5+M12.10) |
+| int8 | 773 | 0.95× | 97 | 56% | **Fixed (M12.10)** |
 
 - Reports: `agents/report/milestone-12*.md`
 - Benchmark script: `tools/benchmark/m12_perf_sweep.py`
 - Performance sweep: `agents/report/milestone-12.performance-sweep.md`
+- Performance chart: `agents/report/milestone-12.performance-chart.html`
 
 ---
 

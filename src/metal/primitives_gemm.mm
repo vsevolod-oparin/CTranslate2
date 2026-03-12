@@ -40,6 +40,112 @@ namespace {
 //   rounds each element to nearest int32, writes with element stride out_stride.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// M12.14: Fused INT8 GEMV kernel — reads int8 A and B directly, accumulates
+// in int32 (exact for k ≤ 133K, vs f32 exact only for k ≤ 1040), outputs int32.
+//
+// For decode (m=1, trans_b=true):
+//   A is [1, k] int8 (row vector)
+//   B is [n, k] int8 (weight matrix, transposed)
+//   C is [1, n] int32
+//   c[j] = round(alpha * float(sum_i(int(a[i]) * int(b[j, i]))))
+//
+// Uses char4 vectorized reads for 4× bandwidth efficiency.
+// Each thread computes one output element.
+// ---------------------------------------------------------------------------
+
+static constexpr const char* kFusedInt8GemvMSL = R"(
+#include <metal_stdlib>
+using namespace metal;
+
+kernel void fused_int8_gemv(
+    device const char*  a      [[buffer(0)]],   // [1, k] int8
+    device const char*  b      [[buffer(1)]],   // [n, k] int8 (row-major)
+    device int*         c      [[buffer(2)]],   // [1, n] int32 output
+    constant uint2&     params [[buffer(3)]],   // {n, k}
+    constant float&     alpha  [[buffer(4)]],
+    uint gid [[thread_position_in_grid]])
+{
+    const uint n = params[0];
+    const uint k = params[1];
+    if (gid >= n) return;
+
+    // Pointer to B row for this output element
+    device const char* b_row = b + gid * k;
+
+    // Vectorized accumulation using char4 (4 int8 values at once)
+    int acc = 0;
+    const uint k4 = k / 4;
+    device const char4* a4 = (device const char4*)a;
+    device const char4* b4 = (device const char4*)b_row;
+
+    for (uint i = 0; i < k4; ++i) {
+        char4 av = a4[i];
+        char4 bv = b4[i];
+        acc += int(av[0]) * int(bv[0])
+             + int(av[1]) * int(bv[1])
+             + int(av[2]) * int(bv[2])
+             + int(av[3]) * int(bv[3]);
+    }
+
+    // Handle remaining elements (k not divisible by 4)
+    for (uint i = k4 * 4; i < k; ++i) {
+        acc += int(a[i]) * int(b_row[i]);
+    }
+
+    c[gid] = int(floor(float(acc) * alpha + 0.5f));
+}
+)";
+
+static id<MTLLibrary> get_fused_int8_gemv_library() {
+  static id<MTLLibrary>  lib  = nil;
+  static std::once_flag  flag;
+  return compile_library_once(flag, lib, kFusedInt8GemvMSL, "fused_int8_gemv");
+}
+
+static id<MTLComputePipelineState> get_fused_int8_gemv_pso() {
+  static PSOCache cache;
+  return cache.get(get_fused_int8_gemv_library, "fused_int8_gemv");
+}
+
+// Dispatch the fused INT8 GEMV kernel for m=1, trans_b=true.
+// Reads int8 A[1,k] and B[n,k] directly — no f32 temp buffers needed.
+// ~7× less memory bandwidth than the 3-kernel path for large weight matrices.
+static void dispatch_fused_int8_gemv(
+    ctranslate2::dim_t n, ctranslate2::dim_t k,
+    float alpha,
+    const int8_t* a, ctranslate2::dim_t lda,
+    const int8_t* b, ctranslate2::dim_t ldb,
+    int32_t* c, ctranslate2::dim_t ldc) {
+  id<MTLComputePipelineState> pso = get_fused_int8_gemv_pso();
+  id<MTLComputeCommandEncoder> enc =
+      ctranslate2::metal::create_compute_encoder();
+  [enc setComputePipelineState:pso];
+
+  NSUInteger off_a = 0, off_b = 0, off_c = 0;
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+
+  // Protect A and B from premature reuse (encode-only).
+  ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
+
+  [enc setBuffer:buf_a offset:off_a atIndex:0];
+  [enc setBuffer:buf_b offset:off_b atIndex:1];
+  [enc setBuffer:buf_c offset:off_c atIndex:2];
+
+  const uint32_t params[2] = { ct2_u32(n), ct2_u32(k) };
+  [enc setBytes:params length:sizeof(params) atIndex:3];
+  [enc setBytes:&alpha length:sizeof(alpha) atIndex:4];
+
+  const NSUInteger tpg = std::min((NSUInteger)256, pso.maxTotalThreadsPerThreadgroup);
+  [enc dispatchThreads:MTLSizeMake((NSUInteger)n, 1, 1)
+      threadsPerThreadgroup:MTLSizeMake(tpg, 1, 1)];
+  [enc endEncoding];
+  [enc release];
+}
+
 static constexpr const char* kInt8GemmHelperMSL = R"(
 #include <metal_stdlib>
 using namespace metal;
@@ -723,6 +829,14 @@ static void dispatch_int8_gemm(
   if (m == 0 || n == 0 || k == 0) return;
   if (beta != 0.0f)
     throw std::runtime_error("Metal INT8 GEMM: only beta=0 is supported");
+
+  // M12.14: Fused INT8 GEMV for decode (m=1, trans_b=true, !trans_a).
+  // Reads int8 A and B directly — no f32 temp buffers, ~7× less bandwidth.
+  // Requires contiguous layout: lda==k (A row-major) and ldb==k (B row-major).
+  if (m == 1 && !transpose_a && transpose_b && lda == k && ldb == k) {
+    dispatch_fused_int8_gemv(n, k, alpha, a, lda, b, ldb, c, ldc);
+    return;
+  }
 
   // Physical layout of A and B in memory:
   //   !transpose_a → rows_a = m, cols_a = k

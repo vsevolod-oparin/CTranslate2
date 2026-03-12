@@ -31,6 +31,22 @@ FlashMultiHeadAttention optimization: fused MSL SDPA decode kernel + GPU blit KV
 
 Flash attention is faster than standard across all compute types. Flash f16 (38.1 tok/s) is the fastest overall path.
 
+### After Fused INT8 GEMV (M12.14b)
+
+Fused MSL kernel reads int8 A and B directly (no f32 temp buffers). Decode-only (m=1), ~9× bandwidth reduction.
+
+| Path | std tok/s | flash tok/s | Flash speedup |
+|------|-----------|-------------|---------------|
+| **f32** | 18.9 | 18.5 | 0.98x |
+| **f16** | 25.3 | **38.9** | 1.54x |
+| **bf16** (→f16) | 30.8 | **39.7** | 1.29x |
+| **int8** (→int8_f16) | **34.3** | **41.2** | **1.20x** |
+| **int8_f16** | 31.9 | **39.5** | 1.24x |
+| **int8_bf16** (→int8_f16) | 33.8 | **39.5** | 1.17x |
+
+INT8 standard MHA: **3.1 → 34.3 tok/s (11.1×)**. Flash INT8 at 41.2 tok/s is the fastest overall path.
+INT8 is now the fastest standard MHA path, beating f16 (25.3 tok/s) by 1.36×.
+
 ---
 
 ## Translation / OPUS-MT Summary (M12.17 — GPU decode RoPE REJECTED, dead code on MPS; no change on OPUS-MT benchmark)

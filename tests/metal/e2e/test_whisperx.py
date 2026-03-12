@@ -22,7 +22,7 @@ import time
 import gc
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 
 try:
     import whisperx
@@ -102,13 +102,21 @@ def main():
     duration_s = len(audio) / 16000
     perf_beam_size = int(sys.argv[2]) if len(sys.argv) > 2 else 5
 
+    # Auto-detect language from audio using a temporary faster_whisper model
+    from faster_whisper import WhisperModel as _FWModel
+    _detect_model = _FWModel(whisper_path, device="cpu", compute_type="float32")
+    language = detect_language_fw(_detect_model, audio_file)
+    del _detect_model
+    gc.collect()
+    print(f"  Detected language: {language}")
+
     # =========================================================
     # Phase 1: CPU — load, test, benchmark, free
     # =========================================================
     print("\n=== Loading WhisperX CPU model ===")
     model_cpu = whisperx.load_model(
         whisper_path, device="cpu", compute_type="float32",
-        language="ru", asr_options=_COMPAT_ASR_OPTIONS,
+        language=language, asr_options=_COMPAT_ASR_OPTIONS,
     )
     cpu_ct = model_cpu.model.model.compute_type
     print(f"  CPU compute_type: {cpu_ct}")
@@ -124,7 +132,7 @@ def main():
 
     print("\n=== CPU transcription ===")
     cpu_audio = whisperx.load_audio(audio_file)
-    cpu_result = model_cpu.transcribe(cpu_audio, batch_size=1, language="ru")
+    cpu_result = model_cpu.transcribe(cpu_audio, batch_size=1, language=language)
     cpu_segments = cpu_result.get("segments", [])
     cpu_text = " ".join(s["text"] for s in cpu_segments).strip()
     print(f"  CPU: {cpu_text[:150]}{'...' if len(cpu_text) > 150 else ''}")
@@ -136,7 +144,7 @@ def main():
     print("\n=== CPU alignment ===")
     try:
         align_model, align_meta = whisperx.load_align_model(
-            language_code="ru", device="cpu",
+            language_code=language, device="cpu",
         )
         cpu_aligned = whisperx.align(
             cpu_segments, align_model, align_meta, cpu_audio, device="cpu",
@@ -155,9 +163,9 @@ def main():
         info(f"Alignment skipped: {e}")
 
     # CPU benchmark
-    model_cpu.transcribe(cpu_audio, batch_size=1, language="ru")  # warmup
+    model_cpu.transcribe(cpu_audio, batch_size=1, language=language)  # warmup
     t0 = time.monotonic()
-    model_cpu.transcribe(cpu_audio, batch_size=1, language="ru")
+    model_cpu.transcribe(cpu_audio, batch_size=1, language=language)
     cpu_ms = (time.monotonic() - t0) * 1000
 
     # Free CPU model before loading MPS
@@ -170,7 +178,7 @@ def main():
     print("\n=== Loading WhisperX MPS model ===")
     model_mps = whisperx.load_model(
         whisper_path, device="mps", compute_type="float16",
-        language="ru", asr_options=_COMPAT_ASR_OPTIONS,
+        language=language, asr_options=_COMPAT_ASR_OPTIONS,
     )
     mps_ct = model_mps.model.model.compute_type
     print(f"  MPS compute_type: {mps_ct}")
@@ -185,7 +193,7 @@ def main():
 
     print("\n=== MPS transcription ===")
     mps_audio = whisperx.load_audio(audio_file)
-    mps_result = model_mps.transcribe(mps_audio, batch_size=1, language="ru")
+    mps_result = model_mps.transcribe(mps_audio, batch_size=1, language=language)
     mps_segments = mps_result.get("segments", [])
     mps_text = " ".join(s["text"] for s in mps_segments).strip()
     print(f"  MPS: {mps_text[:150]}{'...' if len(mps_text) > 150 else ''}")
@@ -203,7 +211,7 @@ def main():
     print("\n=== MPS alignment ===")
     try:
         align_model, align_meta = whisperx.load_align_model(
-            language_code="ru", device="cpu",
+            language_code=language, device="cpu",
         )
         mps_aligned = whisperx.align(
             mps_segments, align_model, align_meta, mps_audio, device="cpu",
@@ -218,9 +226,9 @@ def main():
         info(f"Alignment skipped: {e}")
 
     # MPS benchmark
-    model_mps.transcribe(mps_audio, batch_size=1, language="ru")  # warmup
+    model_mps.transcribe(mps_audio, batch_size=1, language=language)  # warmup
     t0 = time.monotonic()
-    model_mps.transcribe(mps_audio, batch_size=1, language="ru")
+    model_mps.transcribe(mps_audio, batch_size=1, language=language)
     mps_ms = (time.monotonic() - t0) * 1000
 
     del model_mps

@@ -20,7 +20,7 @@ import os, sys, time, ctypes, subprocess, threading, resource, gc, io
 import contextlib
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 
 # ---------------------------------------------------------------------------
 # GPU stats reader (IOKit PerformanceStatistics)
@@ -141,7 +141,7 @@ def bind_metal_api():
 # ---------------------------------------------------------------------------
 def profile_transcription(model, audio_file, beam_size, api, label,
                           sampler_interval=0.05, enable_cprofile=True,
-                          enable_bg_sampling=False):
+                          enable_bg_sampling=False, language=None):
     """Run transcription with full profiling. Returns dict of all metrics."""
     gc.collect()
     time.sleep(0.5)  # let GC settle
@@ -167,7 +167,7 @@ def profile_transcription(model, audio_file, beam_size, api, label,
 
     t0 = time.monotonic()
     segments = list(model.transcribe(
-        audio_file, language="ru", beam_size=beam_size,
+        audio_file, language=language, beam_size=beam_size,
         without_timestamps=True
     )[0])
     wall_ms = (time.monotonic() - t0) * 1000
@@ -262,13 +262,18 @@ def main():
     from faster_whisper import WhisperModel
 
     model_cpu = WhisperModel(whisper_path, device="cpu", compute_type="float32")
+
+    # Auto-detect language from audio
+    language = detect_language_fw(model_cpu, audio_file)
+    print(f"  Detected language: {language}")
+
     # Warmup
-    list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+    list(model_cpu.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
 
     # Timed run
     mem0 = get_process_memory()
     t0 = time.monotonic()
-    segs = list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+    segs = list(model_cpu.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
     cpu_ms = (time.monotonic() - t0) * 1000
     mem1 = get_process_memory()
 
@@ -293,7 +298,7 @@ def main():
     # Warmup (also triggers PSO compilation)
     print("  Warmup run...")
     api['reset_pso_stats']()
-    list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+    list(model_metal.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
     warmup_pso_misses = api['pso_miss_count']()
     warmup_pso_hits = api['pso_hit_count']()
     print(f"  Warmup PSO: {warmup_pso_misses} compilations, {warmup_pso_hits} cache hits")
@@ -301,17 +306,17 @@ def main():
     # Clean timed run (no cProfile, no background sampling — pure timing)
     print("\n  Clean timed run (no cProfile overhead)...")
     result = profile_transcription(model_metal, audio_file, beam_size, api, "mps",
-                                   enable_cprofile=False, enable_bg_sampling=False)
+                                   enable_cprofile=False, enable_bg_sampling=False, language=language)
 
     # cProfile run (separate — to see CPU hotspots without polluting timing)
     print("  cProfile run...")
     cprofile_result = profile_transcription(model_metal, audio_file, beam_size, api, "metal_cprofile",
-                                            enable_cprofile=True, enable_bg_sampling=False)
+                                            enable_cprofile=True, enable_bg_sampling=False, language=language)
 
     # Background sampling run (separate — to see GPU utilization)
     print("  GPU utilization sampling run...")
     bg_result = profile_transcription(model_metal, audio_file, beam_size, api, "metal_bg",
-                                      enable_cprofile=False, enable_bg_sampling=True)
+                                      enable_cprofile=False, enable_bg_sampling=True, language=language)
 
     # Use bg_result for GPU utilization, cprofile_result for CPU profile, result for timing
     result['bg_sampling'] = bg_result['bg_sampling']
@@ -404,7 +409,8 @@ def main():
     for i in range(3):
         ri = profile_transcription(model_metal, audio_file, beam_size, api,
                                    f"metal_run{i+2}",
-                                   enable_cprofile=False, enable_bg_sampling=False)
+                                   enable_cprofile=False, enable_bg_sampling=False,
+                                   language=language)
         run_times.append(ri['wall_ms'])
         run_gpu_times.append(ri['gpu_time_ms'])
         print(f"  Run {i+2}: wall={ri['wall_ms']:.0f}ms  gpu={ri['gpu_time_ms']:.0f}ms  commits={ri['commits']}  rss_delta={ri['rss_delta_mb']:.0f}MB")

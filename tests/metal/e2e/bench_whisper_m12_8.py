@@ -9,7 +9,7 @@ Usage:
 """
 import os, sys, time, gc, argparse
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--beam", type=int, default=5)
@@ -41,13 +41,21 @@ from faster_whisper import WhisperModel
 import ctranslate2
 
 
+_detected_language = None
+
 def bench_one(device, compute_type, beam_size, num_runs):
     """Load model, warmup, run num_runs timed transcriptions. Return best_ms and text."""
+    global _detected_language
     model = WhisperModel(whisper_path, device=device, compute_type=compute_type)
+
+    # Auto-detect language on first call
+    if _detected_language is None:
+        _detected_language = detect_language_fw(model, audio_file)
+        print(f"  Detected language: {_detected_language}")
 
     # Warmup
     segments, _ = model.transcribe(
-        audio_file, language="ru", beam_size=beam_size, without_timestamps=True
+        audio_file, language=_detected_language, beam_size=beam_size, without_timestamps=True
     )
     text = " ".join(seg.text.strip() for seg in segments)
 
@@ -56,7 +64,7 @@ def bench_one(device, compute_type, beam_size, num_runs):
     for i in range(num_runs):
         t0 = time.monotonic()
         segs, _ = model.transcribe(
-            audio_file, language="ru", beam_size=beam_size, without_timestamps=True
+            audio_file, language=_detected_language, beam_size=beam_size, without_timestamps=True
         )
         list(segs)  # consume generator
         elapsed = (time.monotonic() - t0) * 1000

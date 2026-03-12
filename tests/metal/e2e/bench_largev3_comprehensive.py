@@ -6,7 +6,7 @@ Measures encoder time, decoder time, and total throughput.
 """
 import os, sys, time, gc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_ct2, get_whisper_prefix_strings
 
 MODEL_DIR = model_path("whisper-large-v3")
 AUDIO_FILE = audio_path("sample.mp3")
@@ -25,7 +25,15 @@ features = fe(audio)[:, :3000]
 features = np.expand_dims(features, 0).astype(np.float32)
 print(f"Audio: {dur:.1f}s, features: {features.shape}")
 
-PROMPT = ["<|startoftranscript|>", "<|en|>", "<|transcribe|>", "<|notimestamps|>"]
+# Auto-detect language from audio
+_detect_model = ctranslate2.models.Whisper(MODEL_DIR, device="cpu")
+from transformers import WhisperProcessor as _WP
+_detect_proc = _WP.from_pretrained("openai/whisper-large-v3")
+_language = detect_language_ct2(_detect_model, _detect_proc, audio)
+del _detect_model, _detect_proc
+print(f"Detected language: {_language}")
+
+PROMPT = get_whisper_prefix_strings(_language)
 COMPUTE_TYPES = ["float32", "float16", "bfloat16", "int8", "int8_float16", "int8_bfloat16"]
 
 

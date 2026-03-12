@@ -19,7 +19,7 @@ import os
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 
 import ctranslate2
 import librosa
@@ -69,6 +69,10 @@ def main():
     cpu_ct = model_cpu.model.compute_type
     print(f"  CPU compute_type: {cpu_ct}")
 
+    # Auto-detect language from audio
+    language = detect_language_fw(model_cpu, audio_file)
+    print(f"  Detected language: {language}")
+
     print("\n=== Feature extraction (CPU) ===")
     expected_mels = 128 if "large-v3" in model_name else 80
     cpu_mels = model_cpu.model.n_mels
@@ -79,7 +83,7 @@ def main():
 
     print("\n=== CPU transcription ===")
     cpu_segments, cpu_info = model_cpu.transcribe(
-        audio_file, language="ru", beam_size=5, without_timestamps=True,
+        audio_file, language=language, beam_size=5, without_timestamps=True,
     )
     cpu_segments = list(cpu_segments)
     cpu_text = " ".join(s.text for s in cpu_segments).strip()
@@ -89,7 +93,7 @@ def main():
           f"len={len(cpu_text)}, expect >50 for 60s audio")
 
     # Timestamps mode (CPU only — informational)
-    ts_segments, _ = model_cpu.transcribe(audio_file, language="ru", beam_size=5)
+    ts_segments, _ = model_cpu.transcribe(audio_file, language=language, beam_size=5)
     ts_segments = list(ts_segments)
     ts_text = " ".join(s.text for s in ts_segments).strip()
     info(f"Timestamps mode: {len(ts_segments)} segments, {len(ts_text)} chars")
@@ -97,9 +101,9 @@ def main():
         info(f"  [{seg.start:.1f}-{seg.end:.1f}] {seg.text[:80]}")
 
     # CPU benchmark
-    list(model_cpu.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
+    list(model_cpu.transcribe(audio_file, language=language, beam_size=perf_beam_size, without_timestamps=True)[0])
     t0 = time.monotonic()
-    list(model_cpu.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
+    list(model_cpu.transcribe(audio_file, language=language, beam_size=perf_beam_size, without_timestamps=True)[0])
     cpu_ms = (time.monotonic() - t0) * 1000
 
     # Free CPU model before loading Metal
@@ -121,7 +125,7 @@ def main():
 
     print("\n=== Metal transcription ===")
     metal_segments, metal_info = model_metal.transcribe(
-        audio_file, language="ru", beam_size=5, without_timestamps=True,
+        audio_file, language=language, beam_size=5, without_timestamps=True,
     )
     metal_segments = list(metal_segments)
     metal_text = " ".join(s.text for s in metal_segments).strip()
@@ -137,9 +141,9 @@ def main():
               f"cpu_len={len(cpu_text)}, metal_len={len(metal_text)}")
 
     # Metal benchmark
-    list(model_metal.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
+    list(model_metal.transcribe(audio_file, language=language, beam_size=perf_beam_size, without_timestamps=True)[0])
     t0 = time.monotonic()
-    list(model_metal.transcribe(audio_file, language="ru", beam_size=perf_beam_size, without_timestamps=True)[0])
+    list(model_metal.transcribe(audio_file, language=language, beam_size=perf_beam_size, without_timestamps=True)[0])
     metal_ms = (time.monotonic() - t0) * 1000
 
     del model_metal

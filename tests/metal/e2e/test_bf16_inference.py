@@ -21,7 +21,8 @@ import os
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, load_marian_tokenizer, tokenize, decode, audio_path
+from conftest import (model_path, load_marian_tokenizer, tokenize, decode, audio_path,
+                      detect_language_ct2, get_whisper_prefix_tokens)
 
 
 def main():
@@ -201,14 +202,13 @@ def main():
 
             SAMPLE_RATE = 16000
             audio, _ = librosa.load(apath, sr=SAMPLE_RATE, mono=True)
+            # Auto-detect language from audio
+            language = detect_language_ct2(whisper, processor, audio, SAMPLE_RATE)
+            print(f"  Detected language: {language}")
             audio = audio[:30 * SAMPLE_RATE]
             inputs = processor(audio, return_tensors="np", sampling_rate=SAMPLE_RATE)
             features = ctranslate2.StorageView.from_array(inputs.input_features)
-            prefix_tokens = [
-                processor.tokenizer.convert_tokens_to_ids(t)
-                for t in ["<|startoftranscript|>", "<|en|>",
-                          "<|transcribe|>", "<|notimestamps|>"]
-            ]
+            prefix_tokens = get_whisper_prefix_tokens(processor.tokenizer, language)
 
             result = whisper.generate(features, [prefix_tokens])
             text = processor.decode(result[0].sequences_ids[0][len(prefix_tokens):],

@@ -6,7 +6,7 @@ Verifies the iterative prompt fix (M12.8) produces correct transcriptions.
 
 import os, sys, time, gc
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 
 MODEL_DIR = model_path("whisper-large-v3")
 AUDIO_FILE = audio_path("sample.mp3")
@@ -18,11 +18,17 @@ if not os.path.isdir(MODEL_DIR):
 from faster_whisper import WhisperModel
 import ctranslate2
 
+_detected_language = None
+
 def run_test(device, compute_type, patience=2, beam_size=5):
+    global _detected_language
     model = WhisperModel(MODEL_DIR, device=device, compute_type=compute_type)
+    if _detected_language is None:
+        _detected_language = detect_language_fw(model, AUDIO_FILE)
+        print(f"  Detected language: {_detected_language}")
     t0 = time.monotonic()
     segments, info = model.transcribe(
-        AUDIO_FILE, language="ru", beam_size=beam_size,
+        AUDIO_FILE, language=_detected_language, beam_size=beam_size,
         without_timestamps=True, patience=patience,
     )
     text = " ".join(seg.text.strip() for seg in segments)

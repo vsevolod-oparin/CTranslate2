@@ -2,7 +2,7 @@
 """Quick faster_whisper speed benchmark — skip correctness, minimal overhead."""
 import os, sys, time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from conftest import model_path, audio_path
+from conftest import model_path, audio_path, detect_language_fw
 from faster_whisper import WhisperModel
 import librosa
 
@@ -20,17 +20,19 @@ print(f"Model: {model_name}  beam_size={beam_size}  audio={dur:.0f}s")
 
 # Benchmark CPU first, then free before loading Metal to avoid 2x memory.
 model_cpu = WhisperModel(whisper_path, device="cpu", compute_type="float32")
-list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+language = detect_language_fw(model_cpu, audio_file)
+print(f"Detected language: {language}")
+list(model_cpu.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
 t0 = time.monotonic()
-list(model_cpu.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+list(model_cpu.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
 cpu_ms = (time.monotonic() - t0) * 1000
 del model_cpu
 import gc; gc.collect()
 
 model_metal = WhisperModel(whisper_path, device="mps", compute_type="float32")
-list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+list(model_metal.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
 t0 = time.monotonic()
-list(model_metal.transcribe(audio_file, language="ru", beam_size=beam_size, without_timestamps=True)[0])
+list(model_metal.transcribe(audio_file, language=language, beam_size=beam_size, without_timestamps=True)[0])
 metal_ms = (time.monotonic() - t0) * 1000
 del model_metal
 gc.collect()

@@ -64,6 +64,7 @@
 | 49 | 45c7e08d | 1,765 | 1775, 1773, 1747 | 121-123 | Reports, tests, BUG-1 protect_buffer fix | 23.32x |
 | 50 | 7af87e39 | 1,946 | 1907, 1947, 1986 | 123 | Code review #2: BUG-2 fix (commit_and_wait) | 21.16x |
 | 51 | 47960086 | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
+| 52 | a4046a63 | **1,812** | 1811, 1818, 1807 | 123 | M12.26 Residency sets + whisper correctness fix | **22.72x** |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*
@@ -144,8 +145,8 @@ Subsequent commits added incremental improvements:
 ### Memory Leaks Masked Real Performance
 The Phase 3 plateau at ~6,100 ms was artificially elevated. Once leaks were fixed (Phase 5), the same optimizations from Phase 3-4 could properly shine, achieving ~3,000 ms. The GPU kernels, sync eliminations, and encode-only patterns were all contributing, but their gains were hidden by growing memory pressure.
 
-### Total Optimization: **22.1x**
-From 41,169 ms (M11.3 baseline) to 1,860 ms (commit 51): a **22.1x improvement** on Whisper large-v3-turbo inference.
+### Total Optimization: **22.7x**
+From 41,169 ms (M11.3 baseline) to 1,812 ms (commit 52): a **22.7x improvement** on Whisper large-v3-turbo inference.
 
 ### Variance as a Diagnostic
 High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to <1% in Phase 7 (e.g., commit 48: 1774, 1772, 1755 ms; commit 51: 1865, 1862, 1855 ms), confirming complete resolution.
@@ -160,4 +161,8 @@ Commit 50 showed that naive correctness fixes (full `commit_and_wait()`) can reg
 - If no CB split occurred, the barrier is a no-op (event counter ≤ last waited)
 
 ### Performance Ceiling
-At 1,860 ms with ~16% GPU utilization, the remaining ~84% is CTranslate2's ThreadPool architecture overhead (~700ms OS scheduling per API call) and CPU beam search logic. Further gains require upstream architectural changes (bypass ThreadPool, GPU beam search).
+At 1,812 ms with ~16% GPU utilization, the remaining ~84% is CTranslate2's ThreadPool architecture overhead (~700ms OS scheduling per API call) and CPU beam search logic. Further gains require upstream architectural changes (bypass ThreadPool, GPU beam search).
+
+### Commit 52: Residency Sets + Whisper Correctness Fix
+- **Metal Residency Sets** (macOS 15+): pin model weight MTLBuffers in physical memory via `MTLResidencySet`. Auto-triggered after model load on MPS. No measurable impact on turbo (small model, no memory pressure) but expected to help under high memory pressure with larger models.
+- **Whisper correctness fix**: iterative prompt processing for deep decoders (32 layers) on MPS + encoder→decoder sync barrier. No performance regression on turbo (4 decoder layers, prompt is only 3-4 tokens).

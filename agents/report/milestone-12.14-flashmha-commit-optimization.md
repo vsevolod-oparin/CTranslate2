@@ -10,15 +10,25 @@ Optimized FlashMultiHeadAttention decode performance on MPS for both f32 and f16
 
 ## Performance Results (TinyLlama, Apple M4, greedy beam=1, max_length=100)
 
-| Path | Before | After | Speedup |
-|------|--------|-------|---------|
-| **flash f32** | **3.5 tok/s** | **18.8 tok/s** | **5.4x** |
-| std f32 | 10.5 | ~14.6 | — |
-| **flash f16** | **29.7 tok/s** | **35.4 tok/s** | **1.19x** |
-| std f16 | 31.3 | 31.3 | — |
+### Flash vs Standard (all compute types)
 
-Flash f32: 5.4x speedup, now faster than standard f32.
-Flash f16: 1.19x speedup, now 1.13x faster than standard f16 (was at parity).
+| Path | std tok/s | flash tok/s | Flash speedup |
+|------|-----------|-------------|---------------|
+| **f16** | 30.4 | **38.1** | **1.25x** |
+| **bf16** (→f16) | 27.8 | **35.4** | **1.27x** |
+| **f32** | 14.4 | **17.4** | **1.20x** |
+| **int8** | 3.1 | **6.3** | **2.04x** |
+| **int8_f16** | 3.6 | **6.3** | **1.78x** |
+| **int8_bf16** (→int8_f16) | 3.4 | **6.3** | **1.87x** |
+
+### Optimization progression (flash f32 / flash f16)
+
+| Path | Before (M12.13) | After f32 opt (M12.14) | After f16 opt (M12.15) |
+|------|-----------------|------------------------|------------------------|
+| **flash f32** | **3.5 tok/s** | **17.4 tok/s (5.0x)** | 17.4 tok/s |
+| **flash f16** | **29.7 tok/s** | 29.7 tok/s | **38.1 tok/s (1.28x)** |
+
+Flash attention is now faster than standard across all compute types. Flash f16 at 38.1 tok/s is the fastest path overall.
 
 ## Root Cause Analysis
 
@@ -83,23 +93,30 @@ Dispatch: `MTLSizeMake(batch_size, num_heads, 1)` with threadgroup size 256.
 
 **Impact**: Eliminated 1408 MPS GEMM ObjC calls per step. The single kernel dispatch has negligible encoding overhead compared to 64 MPS GEMM setups per layer.
 
-**Scope**: f32 only. f16 keeps the existing CPU SDPA path (identical numerics to standard, zero beam-search regression). See "F16 Optimization Opportunities" below.
+**Scope**: f32 and f16. Both use the fused MSL kernel for decode (sq=1). Falls back to per-head MPS GEMM for prefill or sk > 8192.
 
 ## Correctness
 
-### Greedy (beam=1): 100% exact match
+### Greedy (beam=1): 100% exact match (flash vs standard, 4 prompts × 100 tokens)
 
-| Type | Prompt "Hello, world" | Prompt "The quick brown fox" | Prompt "<s>" | Prompt "Once upon a time" |
-|------|----------------------|------------------------------|--------------|--------------------------|
-| f32 | OK | OK | OK | OK |
-| f16 | OK | OK | OK | OK |
+| Type | Result |
+|------|--------|
+| f32 | **4/4 PASS** |
+| f16 | **4/4 PASS** |
 
-### Beam search: pre-existing numerical sensitivity
+### Batch greedy: 100% match
 
-| Type | beam=2 pass rate | Notes |
-|------|-----------------|-------|
-| f32 | 6/8 (75%) | Same as before optimization; fused kernel uses float accumulation matching MPS GEMM |
-| f16 | 4/8 (50%) | Pre-existing; flash and standard have fundamentally different layouts/paths |
+| Type | Result |
+|------|--------|
+| f32 | **4/4 PASS** |
+| f16 | **4/4 PASS** |
+
+### Beam search: pre-existing numerical sensitivity (flash vs standard)
+
+| Type | beam=2 | beam=4 | Notes |
+|------|--------|--------|-------|
+| f32 | 1/4 | 1/4 | Fused kernel uses float accumulation but different reduction order from MPS GEMM |
+| f16 | 1/4 | 1/4 | Same sensitivity as f32 |
 
 The per-layer `synchronize_stream` is still required for f32 correctness. Without it, linear projection MPS GEMMs (Q/K/V/output projections — 4 per layer, 88 total) accumulate across 22 layers and cause non-deterministic drift. The fused SDPA kernel eliminated SDPA-internal drift, but the linear projection GEMMs remain the source.
 

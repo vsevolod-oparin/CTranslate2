@@ -16,7 +16,24 @@
 
 ---
 
-## Final Summary (M12.17 — GPU decode RoPE REJECTED, dead code on MPS; no change on OPUS-MT benchmark)
+## Generator / FlashMHA Benchmark (M12.14/M12.15 — TinyLlama, Apple M4, greedy beam=1, max_length=100)
+
+FlashMultiHeadAttention optimization: fused MSL SDPA decode kernel + GPU blit KV cache + force_layer_rope for f32/f16.
+
+| Path | std tok/s | flash tok/s | Flash speedup |
+|------|-----------|-------------|---------------|
+| **f16** | 30.4 | **38.1** | **1.25x** |
+| **bf16** (→f16) | 27.8 | **35.4** | **1.27x** |
+| **f32** | 14.4 | **17.4** | **1.20x** |
+| **int8** | 3.1 | **6.3** | **2.04x** |
+| **int8_f16** | 3.6 | **6.3** | **1.78x** |
+| **int8_bf16** (→int8_f16) | 3.4 | **6.3** | **1.87x** |
+
+Flash attention is faster than standard across all compute types. Flash f16 (38.1 tok/s) is the fastest overall path.
+
+---
+
+## Translation / OPUS-MT Summary (M12.17 — GPU decode RoPE REJECTED, dead code on MPS; no change on OPUS-MT benchmark)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|

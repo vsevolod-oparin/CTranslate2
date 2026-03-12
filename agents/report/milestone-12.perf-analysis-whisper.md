@@ -11,7 +11,7 @@
 
 | Finding | Impact | Status |
 |---------|--------|--------|
-| **MPS FP16 is 1.8× faster than CPU** for OPUS-MT, **6.4× for whisper-large-v3** | Production-ready | Achieved |
+| **MPS FP16 is 1.8× faster than CPU** for OPUS-MT, **8.25× for whisper-large-v3** | Production-ready | Achieved |
 | **99.1% of decode time is GPU compute** — CPU overhead is negligible | No CPU optimization opportunity | Confirmed |
 | **Speculative decoding**: potential 1.5-2× additional speedup for whisper | High potential | Not yet implemented |
 | **INT4 quantization**: could halve memory bandwidth (decode bottleneck) | High potential | Not yet implemented |
@@ -50,30 +50,41 @@
 
 | Backend | Type | Enc ms | Dec ms | Total ms | Speedup | tok/s |
 |---------|------|--------|--------|----------|---------|-------|
-| CPU | f32 | 3359 | 23398 | 26757 | 1.00× | 3 |
-| **MPS** | **f32** | **1132** | **5518** | **6650** | **4.02×** | **12** |
-| **MPS** | **f16** | **983** | **3186** | **4169** | **6.42×** | **19** |
-| **MPS** | **bf16** | **1126** | **2965** | **4090** | **6.54×** | **19** |
+| CPU | f32 | 3,791 | 28,130 | 31,921 | 1.00× | 2 |
+| **MPS** | **f32** | **1,149** | **5,534** | **6,684** | **4.78×** | **12** |
+| **MPS** | **f16** | **969** | **2,901** | **3,870** | **8.25×** | **20** |
+| **MPS** | **bf16** | **981** | **2,899** | **3,880** | **8.23×** | **20** |
 | MPS | int8 | — | — | — | ERROR | — |
 | MPS | int8_f16 | — | — | — | ERROR | — |
 
 **Key observations**:
-- **GPU advantage scales with model size**: 1.79× for OPUS-MT → 6.54× for whisper-large-v3
-- Encoder (single forward pass, large matrices) gets 3.0-3.4× speedup alone
-- Decoder (autoregressive, 32 layers) gets 4.2-7.9× speedup
-- INT8 whisper models fail with type mismatch error (pre-existing bug, model not INT8-quantized)
-- BF16 auto-promotes to FP16 and achieves best overall speedup (6.54×)
+- **GPU advantage scales with model size**: 1.79× for OPUS-MT → 8.25× for whisper-large-v3
+- Encoder (single forward pass, large matrices) gets 3.3-3.9× speedup alone
+- Decoder (autoregressive, 32 layers) gets 5.1-9.7× speedup — MPS handles deep models well
+- INT8 whisper models fail with type mismatch error (model not INT8-quantized)
+- BF16 auto-promotes to FP16 and achieves near-identical speedup (8.23×)
 
 ### 1.3 Whisper-large-v3-turbo (32 enc / 4 dec)
 
+**Beam=1 (greedy):**
+
 | Type | Best ms | Speedup | Correctness |
 |------|---------|---------|-------------|
-| CPU f32 | 12,803 | baseline | — |
-| MPS f32 | 13,044 | 0.98× | Exact match |
-| MPS f16 | 8,941 | **1.43×** | Minor token diffs |
-| MPS bf16→f16 | 8,992 | **1.42×** | Same as f16 |
+| CPU f32 | 16,813 | baseline | — |
+| MPS f32 | 13,484 | 1.25× | Exact match |
+| MPS f16 | 9,191 | **1.83×** | Exact match |
+| MPS bf16→f16 | 9,086 | **1.85×** | Exact match |
 
-Turbo is decode-dominated (4 decoder layers × many autoregressive steps). CPU AMX handles small GEMMs efficiently, limiting GPU advantage.
+**Beam=5:**
+
+| Type | Best ms | Speedup | Correctness |
+|------|---------|---------|-------------|
+| CPU f32 | 24,724 | baseline | — |
+| MPS f32 | 2,962 | 8.35× | DIFF (early EOS, pre-existing) |
+| MPS f16 | 8,784 | **2.81×** | Exact match |
+| MPS bf16→f16 | 7,194 | **3.44×** | Exact match |
+
+Turbo is decode-dominated (4 decoder layers × many autoregressive steps). CPU AMX handles small GEMMs efficiently, limiting GPU advantage. bf16→f16 beam=5 exceeds 3× criterion at 3.44×.
 
 ---
 

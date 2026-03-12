@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-12
-**Status:** In progress — M12.1-12.25 done, M12.8 done (criterion not met, decode-dominated)
+**Status:** In progress — M12.1-12.25 done, M12.8 re-evaluated (criterion met: whisper-large-v3 f16 8.25×)
 
 ---
 
@@ -1084,11 +1084,10 @@ Report: `agents/report/milestone-7-remaining-ops.md`
   - INT8 useful for memory reduction only, not speed, on this hardware
 - **DONE:** Report `agents/report/milestone-12.7-cpu-int8-build.md`
 
-**12.8 Larger model benchmarks** ⚠️ (criterion not met + correctness issue)
-- **whisper-large-v3-turbo** (32 enc / 4 dec): f16 1.43×, f32 0.98× (beam=1). Correct but decode-dominated.
-- **whisper-large-v3** (32 enc / 32 dec): **BROKEN** — 0 segments on MPS (all types). Encoder works, decoder drift kills output.
-- **Finding**: 32 decoder layers × autoregressive steps compounds MPS GEMM numerical drift beyond model tolerance
-- **Action**: Deep decoder correctness fix needed before >3× criterion can be re-evaluated (NLLB-200 etc.)
+**12.8 Larger model benchmarks** ✅ (criterion met after correctness fix)
+- **whisper-large-v3** (32 enc / 32 dec): **FIXED** — f16 **8.25×** speedup, f32 4.78×, exact text match. Fixed via iterative prompt + encoder→decoder sync (`src/layers/whisper.cc`, `src/models/whisper.cc`).
+- **whisper-large-v3-turbo** (32 enc / 4 dec): f16 **1.83×** (beam=1), **2.81×** (beam=5). bf16→f16 beam=5: **3.44×**.
+- **Re-evaluated 2026-03-12**: whisper-large-v3 f16 8.25× far exceeds >3× criterion (original: 0 segments, broken)
 - **DONE:** Report `agents/report/milestone-12.8-larger-model-benchmarks.md`
 
 **12.8–12.9 Code review** ✅

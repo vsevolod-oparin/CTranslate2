@@ -206,7 +206,7 @@ static void cpu_ref_sdpa(const float* q, const float* k, const float* v, float* 
 
   for (dim_t b = 0; b < batch; ++b) {
     for (dim_t h = 0; h < nh; ++h) {
-      const dim_t hk = h % nhk;
+      const dim_t hk = h / (nh / nhk);
       const float* q0   = q   + (b * sq * nh  + h ) * hd;
       const float* k0   = k   + (b * sk * nhk + hk) * hd;
       const float* v0   = v   + (b * sk * nhk + hk) * hd;

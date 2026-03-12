@@ -117,8 +117,8 @@ static void test_fill() {
 
   // float16 (via half_float)
   {
-    float16_t* p = metal_alloc<float16_t>(N);
-    primitives<Device::MPS>::fill(p, float16_t(1.5f), N);
+    ctranslate2::float16_t* p = metal_alloc<ctranslate2::float16_t>(N);
+    primitives<Device::MPS>::fill(p, ctranslate2::float16_t(1.5f), N);
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
       if (std::fabs(static_cast<float>(p[i]) - 1.5f) > 1e-3f) { ok = false; break; }
@@ -193,11 +193,11 @@ static void test_convert() {
 
   // float32 → float16 → float32 round-trip
   {
-    float16_t* f16 = metal_alloc<float16_t>(N);
+    ctranslate2::float16_t* f16 = metal_alloc<ctranslate2::float16_t>(N);
     float*     out = metal_alloc<float>(N);
 
     primitives<Device::MPS>::convert(src_f32, f16, N);
-    primitives<Device::MPS>::convert(static_cast<const float16_t*>(f16), out, N);
+    primitives<Device::MPS>::convert(static_cast<const ctranslate2::float16_t*>(f16), out, N);
 
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
@@ -211,11 +211,11 @@ static void test_convert() {
 
   // float32 → bfloat16 → float32 round-trip
   {
-    bfloat16_t* bf16 = metal_alloc<bfloat16_t>(N);
+    ctranslate2::bfloat16_t* bf16 = metal_alloc<ctranslate2::bfloat16_t>(N);
     float*      out  = metal_alloc<float>(N);
 
     primitives<Device::MPS>::convert(src_f32, bf16, N);
-    primitives<Device::MPS>::convert(static_cast<const bfloat16_t*>(bf16), out, N);
+    primitives<Device::MPS>::convert(static_cast<const ctranslate2::bfloat16_t*>(bf16), out, N);
 
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {
@@ -229,16 +229,16 @@ static void test_convert() {
 
   // float16 → bfloat16 → float16 round-trip
   {
-    float16_t  f16_src[8];
-    for (int i = 0; i < 8; ++i) { f16_src[i] = float16_t(src_f32[i]); }
+    ctranslate2::float16_t  f16_src[8];
+    for (int i = 0; i < 8; ++i) { f16_src[i] = ctranslate2::float16_t(src_f32[i]); }
 
-    bfloat16_t* bf16   = metal_alloc<bfloat16_t>(N);
-    float16_t*  f16out = metal_alloc<float16_t>(N);
+    ctranslate2::bfloat16_t* bf16   = metal_alloc<ctranslate2::bfloat16_t>(N);
+    ctranslate2::float16_t*  f16out = metal_alloc<ctranslate2::float16_t>(N);
 
     primitives<Device::MPS>::convert(
-        static_cast<const float16_t*>(f16_src), bf16, N);
+        static_cast<const ctranslate2::float16_t*>(f16_src), bf16, N);
     primitives<Device::MPS>::convert(
-        static_cast<const bfloat16_t*>(bf16), f16out, N);
+        static_cast<const ctranslate2::bfloat16_t*>(bf16), f16out, N);
 
     bool ok = true;
     for (dim_t i = 0; i < N; ++i) {

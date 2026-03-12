@@ -72,7 +72,11 @@ int main() {
   commit_command_buffer();
   id<MTLCommandBuffer> buf2 = get_current_command_buffer();
   CHECK("new buffer issued after commit_command_buffer()", buf2 != nil);
-  CHECK("new buffer differs from committed buffer", buf2 != buf);
+  // Note: after commit releases the old buffer, the Metal runtime may recycle
+  // the same ObjC object address, so pointer identity is not reliable.
+  CHECK("new buffer is uncommitted",
+        [buf2 status] == MTLCommandBufferStatusNotEnqueued ||
+        [buf2 status] == MTLCommandBufferStatusEnqueued);
 
   // 8. commit_and_wait() with no encoded commands completes without error.
   bool no_throw = true;

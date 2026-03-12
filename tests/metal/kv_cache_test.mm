@@ -92,7 +92,7 @@ static void ref_sdpa(const float* q, const float* k, const float* v, float* out,
 
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < nh; ++h) {
-      const int hk = h % nhk;
+      const int hk = h / (nh / nhk);
       const float* q0   = q   + (b * sq * nh  + h ) * hd;
       const float* k0   = k   + (b * sk * nhk + hk) * hd;
       const float* v0   = v   + (b * sk * nhk + hk) * hd;

@@ -247,7 +247,7 @@ static void test_prepare_mask_padded() {
   primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/false,
       /*multi_query=*/false, d_mask);
-  // No GPU work needed — CPU fills mask directly.
+  metal::commit_and_wait();  // flush GPU (M11.16 moved this to a GPU kernel)
 
   bool ok = true;
   // batch 0: all entries should be 3
@@ -276,6 +276,7 @@ static void test_prepare_mask_causal() {
   primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/false, d_mask);
+  metal::commit_and_wait();
 
   // Expected: mask[q] = min(4, q+1) = 1,2,3,4
   bool ok = (d_mask[0]==1 && d_mask[1]==2 && d_mask[2]==3 && d_mask[3]==4);
@@ -299,6 +300,7 @@ static void test_prepare_mask_causal_padded() {
   primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/false, d_mask);
+  metal::commit_and_wait();
 
   // Compute CPU reference
   std::vector<int32_t> ref(batch * heads * queries);
@@ -333,6 +335,7 @@ static void test_prepare_mask_multi_query() {
   primitives<Device::MPS>::prepare_length_mask(
       d_lengths, batch, heads, queries, /*mask_future=*/true,
       /*multi_query=*/true, d_mask);
+  metal::commit_and_wait();
 
   // ref: for i in [0, heads*queries): mask[i] = min(10, i/num_heads + 1)
   // heads=2, queries=3 → 6 elements

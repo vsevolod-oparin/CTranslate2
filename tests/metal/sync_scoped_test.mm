@@ -108,7 +108,13 @@ static void test_sync() {
   // 3. A fresh command buffer is ready after commit.
   id<MTLCommandBuffer> cb2 = get_current_command_buffer();
   CHECK("fresh command buffer ready after sync", cb2 != nil);
-  CHECK("fresh buffer differs from committed one", cb2 != cb);
+  // Note: after commit_and_wait() releases the old buffer, the Metal runtime
+  // may recycle the same ObjC object address, so pointer identity (cb2 != cb)
+  // is not a reliable assertion.  The key invariant is that the new buffer is
+  // non-nil and its status is "not yet committed".
+  CHECK("fresh buffer is uncommitted (enqueued or not-enqueued)",
+        [cb2 status] == MTLCommandBufferStatusNotEnqueued ||
+        [cb2 status] == MTLCommandBufferStatusEnqueued);
 }
 
 

@@ -54,16 +54,12 @@ done
 # Kept on single lines to avoid embedded newlines or backslash continuations.
 # ---------------------------------------------------------------------------
 
-# Minimal context layer: device singleton + per-thread queue (no allocator)
-CTX_SRCS="src/metal/device.mm src/metal/utils.mm"
-
-# Allocator layer only (no primitives, no C++ allocator glue)
-ALLOC_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm"
-
-# Full stack: context + allocator + primitives + C++ allocator/device glue
-# primitives.mm was split into 7 focused translation units; list them all here.
-PRIM_SRCS="src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm src/metal/primitives_norm_gather.mm"
-FULL_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm ${PRIM_SRCS} src/allocator.cc src/devices.cc src/cpu/allocator.cc"
+# Full stack: context + allocator + primitives + ops + C++ allocator/device glue
+# utils.mm → allocator.mm → primitives_gemm.mm → ops_sdpa.mm dependency chain
+# means even "minimal" tests now need the full source set.
+PRIM_SRCS="src/metal/primitives_memory.mm src/metal/primitives_elementwise.mm src/metal/primitives_reduction.mm src/metal/primitives_gemm.mm src/metal/primitives_transpose.mm src/metal/primitives_beam_search.mm"
+OPS_SRCS="src/metal/ops_norm_gather.mm src/metal/ops_sdpa.mm"
+FULL_SRCS="src/metal/device.mm src/metal/utils.mm src/metal/allocator.mm ${PRIM_SRCS} ${OPS_SRCS} src/allocator.cc src/devices.cc src/cpu/allocator.cc"
 
 # ---------------------------------------------------------------------------
 # Compiler / linker flags
@@ -73,9 +69,9 @@ CFLAGS_COMMON="-std=c++17 -I${REPO_ROOT}/include -I${REPO_ROOT}/src -DCT2_WITH_M
 # Base Metal frameworks (required by all tests)
 FW_BASE="-framework Metal -framework Foundation -framework MetalPerformanceShaders"
 
-# Full Metal frameworks (required by tests that use primitives.mm, which
-# includes MPSGraph for the BF16 GEMM path)
-FW_GRAPH="${FW_BASE} -framework MetalPerformanceShadersGraph"
+# Full Metal frameworks (required by tests that use primitives_gemm.mm, which
+# includes MPSGraph for the BF16 GEMM path + Accelerate for CBLAS)
+FW_GRAPH="${FW_BASE} -framework MetalPerformanceShadersGraph -framework Accelerate"
 
 # ---------------------------------------------------------------------------
 # Test registry.
@@ -96,9 +92,9 @@ FW_GRAPH="${FW_BASE} -framework MetalPerformanceShadersGraph"
 #           → normalization_comparison → bias_add (M5.2 review 4.5, 4.6)
 # ---------------------------------------------------------------------------
 TESTS=(
-  "context_test|-O0|${CTX_SRCS}|${FW_BASE}"
-  "sync_scoped_test|-O0|${CTX_SRCS}|${FW_BASE}"
-  "allocator_test|-O0|${ALLOC_SRCS}|${FW_BASE}"
+  "context_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "sync_scoped_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
+  "allocator_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "storage_view_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "primitives_test|-O0|${FULL_SRCS}|${FW_GRAPH}"
   "arithmetic_test|-O0|${FULL_SRCS}|${FW_GRAPH}"

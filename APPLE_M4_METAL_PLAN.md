@@ -1084,11 +1084,11 @@ Report: `agents/report/milestone-7-remaining-ops.md`
   - INT8 useful for memory reduction only, not speed, on this hardware
 - **DONE:** Report `agents/report/milestone-12.7-cpu-int8-build.md`
 
-**12.8 Larger model benchmarks** ⚠️ (criterion not met)
-- Whisper-large-v3-turbo (d_model=1280, 32 enc / 4 dec layers, 60s audio)
-- Beam=1: f16 1.43×, f32 0.98×. Beam=5: f16 2.46× (f32 beam=5 unreliable — early termination)
-- **Finding**: Decode-dominated workloads (many sq=1 steps) are CPU AMX–competitive
-- 3× criterion was calibrated for balanced prefill/decode; whisper's 4 decoder layers don't provide enough GPU work
+**12.8 Larger model benchmarks** ⚠️ (criterion not met + correctness issue)
+- **whisper-large-v3-turbo** (32 enc / 4 dec): f16 1.43×, f32 0.98× (beam=1). Correct but decode-dominated.
+- **whisper-large-v3** (32 enc / 32 dec): **BROKEN** — 0 segments on MPS (all types). Encoder works, decoder drift kills output.
+- **Finding**: 32 decoder layers × autoregressive steps compounds MPS GEMM numerical drift beyond model tolerance
+- **Action**: Deep decoder correctness fix needed before >3× criterion can be re-evaluated (NLLB-200 etc.)
 - **DONE:** Report `agents/report/milestone-12.8-larger-model-benchmarks.md`
 
 **12.8–12.9 Code review** ✅

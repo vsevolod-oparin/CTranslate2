@@ -2,6 +2,8 @@
 
 #include <cmath>
 
+#include "ctranslate2/devices.h"
+
 namespace ctranslate2 {
   namespace layers {
 

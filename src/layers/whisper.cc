@@ -1,5 +1,8 @@
 #include "ctranslate2/layers/whisper.h"
 
+#include "ctranslate2/devices.h"
+#include "ctranslate2/ops/concat.h"
+
 namespace ctranslate2 {
   namespace layers {
 
@@ -64,6 +67,60 @@ namespace ctranslate2 {
     void WhisperDecoder::forward_prompt(const StorageView& prompt,
                                         DecoderState& state,
                                         StorageView* outputs) {
+#ifdef CT2_WITH_MPS
+      // M12.8: On MPS with deep decoders (32 layers), processing multiple prompt
+      // tokens at once causes numerical divergence in the KV cache. Process tokens
+      // one at a time (iterative decoding) to match the single-token path that
+      // detect_language uses successfully.
+      if (prompt.device() == Device::MPS && prompt.dim(1) > 1) {
+        const dim_t batch_size = prompt.dim(0);
+        const dim_t prompt_length = prompt.dim(1);
+
+        std::vector<StorageView> all_outputs;
+
+        for (dim_t t = 0; t < prompt_length; ++t) {
+          // Use rank-1 ids like detect_language (proven working path)
+          StorageView token_ids({batch_size}, DataType::INT32, prompt.device());
+          for (dim_t b = 0; b < batch_size; ++b)
+            token_ids.at<int32_t>(b) = prompt.at<int32_t>({b, t});
+
+          if (outputs) {
+            StorageView step_output(output_type(), prompt.device());
+            decode(token_ids,
+                   /*lengths=*/nullptr,
+                   /*step=*/t,
+                   state,
+                   &step_output,
+                   /*attention=*/nullptr,
+                   /*return_logits=*/false);
+            // decode with rank-1 ids produces {batch, d_model}; unsqueeze for concat
+            step_output.expand_dims(1);
+            all_outputs.push_back(std::move(step_output));
+          } else {
+            decode(token_ids,
+                   /*lengths=*/nullptr,
+                   /*step=*/t,
+                   state,
+                   /*outputs=*/nullptr,
+                   /*attention=*/nullptr,
+                   /*return_logits=*/false);
+          }
+
+          // Flush GPU work between prompt steps to ensure KV cache consistency
+          synchronize_stream(prompt.device());
+        }
+
+        // Reconstruct {batch, prompt_length, d_model} output for compute_logits_for_steps
+        if (outputs && !all_outputs.empty()) {
+          std::vector<const StorageView*> ptrs;
+          ptrs.reserve(all_outputs.size());
+          for (const auto& o : all_outputs)
+            ptrs.push_back(&o);
+          ops::Concat(1)(ptrs, *outputs);
+        }
+        return;
+      }
+#endif
       decode(prompt,
              /*lengths=*/nullptr,
              /*step=*/0,

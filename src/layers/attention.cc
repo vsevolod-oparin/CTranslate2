@@ -2,6 +2,7 @@
 #include "ctranslate2/ops/flash_attention.h"
 #include "ctranslate2/ops/split.h"
 #include "ctranslate2/utils.h"
+#include "ctranslate2/devices.h"
 
 
 #include <algorithm>

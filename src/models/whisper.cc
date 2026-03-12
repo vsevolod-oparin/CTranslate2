@@ -257,6 +257,14 @@ namespace ctranslate2 {
       layers::DecoderState state = _decoder->initial_state();
       state.emplace("memory", maybe_encode(std::move(features)));
 
+      // M12.8: Force commit between encoder and decoder for deep models on MPS.
+      // Without this, the encoder's 32 layers + decoder's 32 layers accumulate
+      // 800+ MPS dispatches in a single command buffer, causing numerical drift
+      // or command buffer overflow. The turbo model (4 dec layers) works without
+      // this sync because it has far fewer total dispatches.
+      if (_model->device() == Device::MPS)
+        synchronize_stream(_model->device());
+
       _decoder->update_output_layer(_model->preferred_size_multiple());
 
       const bool sot_is_start_token = (sot_index == prompt_length - 1);

@@ -187,16 +187,24 @@ namespace ctranslate2 {
           T*       v_cache = cached_values->data<T>();
           const T* v_new   = values.data<T>();
 
-          // M6.3 CPU RoPE path — flush GPU, apply RoPE on CPU, memcpy to cache.
-          // M12.17 GPU decode_rope_metal was reverted due to in-place WAR race
-          // condition: the MSL kernel reads partner elements (d±half_dim) while
-          // simultaneously overwriting them, causing non-deterministic output.
-          // CPU RoPE for 36 vectors × 64 elements is ~0.5 µs — negligible.
-
-          // Flush pending GPU writes (GEMM for Q/K/V) so CPU can read them.
-          metal::commit_and_wait();
+          // Two KV-cache update paths:
+          //
+          // (A) CPU path (need_rope=true, i.e. f16/bf16):
+          //     commit_and_wait → CPU RoPE on Q/K → CPU memcpy to cache.
+          //     M12.17: GPU RoPE reverted (in-place WAR race).
+          //     CPU RoPE for 36 vectors × 64 elements is ~0.5 µs — negligible.
+          //
+          // (B) GPU blit path (need_rope=false, i.e. f32 MPS with force_layer_rope):
+          //     No CPU access needed — RoPE already applied by the layer's GPU
+          //     RotaryEmbeddings kernel.  Use encode-only blit_copy to write
+          //     K/V into the cache on GPU, eliminating commit_and_wait.
+          //     Saves 22 commits/step (one per transformer layer).
 
           if (need_rope) {
+            // --- Path (A): CPU RoPE + CPU memcpy ---
+            // Flush pending GPU writes (GEMM for Q/K/V) so CPU can read them.
+            metal::commit_and_wait();
+
             const dim_t half_dim = rotary_cos->dim(1);
             const dim_t ndims    = half_dim * 2;
             const T* cos_row     = rotary_cos->data<T>() + offset * half_dim;
@@ -217,19 +225,34 @@ namespace ctranslate2 {
                 apply_rope_half(kvec, cos_row, sin_row, ndims, head_dim, rotary_interleave);
               }
             }
-          }
 
-          // CPU memcpy — write new K/V into cache at position `offset`.
-          // Unified memory: GPU sees the writes without explicit copy.
-          {
+            // CPU memcpy — write new K/V into cache at position `offset`.
+            // Unified memory: GPU sees the writes without explicit copy.
+            {
+              const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
+              for (dim_t b = 0; b < batch_size; ++b) {
+                T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
+                T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
+                const T* ks = k_new   +  b * seqlen_new * row_elements;
+                const T* vs = v_new   +  b * seqlen_new * row_elements;
+                std::memcpy(kd, ks, row_bytes);
+                std::memcpy(vd, vs, row_bytes);
+              }
+            }
+          } else {
+            // --- Path (B): GPU blit copy (no commit needed) ---
+            // Both src (keys/values from linear GEMM) and dst (cached_keys/values)
+            // are in MetalAllocator-managed buffers.  The blit encodes into the
+            // current command buffer after the GEMM ops, so GPU ordering is
+            // guaranteed without an explicit commit.
             const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
             for (dim_t b = 0; b < batch_size; ++b) {
-              T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
-              T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
-              const T* ks = k_new   +  b * seqlen_new * row_elements;
-              const T* vs = v_new   +  b * seqlen_new * row_elements;
-              std::memcpy(kd, ks, row_bytes);
-              std::memcpy(vd, vs, row_bytes);
+              void*       kd = k_cache + (b * total_cache  + offset) * row_elements;
+              void*       vd = v_cache + (b * total_cache  + offset) * row_elements;
+              const void* ks = k_new   +  b * seqlen_new * row_elements;
+              const void* vs = v_new   +  b * seqlen_new * row_elements;
+              metal::blit_copy(ks, kd, row_bytes);
+              metal::blit_copy(vs, vd, row_bytes);
             }
           }
 

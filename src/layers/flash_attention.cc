@@ -145,11 +145,12 @@ namespace ctranslate2 {
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
 
-      // F32 MPS: flush GPU work after each attention layer.  The per-head GPU
-      // SDPA encodes many small MPS GEMMs; without a layer-boundary flush,
-      // accumulated CB complexity causes non-deterministic numerical drift
-      // that compounds through 22 transformer layers and eventually diverges
-      // from the standard attention path.  Cost: 22 commit_and_waits per step.
+      // F32 MPS: flush GPU work after each attention layer.  Without a
+      // layer-boundary flush, accumulated MPS GEMM complexity (linear
+      // projections + attention ops across 22 layers) causes non-deterministic
+      // numerical drift that compounds and diverges from the standard path.
+      // The fused SDPA kernel (M12.14) eliminated per-head GEMM drift, but
+      // the linear projection GEMMs still require per-layer barriers.
       if (dtype == DataType::FLOAT32 && device == Device::MPS)
         synchronize_stream(device);
 

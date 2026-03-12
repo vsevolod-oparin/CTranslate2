@@ -472,6 +472,90 @@ static void sdpa_head_bf16(const ctranslate2::bfloat16_t* q_row0,
 }
 
 // ---------------------------------------------------------------------------
+// Fused SDPA decode — single MSL kernel for sq==1 (FP32 / FP16).
+//
+// Replaces the per-head MPS GEMM loop (2 GEMMs × num_heads per layer) with
+// one kernel dispatch for all (batch, head) pairs.  Reduces ObjC overhead
+// from 1408 MPS GEMM calls/step to 22 kernel dispatches (one per layer).
+//
+// The kernel uses threadgroup memory for softmax scores, limiting max seqlen_k
+// to 32768/sizeof(T) (8192 for float, 16384 for half).  Falls back to the
+// per-head MPS GEMM path for larger sequences.
+// ---------------------------------------------------------------------------
+
+// FusedSdpaDecodeParams must match the MSL struct layout in kSdpaMSL.
+struct FusedSdpaDecodeParams {
+  uint32_t heads_per_kv;
+  uint32_t head_dim;
+  uint32_t seqlen_k;
+  float    scale;
+  uint32_t q_row_elems;
+  uint32_t kv_row_elems;
+  uint32_t kv_batch_stride;
+  uint32_t beam_size;
+};
+
+template <typename T>
+static void dispatch_fused_sdpa_decode(
+    const T* q, const T* k, const T* v, T* output,
+    ctranslate2::dim_t batch_size,
+    ctranslate2::dim_t seqlen_k,
+    ctranslate2::dim_t num_heads,
+    ctranslate2::dim_t num_heads_k,
+    ctranslate2::dim_t head_dim,
+    float scale,
+    ctranslate2::dim_t kv_batch_stride,
+    ctranslate2::dim_t beam_size) {
+
+  static_assert(std::is_same_v<T, float> || std::is_same_v<T, ctranslate2::float16_t>,
+                "Fused SDPA decode only supports float32 and float16");
+
+  const char* kname = std::is_same_v<T, float>
+      ? "fused_sdpa_decode_float" : "fused_sdpa_decode_half";
+  id<MTLComputePipelineState> pso = get_sdpa_pso(kname);
+
+  FusedSdpaDecodeParams params;
+  params.heads_per_kv    = ct2_u32(num_heads / num_heads_k);
+  params.head_dim        = ct2_u32(head_dim);
+  params.seqlen_k        = ct2_u32(seqlen_k);
+  params.scale           = scale;
+  params.q_row_elems     = ct2_u32(num_heads * head_dim);
+  params.kv_row_elems    = ct2_u32(num_heads_k * head_dim);
+  params.kv_batch_stride = ct2_u32(kv_batch_stride);
+  params.beam_size       = ct2_u32(beam_size);
+
+  NSUInteger off_q = 0, off_k = 0, off_v = 0, off_o = 0;
+  id<MTLBuffer> buf_q = ctranslate2::metal_buffer_for_ptr(q, &off_q);
+  id<MTLBuffer> buf_k = ctranslate2::metal_buffer_for_ptr(k, &off_k);
+  id<MTLBuffer> buf_v = ctranslate2::metal_buffer_for_ptr(v, &off_v);
+  id<MTLBuffer> buf_o = ctranslate2::metal_buffer_for_ptr(output, &off_o);
+
+  id<MTLComputeCommandEncoder> enc =
+      ctranslate2::metal::create_compute_encoder();
+  [enc setComputePipelineState:pso];
+  [enc setBuffer:buf_q offset:off_q atIndex:0];
+  [enc setBuffer:buf_k offset:off_k atIndex:1];
+  [enc setBuffer:buf_v offset:off_v atIndex:2];
+  [enc setBuffer:buf_o offset:off_o atIndex:3];
+  [enc setBytes:&params length:sizeof(params) atIndex:4];
+
+  // Threadgroup memory for softmax scores: seqlen_k floats.
+  // (Scores are always float in the kernel, regardless of T.)
+  NSUInteger tg_mem = static_cast<NSUInteger>(seqlen_k) * sizeof(float);
+  [enc setThreadgroupMemoryLength:tg_mem atIndex:0];
+
+  constexpr NSUInteger kTgSize = 256;
+  [enc dispatchThreadgroups:MTLSizeMake(static_cast<NSUInteger>(batch_size),
+                                         static_cast<NSUInteger>(num_heads), 1)
+       threadsPerThreadgroup:MTLSizeMake(kTgSize, 1, 1)];
+  [enc endEncoding];
+  [enc release];
+}
+
+// Maximum seqlen_k for fused decode (threadgroup memory limit).
+static constexpr ctranslate2::dim_t kFusedSdpaMaxSk = 8192;
+
+// ---------------------------------------------------------------------------
 // CPU fast-path for small SDPA.
 //
 // Handles any sq/sk. Per (batch, head, query_pos i):
@@ -602,11 +686,27 @@ namespace ctranslate2 {
         return;
       }
 
-      const dim_t q_lda  = num_heads   * head_dim;
-      const dim_t kv_lda = num_heads_k * head_dim;
       const dim_t kv_bstride = (kv_batch_stride > 0)
                                    ? kv_batch_stride
                                    : seqlen_k * num_heads_k * head_dim;
+
+      // Fused decode kernel (f32 only): single dispatch for all (batch, head)
+      // pairs.  Replaces 2 × num_heads MPS GEMM calls per layer with one
+      // compute kernel.  F16 keeps the CPU SDPA path (identical numerics to
+      // standard, zero beam-search divergence).
+      if constexpr (std::is_same_v<T, float>) {
+        if (seqlen_q == 1 && seqlen_k <= kFusedSdpaMaxSk) {
+          dispatch_fused_sdpa_decode<T>(
+              q, k, v, output,
+              batch_size, seqlen_k, num_heads, num_heads_k, head_dim,
+              scale, kv_bstride, beam_size);
+          return;
+        }
+      }
+
+      // Fallback: per-head SDPA (prefill, large sk, or bf16).
+      const dim_t q_lda  = num_heads   * head_dim;
+      const dim_t kv_lda = num_heads_k * head_dim;
 
       for (dim_t b = 0; b < batch_size; ++b) {
         const dim_t kv_b = b / beam_size;  // K/V batch broadcasting

@@ -1057,6 +1057,110 @@ kernel void causal_mask_bfloat(
         scores[gid] = bfloat(-1e9f);
     }
 }
+// ---------------------------------------------------------------------------
+// Fused SDPA decode kernel (seqlen_q == 1).
+//
+// One threadgroup per (batch, head).  Computes in-threadgroup:
+//   score[j] = scale * dot(Q_h, K_hk[j])    j in [0, seqlen_k)
+//   prob     = softmax(score)
+//   out_h[d] = sum_j prob[j] * V_hk[j, d]
+//
+// Replaces per-head MPS GEMM loop (2 GEMMs × num_heads per layer).
+// Threadgroup memory: seqlen_k × sizeof(T) (set from host).
+// Max sk: 32768/sizeof(T) (8192 for float, 16384 for half).
+// Dispatch: threadgroups(batch, num_heads, 1), threads(256, 1, 1).
+// ---------------------------------------------------------------------------
+
+struct FusedSdpaDecodeParams {
+    uint heads_per_kv;    // num_heads / num_heads_k
+    uint head_dim;
+    uint seqlen_k;
+    float scale;
+    uint q_row_elems;     // num_heads * head_dim
+    uint kv_row_elems;    // num_heads_k * head_dim
+    uint kv_batch_stride; // elements between K/V batches
+    uint beam_size;       // K/V batch = b / beam_size
+};
+
+#define DEFINE_FUSED_SDPA_DECODE(TYPE, FNAME)                                \
+kernel void FNAME(                                                           \
+    device const TYPE* Q   [[buffer(0)]],                                    \
+    device const TYPE* K   [[buffer(1)]],                                    \
+    device const TYPE* V   [[buffer(2)]],                                    \
+    device TYPE*       out [[buffer(3)]],                                    \
+    constant FusedSdpaDecodeParams& p [[buffer(4)]],                         \
+    threadgroup float* tg_scores [[threadgroup(0)]],                         \
+    uint3 tgid3  [[threadgroup_position_in_grid]],                            \
+    uint3 tid3   [[thread_position_in_threadgroup]],                          \
+    uint3 tgsz3  [[threads_per_threadgroup]])                               \
+{                                                                            \
+    const uint b  = tgid3.x;                                                 \
+    const uint h  = tgid3.y;                                                 \
+    const uint tid = tid3.x;                                                 \
+    const uint tg_size = tgsz3.x;                                            \
+    const uint hk = h / p.heads_per_kv;                                      \
+                                                                             \
+    const uint kv_b = b / p.beam_size;                                       \
+    device const TYPE* q_h    = Q + b * p.q_row_elems + h * p.head_dim;      \
+    device const TYPE* k_base = K + kv_b * p.kv_batch_stride + hk * p.head_dim; \
+    device const TYPE* v_base = V + kv_b * p.kv_batch_stride + hk * p.head_dim; \
+    device TYPE*       out_h  = out + b * p.q_row_elems + h * p.head_dim;    \
+                                                                             \
+    /* Step 1: scores = scale * Q · K^T */                                   \
+    for (uint j = tid; j < p.seqlen_k; j += tg_size) {                      \
+        float dot = 0.0f;                                                    \
+        device const TYPE* k_row = k_base + j * p.kv_row_elems;             \
+        for (uint d = 0; d < p.head_dim; ++d)                               \
+            dot += float(q_h[d]) * float(k_row[d]);                          \
+        tg_scores[j] = dot * p.scale;                                        \
+    }                                                                        \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Step 2: Softmax — parallel max reduction */                           \
+    threadgroup float tg_reduce[256];                                        \
+    float local_val = -1e30f;                                                \
+    for (uint j = tid; j < p.seqlen_k; j += tg_size)                        \
+        local_val = max(local_val, tg_scores[j]);                            \
+    tg_reduce[tid] = local_val;                                              \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tg_size / 2; s > 0; s >>= 1) {                            \
+        if (tid < s) tg_reduce[tid] = max(tg_reduce[tid], tg_reduce[tid+s]);\
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float max_val = tg_reduce[0];                                            \
+                                                                             \
+    /* Exp + sum */                                                          \
+    float local_sum = 0.0f;                                                  \
+    for (uint j = tid; j < p.seqlen_k; j += tg_size) {                      \
+        float e = exp(tg_scores[j] - max_val);                               \
+        tg_scores[j] = e;                                                    \
+        local_sum += e;                                                      \
+    }                                                                        \
+    tg_reduce[tid] = local_sum;                                              \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+    for (uint s = tg_size / 2; s > 0; s >>= 1) {                            \
+        if (tid < s) tg_reduce[tid] += tg_reduce[tid + s];                   \
+        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
+    }                                                                        \
+    float inv_sum = 1.0f / tg_reduce[0];                                     \
+                                                                             \
+    /* Normalize probabilities */                                            \
+    for (uint j = tid; j < p.seqlen_k; j += tg_size)                        \
+        tg_scores[j] *= inv_sum;                                             \
+    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
+                                                                             \
+    /* Step 3: out = prob @ V */                                             \
+    for (uint d = tid; d < p.head_dim; d += tg_size) {                      \
+        float acc = 0.0f;                                                    \
+        for (uint j = 0; j < p.seqlen_k; ++j)                               \
+            acc += tg_scores[j] * float(v_base[j * p.kv_row_elems + d]);     \
+        out_h[d] = TYPE(acc);                                                \
+    }                                                                        \
+}
+
+DEFINE_FUSED_SDPA_DECODE(float, fused_sdpa_decode_float)
+DEFINE_FUSED_SDPA_DECODE(half,  fused_sdpa_decode_half)
+
 )msl";
 
 // Source: src/metal/kernels/conv1d.metal

@@ -42,10 +42,12 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <exception>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -93,9 +95,10 @@ static void ref_sdpa(const float* q, const float* k, const float* v, float* out,
   const int kv_lda = nhk * hd;
   std::vector<float> scores(sq * sk);
 
+  const int heads_per_kv = nh / nhk;
   for (int b = 0; b < batch; ++b) {
     for (int h = 0; h < nh; ++h) {
-      const int hk = h % nhk;
+      const int hk = h / heads_per_kv;
       const float* q0  = q   + (b * sq * nh  + h ) * hd;
       const float* k0  = k   + (b * sk * nhk + hk) * hd;
       const float* v0  = v   + (b * sk * nhk + hk) * hd;
@@ -387,6 +390,177 @@ static void test_cross_attention_and_decode() {
 }
 
 // ---------------------------------------------------------------------------
+// T1 — Large seqlen_k fused SDPA decode tests.
+//
+// The fused kernel has a threadgroup reduction (max + exp + sum, tree
+// reduction in 256 threads) that's not stressed at sk=16.  Test with
+// sk=1024 and sk near the 8192 limit.
+// ---------------------------------------------------------------------------
+
+static void test_large_sk_decode() {
+  std::printf("\n--- T1: large seqlen_k decode (fused kernel stress) ---\n");
+
+  // Shared config: sq=1 (decode), nh=4, nhk=2 (GQA), hd=64
+  const int B=1, SQ=1, NH=4, NHK=2, HD=64;
+  const float scale = 1.f / std::sqrt(float(HD));
+
+  std::mt19937 rng(42);
+  std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+
+  for (int SK : {256, 1024, 4096, 8192}) {
+    const int q_n  = B*SQ*NH*HD;
+    const int kv_n = B*SK*NHK*HD;
+    std::vector<float> qf(q_n), kf(kv_n), vf(kv_n);
+    for (auto& x : qf)  x = dist(rng);
+    for (auto& x : kf)  x = dist(rng);
+    for (auto& x : vf)  x = dist(rng);
+
+    // float32: tolerance scales with sqrt(head_dim) due to FMA ordering
+    {
+      float err = run_sdpa<float>(qf.data(), kf.data(), vf.data(),
+                                   B, SQ, SK, NH, NHK, HD, scale, false);
+      char label[128];
+      std::snprintf(label, sizeof(label),
+          "float32 decode sq=1 sk=%d nh=4 nhk=2 hd=64: err < 5e-2", SK);
+      std::printf("  max abs err = %.2e\n", err);
+      CHECK(label, err < 5e-2f);
+    }
+    // float16
+    {
+      float err = run_sdpa<ct2_f16>(qf.data(), kf.data(), vf.data(),
+                                      B, SQ, SK, NH, NHK, HD, scale, false);
+      char label[128];
+      std::snprintf(label, sizeof(label),
+          "float16 decode sq=1 sk=%d nh=4 nhk=2 hd=64: err < 0.05", SK);
+      std::printf("  max abs err = %.2e\n", err);
+      CHECK(label, err < 0.05f);
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// T2 — Beam search test with fused SDPA kernel.
+//
+// The fused kernel has `kv_b = b / beam_size` logic.  Test with beam_size > 1.
+// ---------------------------------------------------------------------------
+
+static void test_beam_decode() {
+  std::printf("\n--- T2: beam search decode (beam_size=4) ---\n");
+
+  // beam_size=4, batch=2 (so 8 queries share 2 KV batches)
+  const int beam_size = 4;
+  const int B_total = 8;  // batch_size * beam_size
+  const int B_kv = 2;
+  const int SQ=1, SK=64, NH=4, NHK=2, HD=64;
+  const float scale = 1.f / std::sqrt(float(HD));
+
+  std::mt19937 rng(123);
+  std::uniform_real_distribution<float> dist(-0.5f, 0.5f);
+
+  // Q: [B_total, 1, 4, 64]  K/V: [B_kv, 64, 2, 64]
+  const int q_n  = B_total * SQ * NH * HD;
+  const int kv_n = B_kv * SK * NHK * HD;
+  std::vector<float> qf(q_n), kf(kv_n), vf(kv_n);
+  for (auto& x : qf)  x = dist(rng);
+  for (auto& x : kf)  x = dist(rng);
+  for (auto& x : vf)  x = dist(rng);
+
+  // Metal: use kv_batch_stride and beam_size
+  const int out_elems = q_n;
+  float* q_m = metal_alloc<float>(q_n);
+  float* k_m = metal_alloc<float>(kv_n);
+  float* v_m = metal_alloc<float>(kv_n);
+  float* o_m = metal_alloc<float>(out_elems);
+
+  fill_from_float(q_m, qf.data(), q_n);
+  fill_from_float(k_m, kf.data(), kv_n);
+  fill_from_float(v_m, vf.data(), kv_n);
+
+  dim_t kv_bstride = static_cast<dim_t>(SK) * NHK * HD;
+  metal::sdpa_metal<float>(q_m, k_m, v_m, o_m,
+                            B_total, SQ, SK, NH, NHK, HD, scale, false,
+                            kv_bstride, beam_size);
+  metal::commit_and_wait();
+
+  std::vector<float> got(out_elems);
+  to_float(got.data(), o_m, out_elems);
+
+  metal_free(q_m);
+  metal_free(k_m);
+  metal_free(v_m);
+  metal_free(o_m);
+
+  // CPU reference: for each query batch b, K/V batch = b / beam_size
+  std::vector<float> ref(out_elems);
+  const int q_lda = NH * HD;
+  const int kv_lda = NHK * HD;
+  const int hpkv = NH / NHK;
+  for (int b = 0; b < B_total; ++b) {
+    const int kv_b = b / beam_size;
+    for (int h = 0; h < NH; ++h) {
+      const int hk = h / hpkv;
+      const float* qp = qf.data() + (b * SQ * NH + h) * HD;
+      const float* kp = kf.data() + kv_b * kv_bstride + hk * HD;
+      const float* vp = vf.data() + kv_b * kv_bstride + hk * HD;
+      float* op = ref.data() + (b * SQ * NH + h) * HD;
+
+      // scores[t] = scale * dot(Q, K[t])
+      std::vector<float> scores(SK);
+      for (int t = 0; t < SK; ++t) {
+        float dot = 0.f;
+        for (int d = 0; d < HD; ++d)
+          dot += qp[d] * kp[t * kv_lda + d];
+        scores[t] = scale * dot;
+      }
+      // softmax
+      float mx = *std::max_element(scores.begin(), scores.end());
+      float sum = 0.f;
+      for (auto& s : scores) { s = std::exp(s - mx); sum += s; }
+      for (auto& s : scores) s /= sum;
+      // out
+      for (int d = 0; d < HD; ++d) {
+        float acc = 0.f;
+        for (int t = 0; t < SK; ++t)
+          acc += scores[t] * vp[t * kv_lda + d];
+        op[d] = acc;
+      }
+    }
+  }
+
+  float err = max_abs_err(ref.data(), got.data(), out_elems);
+  std::printf("  max abs err = %.2e\n", err);
+  CHECK("float32 beam=4 batch=2 sq=1 sk=64 nh=4 nhk=2 hd=64: err < 1e-4", err < 1e-4f);
+}
+
+// ---------------------------------------------------------------------------
+// T4 — Fused SDPA fallback boundary test.
+//
+// When seqlen_k == 8193, the code should fall back from fused kernel to
+// per-head MPS GEMM.  Verify correct results at the boundary.
+// ---------------------------------------------------------------------------
+
+static void test_fused_fallback_boundary() {
+  std::printf("\n--- T4: fused SDPA fallback boundary (sk=8193) ---\n");
+
+  const int B=1, SQ=1, SK=8193, NH=2, NHK=2, HD=32;
+  const float scale = 1.f / std::sqrt(float(HD));
+  const int q_n  = B*SQ*NH*HD;
+  const int kv_n = B*SK*NHK*HD;
+
+  std::mt19937 rng(77);
+  std::uniform_real_distribution<float> dist(-0.3f, 0.3f);
+  std::vector<float> qf(q_n), kf(kv_n), vf(kv_n);
+  for (auto& x : qf)  x = dist(rng);
+  for (auto& x : kf)  x = dist(rng);
+  for (auto& x : vf)  x = dist(rng);
+
+  float err = run_sdpa<float>(qf.data(), kf.data(), vf.data(),
+                               B, SQ, SK, NH, NHK, HD, scale, false);
+  std::printf("  max abs err = %.2e\n", err);
+  CHECK("float32 decode sq=1 sk=8193 (fallback boundary): err < 1e-3", err < 1e-3f);
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -397,6 +571,9 @@ int main() {
     test_float16();
     test_bfloat16();
     test_cross_attention_and_decode();
+    test_large_sk_decode();
+    test_beam_decode();
+    test_fused_fallback_boundary();
   } catch (const std::exception& e) {
     std::printf("EXCEPTION: %s\n", e.what());
     return 1;

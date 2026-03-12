@@ -120,11 +120,12 @@ namespace ctranslate2 {
         rotary_interleaved = _rotary_embeddings->get_interleave();
       }
 
-      // init output
       StorageView context(dtype, device);
-      ops::FlashAttention fl_attn_ops(_queries_scale, _sliding_window);
-      fl_attn_ops(queries_proj, keys_proj, values_proj, context, cached_keys, cached_values, attention,
-                  return_normalized_attention, rotary_cos, rotary_sin, rotary_interleaved, nullptr/*alibli*/, offset);
+      ops::FlashAttention(_queries_scale, _sliding_window)(
+          queries_proj, keys_proj, values_proj, context,
+          cached_keys, cached_values, attention,
+          return_normalized_attention, rotary_cos, rotary_sin,
+          rotary_interleaved, /*alibi=*/nullptr, offset);
 
       if (prefilling && cached_keys && cached_keys->shape()[_cache_time_dim] > _sliding_window) {
         // set only last sliding_window tokens to cached_keys and cached_values after computing attention

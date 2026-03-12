@@ -834,8 +834,10 @@ namespace ctranslate2 {
     template void sdpa_metal<bfloat16_t>(
         const bfloat16_t*, const bfloat16_t*, const bfloat16_t*, bfloat16_t*,
         dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
-    // TYPE_DISPATCH in flash_attention_metal.mm generates branches for all types;
-    // instantiate the int branches so the linker finds them (they throw at runtime).
+    // TYPE_DISPATCH in flash_attention_metal.mm generates branches for all types.
+    // These int instantiations satisfy the linker but throw at runtime — SDPA only
+    // supports float/float16/bfloat16.  Changing this would require modifying the
+    // TYPE_DISPATCH macro infrastructure, which is shared across all ops.
     template void sdpa_metal<int8_t>(
         const int8_t*, const int8_t*, const int8_t*, int8_t*,
         dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);

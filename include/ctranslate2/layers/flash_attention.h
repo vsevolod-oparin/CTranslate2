@@ -47,6 +47,10 @@ namespace ctranslate2 {
                                 dim_t beam_size = 1);
 
       const dim_t _cache_time_dim;
+      // KV cache growth chunk size: allocate 512 extra positions at a time to
+      // amortise reallocation cost during autoregressive decoding.  512 balances
+      // memory waste (~512 × num_heads_k × head_dim × 2 × sizeof(T) per grow)
+      // against realloc frequency for typical max_length ≤ 2048.
       static constexpr dim_t _offset_free_space{512};
     };
   }

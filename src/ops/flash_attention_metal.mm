@@ -196,21 +196,16 @@ namespace ctranslate2 {
           T*       v_cache = cached_values->data<T>();
           const T* v_new   = values.data<T>();
 
-          // Three KV-cache update paths:
+          // Two KV-cache update paths:
           //
           // (A) CPU path (bf16 with need_rope):
           //     commit_and_wait → CPU RoPE on Q/K → CPU memcpy to cache.
           //     BF16 uses synchronous MPSGraph for SDPA anyway, so the
           //     commit cost is unavoidable.
           //
-          // (B) GPU blit path (f32 with force_layer_rope, need_rope=false):
+          // (B) GPU blit path (f32/f16 with force_layer_rope, need_rope=false):
           //     No CPU access needed — RoPE already applied by the layer's GPU
           //     RotaryEmbeddings kernel.  Encode-only blit_copy for K/V cache.
-          //
-          // (C) GPU RoPE + blit path (f16 with need_rope):
-          //     M12.18: GPU decode_rope_metal (WAR race fixed with threadgroup
-          //     scratch) applies RoPE on Q/K, then blit_copy writes K/V to cache.
-          //     All encode-only — zero commits from attention.
 
           if (need_rope) {
             // --- Path (A): CPU RoPE + CPU memcpy ---

@@ -1812,6 +1812,7 @@ namespace ctranslate2 {
   namespace metal {
     void clear_gemm_cache() {
       clear_mps_gemm_cache();
+      clear_sdpa_gemm_cache();  // P1: also clear SDPA's local cache
     }
   }  // namespace metal
 

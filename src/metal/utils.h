@@ -66,6 +66,9 @@ namespace ctranslate2 {
     // Called from MetalAllocator::clear_cache() to prevent unbounded growth.
     void clear_gemm_cache();
 
+    // Release cached SDPA MPSMatrixMultiplication objects (P1 cache).
+    void clear_sdpa_gemm_cache();
+
     // Allocator memory stats (bytes).
     size_t pool_bytes();   // Cached but unused (reclaimable via clear_cache).
     size_t live_bytes();   // Currently in use by StorageView/tensors.

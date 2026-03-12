@@ -79,6 +79,90 @@ static void dispatch_causal_mask(T* scores,
 }
 
 // ---------------------------------------------------------------------------
+// P2: Cached rowBytesForColumns — avoids ObjC message send per call.
+// Same pattern as primitives_gemm.mm (M12.2).
+// ---------------------------------------------------------------------------
+
+static NSUInteger sdpa_cached_row_bytes(NSUInteger cols, MPSDataType dtype) {
+  struct Key {
+    NSUInteger cols;
+    MPSDataType dtype;
+    bool operator==(const Key& o) const { return cols == o.cols && dtype == o.dtype; }
+  };
+  struct KeyHash {
+    size_t operator()(const Key& k) const {
+      return std::hash<NSUInteger>()(k.cols) ^ (std::hash<uint32_t>()(k.dtype) << 16);
+    }
+  };
+  static std::unordered_map<Key, NSUInteger, KeyHash> cache;
+
+  Key key{cols, dtype};
+  auto it = cache.find(key);
+  if (it != cache.end()) return it->second;
+
+  NSUInteger rb;
+  @autoreleasepool {
+    rb = [MPSMatrixDescriptor rowBytesForColumns:cols dataType:dtype];
+  }
+  cache[key] = rb;
+  return rb;
+}
+
+// ---------------------------------------------------------------------------
+// P1: Cached MPSMatrixMultiplication — avoids ~15µs alloc+init per call.
+// Same pattern as primitives_gemm.mm (M11.27).  SDPA only uses trans_a=false
+// and beta=0, so the key is simpler.
+// ---------------------------------------------------------------------------
+
+struct SdpaGemmKey {
+  bool transpose_b;
+  NSUInteger m, n, k;
+  uint64_t alpha_bits;
+
+  bool operator==(const SdpaGemmKey& o) const {
+    return transpose_b == o.transpose_b && m == o.m && n == o.n && k == o.k
+        && alpha_bits == o.alpha_bits;
+  }
+};
+
+struct SdpaGemmKeyHash {
+  size_t operator()(const SdpaGemmKey& key) const {
+    size_t h = 14695981039346656037ULL;
+    h ^= std::hash<bool>()(key.transpose_b); h *= 1099511628211ULL;
+    h ^= std::hash<NSUInteger>()(key.m);     h *= 1099511628211ULL;
+    h ^= std::hash<NSUInteger>()(key.n);     h *= 1099511628211ULL;
+    h ^= std::hash<NSUInteger>()(key.k);     h *= 1099511628211ULL;
+    h ^= std::hash<uint64_t>()(key.alpha_bits); h *= 1099511628211ULL;
+    return h;
+  }
+};
+
+static std::unordered_map<SdpaGemmKey, MPSMatrixMultiplication*, SdpaGemmKeyHash> g_sdpa_gemm_cache;
+
+static MPSMatrixMultiplication* get_cached_sdpa_gemm(
+    bool transpose_b, NSUInteger m, NSUInteger n, NSUInteger k, double alpha) {
+  uint64_t alpha_bits;
+  std::memcpy(&alpha_bits, &alpha, sizeof(double));
+  SdpaGemmKey key{transpose_b, m, n, k, alpha_bits};
+
+  auto it = g_sdpa_gemm_cache.find(key);
+  if (it != g_sdpa_gemm_cache.end()) return it->second;
+
+  id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+  MPSMatrixMultiplication* op =
+      [[MPSMatrixMultiplication alloc] initWithDevice:dev
+                                         transposeLeft:NO
+                                        transposeRight:(BOOL)transpose_b
+                                           resultRows:m
+                                        resultColumns:n
+                                      interiorColumns:k
+                                                alpha:alpha
+                                                 beta:0.0];
+  g_sdpa_gemm_cache[key] = op;
+  return op;
+}
+
+// ---------------------------------------------------------------------------
 // MPS GEMM — FP32 / FP16 only (encode-only, handles non-contiguous strides)
 //
 // Computes C = alpha * A * B^(trans_b).
@@ -120,12 +204,10 @@ static void sdpa_mps_gemm(bool trans_b,
   const NSUInteger nat_rb_b = static_cast<NSUInteger>(ct2_u32(ldb)) * elem;
   const NSUInteger nat_rb_c = static_cast<NSUInteger>(ct2_u32(ldc)) * elem;
 
-  NSUInteger mps_rb_a, mps_rb_b, mps_rb_c;
-  @autoreleasepool {
-    mps_rb_a = [MPSMatrixDescriptor rowBytesForColumns:cols_a dataType:dtype];
-    mps_rb_b = [MPSMatrixDescriptor rowBytesForColumns:cols_b dataType:dtype];
-    mps_rb_c = [MPSMatrixDescriptor rowBytesForColumns:cols_c dataType:dtype];
-  }
+  // P2: Use cached rowBytesForColumns (avoids ObjC message send per call).
+  const NSUInteger mps_rb_a = sdpa_cached_row_bytes(cols_a, dtype);
+  const NSUInteger mps_rb_b = sdpa_cached_row_bytes(cols_b, dtype);
+  const NSUInteger mps_rb_c = sdpa_cached_row_bytes(cols_c, dtype);
 
   const bool pad_a = (nat_rb_a < mps_rb_a);
   const bool pad_b = (nat_rb_b < mps_rb_b);
@@ -192,21 +274,14 @@ static void sdpa_mps_gemm(bool trans_b,
     MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
     MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
     MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
-    id<MTLDevice> dev = ctranslate2::metal::get_metal_device();
+    // P1: Use cached MPSMatrixMultiplication (saves ~15µs alloc per call).
     MPSMatrixMultiplication* gemm_op =
-        [[MPSMatrixMultiplication alloc] initWithDevice:dev
-                                           transposeLeft:NO
-                                          transposeRight:(BOOL)trans_b
-                                             resultRows:(NSUInteger)m
-                                          resultColumns:(NSUInteger)n
-                                        interiorColumns:(NSUInteger)k
-                                                  alpha:(double)alpha
-                                                   beta:0.0];
+        get_cached_sdpa_gemm(trans_b, (NSUInteger)m, (NSUInteger)n, (NSUInteger)k, (double)alpha);
     [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
     [matA release];
     [matB release];
     [matC release];
-    [gemm_op release];
+    // gemm_op is cached — do NOT release.
   }
 
   // If C required padding: flush, then unpack the padded temp back to c.
@@ -380,11 +455,7 @@ static void sdpa_head_mps(const T* q_row0, const T* k_row0,
   // written softmax output rather than the stale Q@K^T values.
   // For typical seqlen_k >= 8 (float32) / >= 16 (float16) this is a no-op.
   {
-    NSUInteger mps_min;
-    @autoreleasepool {
-      mps_min = [MPSMatrixDescriptor rowBytesForColumns:(NSUInteger)seqlen_k
-                                              dataType:SdpaMPSDtype<T>::v];
-    }
+    NSUInteger mps_min = sdpa_cached_row_bytes((NSUInteger)seqlen_k, SdpaMPSDtype<T>::v);
     if ((NSUInteger)seqlen_k * sizeof(T) < mps_min) {
       CT2_COMMIT_AND_WAIT();
     }
@@ -774,6 +845,12 @@ namespace ctranslate2 {
     template void sdpa_metal<int32_t>(
         const int32_t*, const int32_t*, const int32_t*, int32_t*,
         dim_t, dim_t, dim_t, dim_t, dim_t, dim_t, float, bool, dim_t, dim_t);
+
+    void clear_sdpa_gemm_cache() {
+      for (auto& [key, op] : g_sdpa_gemm_cache)
+        [op release];
+      g_sdpa_gemm_cache.clear();
+    }
 
   }  // namespace metal
 }  // namespace ctranslate2

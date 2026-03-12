@@ -1107,11 +1107,17 @@ kernel void FNAME(                                                           \
     device const TYPE* v_base = V + kv_b * p.kv_batch_stride + hk * p.head_dim; \
     device TYPE*       out_h  = out + b * p.q_row_elems + h * p.head_dim;    \
                                                                              \
-    /* Step 1: scores = scale * Q · K^T */                                   \
+    /* Step 1: scores = scale * Q · K^T  (float4-vectorized dot product) */   \
+    const uint hd4 = p.head_dim / 4;                                         \
+    const uint hd_tail = hd4 * 4;                                            \
     for (uint j = tid; j < p.seqlen_k; j += tg_size) {                      \
-        float dot = 0.0f;                                                    \
+        float4 acc4 = float4(0.0f);                                          \
         device const TYPE* k_row = k_base + j * p.kv_row_elems;             \
-        for (uint d = 0; d < p.head_dim; ++d)                               \
+        for (uint i = 0; i < hd4; ++i)                                       \
+            acc4 += float4(q_h[i*4], q_h[i*4+1], q_h[i*4+2], q_h[i*4+3])   \
+                  * float4(k_row[i*4], k_row[i*4+1], k_row[i*4+2], k_row[i*4+3]); \
+        float dot = acc4.x + acc4.y + acc4.z + acc4.w;                       \
+        for (uint d = hd_tail; d < p.head_dim; ++d)                          \
             dot += float(q_h[d]) * float(k_row[d]);                          \
         tg_scores[j] = dot * p.scale;                                        \
     }                                                                        \
@@ -1149,10 +1155,21 @@ kernel void FNAME(                                                           \
         tg_scores[j] *= inv_sum;                                             \
     threadgroup_barrier(mem_flags::mem_threadgroup);                          \
                                                                              \
-    /* Step 3: out = prob @ V */                                             \
+    /* Step 3: out = prob @ V  (float4-vectorized output accumulation) */     \
     for (uint d = tid; d < p.head_dim; d += tg_size) {                      \
         float acc = 0.0f;                                                    \
-        for (uint j = 0; j < p.seqlen_k; ++j)                               \
+        const uint j4 = p.seqlen_k / 4;                                     \
+        for (uint jj = 0; jj < j4; ++jj) {                                  \
+            const uint j0 = jj * 4;                                          \
+            float4 s4 = float4(tg_scores[j0], tg_scores[j0+1],              \
+                               tg_scores[j0+2], tg_scores[j0+3]);           \
+            float4 v4 = float4(v_base[ j0    * p.kv_row_elems + d],         \
+                               v_base[(j0+1) * p.kv_row_elems + d],         \
+                               v_base[(j0+2) * p.kv_row_elems + d],         \
+                               v_base[(j0+3) * p.kv_row_elems + d]);        \
+            acc += dot(s4, v4);                                              \
+        }                                                                    \
+        for (uint j = j4 * 4; j < p.seqlen_k; ++j)                          \
             acc += tg_scores[j] * float(v_base[j * p.kv_row_elems + d]);     \
         out_h[d] = TYPE(acc);                                                \
     }                                                                        \

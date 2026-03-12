@@ -46,12 +46,14 @@ static id<MTLComputePipelineState> get_sdpa_pso(const char* name) {
 
 // Encode the causal mask into the scores buffer (one thread per element).
 //   scores layout: [seqlen_q, seqlen_k] contiguous.
-//   Sets scores[row*seqlen_k + col] = large_neg  when  col > row.
-//   (offset == 0 for M6.1; the MSL kernel takes it as a uniform)
+//   Sets scores[row*seqlen_k + col] = large_neg  when  col > row + causal_offset.
+//   H3: causal_offset is a parameter for future chunk-prefill support.
+//   Currently always 0 (full prefill), but parameterized to avoid hardcoding.
 template <typename T>
 static void dispatch_causal_mask(T* scores,
                                   ctranslate2::dim_t seqlen_q,
-                                  ctranslate2::dim_t seqlen_k) {
+                                  ctranslate2::dim_t seqlen_k,
+                                  uint32_t causal_offset = 0u) {
   if (seqlen_q == 0 || seqlen_k == 0) {
     return;
   }
@@ -60,7 +62,7 @@ static void dispatch_causal_mask(T* scores,
   id<MTLComputePipelineState> pso = get_sdpa_pso(kname);
   const ctranslate2::dim_t total = seqlen_q * seqlen_k;
   uint32_t sk     = ct2_u32(seqlen_k);
-  uint32_t offset = 0u;
+  uint32_t offset = causal_offset;
   id<MTLComputeCommandEncoder> enc =
       ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
@@ -351,6 +353,11 @@ static void sdpa_head_mps(const T* q_row0, const T* k_row0,
   MetalTempBuf scores_buf(static_cast<size_t>(seqlen_q) * seqlen_k * sizeof(T));
   T* scores = scores_buf.as<T>();
 
+  // H2: Protect scores buffer from premature pool reuse.  The MetalTempBuf
+  // destructor returns it to the pool when this function exits, but the
+  // encode-only GPU work (GEMM → mask → softmax → GEMM) hasn't executed yet.
+  ctranslate2::metal::protect_buffer_by_base(scores);
+
   // Step 1: scores = scale * Q[b,h] @ K[b,hk]^T   (encode-only MPS GEMM)
   sdpa_mps_gemm<T>(/*trans_b=*/true,
                    seqlen_q, seqlen_k, head_dim, scale,
@@ -529,6 +536,11 @@ static void dispatch_fused_sdpa_decode(
   id<MTLBuffer> buf_k = ctranslate2::metal_buffer_for_ptr(k, &off_k);
   id<MTLBuffer> buf_v = ctranslate2::metal_buffer_for_ptr(v, &off_v);
   id<MTLBuffer> buf_o = ctranslate2::metal_buffer_for_ptr(output, &off_o);
+
+  // H1: Protect input buffers from premature reuse (encode-only dispatch).
+  ctranslate2::metal::protect_buffer_by_base([buf_q contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_k contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_v contents]);
 
   id<MTLComputeCommandEncoder> enc =
       ctranslate2::metal::create_compute_encoder();

@@ -54,6 +54,27 @@ using namespace metal;
       uint gid [[thread_position_in_grid]])                              \
   { y[gid] = a op x[gid]; }
 
+// --- M14.3: f32-promoted variants for half (float16) -----------------------
+//   Promotes operands to float32 for computation, casts result back to half.
+//   Prevents rounding error accumulation across ~500+ elementwise ops per
+//   forward pass (residual connections, bias adds, scaling).
+//   Performance: memory-bound ops, f32 ALU cost is effectively free.
+#define DEFINE_BINARY_F32(name, op, T)                                  \
+  kernel void name##_##T(                                               \
+      device const T* a [[buffer(0)]],                                  \
+      device const T* b [[buffer(1)]],                                  \
+      device       T* c [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { c[gid] = (T)((float)a[gid] op (float)b[gid]); }
+
+#define DEFINE_SCALAR_F32(name, op, T)                                  \
+  kernel void name##_scalar_##T(                                        \
+      device const T* x [[buffer(0)]],                                  \
+      constant     T& a [[buffer(1)]],                                  \
+      device       T* y [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { y[gid] = (T)((float)a op (float)x[gid]); }
+
 #define DEFINE_ALL(T)          \
   DEFINE_BINARY(add, +, T)    \
   DEFINE_BINARY(sub, -, T)    \
@@ -61,8 +82,16 @@ using namespace metal;
   DEFINE_SCALAR(add, +, T)    \
   DEFINE_SCALAR(mul, *, T)
 
+// M14.3: half uses f32-promoted variants; other types use native.
+#define DEFINE_ALL_F32(T)          \
+  DEFINE_BINARY_F32(add, +, T)    \
+  DEFINE_BINARY_F32(sub, -, T)    \
+  DEFINE_BINARY_F32(mul, *, T)    \
+  DEFINE_SCALAR_F32(add, +, T)    \
+  DEFINE_SCALAR_F32(mul, *, T)
+
 DEFINE_ALL(float)
-DEFINE_ALL(half)
+DEFINE_ALL_F32(half)
 DEFINE_ALL(int)
 DEFINE_ALL(short)
 DEFINE_ALL(char)
@@ -300,14 +329,50 @@ kernel void name##_block_broadcast_##T(                                  \
     uint gid [[thread_position_in_grid]])                                 \
 { c[gid] = a[(gid / block) % a_size] op b[gid]; }
 
+// --- M14.3: f32-promoted broadcast variants for half -------------------------
+#define DEFINE_BATCH_BROADCAST_F32(name, op, T)                          \
+kernel void name##_batch_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& a_size [[buffer(3)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[gid % a_size] op (float)b[gid]); }
+
+#define DEFINE_DEPTH_BROADCAST_F32(name, op, T)                          \
+kernel void name##_depth_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& depth [[buffer(3)]],                                 \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[gid / depth] op (float)b[gid]); }
+
+#define DEFINE_BLOCK_BROADCAST_F32(name, op, T)                          \
+kernel void name##_block_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& block  [[buffer(3)]],                                \
+    constant  uint& a_size [[buffer(4)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[(gid / block) % a_size] op (float)b[gid]); }
+
 #define DEFINE_BROADCAST_OPS(T)       \
   DEFINE_BATCH_BROADCAST(add, +, T)   \
   DEFINE_DEPTH_BROADCAST(add, +, T)   \
   DEFINE_BLOCK_BROADCAST(add, +, T)   \
   DEFINE_BATCH_BROADCAST(mul, *, T)
 
+// M14.3: half uses f32-promoted broadcast; other types use native.
+#define DEFINE_BROADCAST_OPS_F32(T)       \
+  DEFINE_BATCH_BROADCAST_F32(add, +, T)   \
+  DEFINE_DEPTH_BROADCAST_F32(add, +, T)   \
+  DEFINE_BLOCK_BROADCAST_F32(add, +, T)   \
+  DEFINE_BATCH_BROADCAST_F32(mul, *, T)
+
 DEFINE_BROADCAST_OPS(float)
-DEFINE_BROADCAST_OPS(half)
+DEFINE_BROADCAST_OPS_F32(half)
 DEFINE_BROADCAST_OPS(int)
 DEFINE_BROADCAST_OPS(short)
 DEFINE_BROADCAST_OPS(char)
@@ -1057,127 +1122,6 @@ kernel void causal_mask_bfloat(
         scores[gid] = bfloat(-1e9f);
     }
 }
-// ---------------------------------------------------------------------------
-// Fused SDPA decode kernel (seqlen_q == 1).
-//
-// One threadgroup per (batch, head).  Computes in-threadgroup:
-//   score[j] = scale * dot(Q_h, K_hk[j])    j in [0, seqlen_k)
-//   prob     = softmax(score)
-//   out_h[d] = sum_j prob[j] * V_hk[j, d]
-//
-// Replaces per-head MPS GEMM loop (2 GEMMs × num_heads per layer).
-// Threadgroup memory: seqlen_k × sizeof(T) (set from host).
-// Max sk: 32768/sizeof(float) = 8192 (tg_scores always uses float regardless of T).
-// Dispatch: threadgroups(batch, num_heads, 1), threads(256, 1, 1).
-// ---------------------------------------------------------------------------
-
-struct FusedSdpaDecodeParams {
-    uint heads_per_kv;    // num_heads / num_heads_k
-    uint head_dim;
-    uint seqlen_k;
-    float scale;
-    uint q_row_elems;     // num_heads * head_dim
-    uint kv_row_elems;    // num_heads_k * head_dim
-    uint kv_batch_stride; // elements between K/V batches
-    uint beam_size;       // K/V batch = b / beam_size
-};
-
-#define DEFINE_FUSED_SDPA_DECODE(TYPE, FNAME)                                \
-kernel void FNAME(                                                           \
-    device const TYPE* Q   [[buffer(0)]],                                    \
-    device const TYPE* K   [[buffer(1)]],                                    \
-    device const TYPE* V   [[buffer(2)]],                                    \
-    device TYPE*       out [[buffer(3)]],                                    \
-    constant FusedSdpaDecodeParams& p [[buffer(4)]],                         \
-    threadgroup float* tg_scores  [[threadgroup(0)]],                        \
-    threadgroup float* tg_reduce [[threadgroup(1)]],                        \
-    uint3 tgid3  [[threadgroup_position_in_grid]],                            \
-    uint3 tid3   [[thread_position_in_threadgroup]],                          \
-    uint3 tgsz3  [[threads_per_threadgroup]])                               \
-{                                                                            \
-    const uint b  = tgid3.x;                                                 \
-    const uint h  = tgid3.y;                                                 \
-    const uint tid = tid3.x;                                                 \
-    const uint tg_size = tgsz3.x;                                            \
-    const uint hk = h / p.heads_per_kv;                                      \
-                                                                             \
-    const uint kv_b = b / p.beam_size;                                       \
-    device const TYPE* q_h    = Q + b * p.q_row_elems + h * p.head_dim;      \
-    device const TYPE* k_base = K + kv_b * p.kv_batch_stride + hk * p.head_dim; \
-    device const TYPE* v_base = V + kv_b * p.kv_batch_stride + hk * p.head_dim; \
-    device TYPE*       out_h  = out + b * p.q_row_elems + h * p.head_dim;    \
-                                                                             \
-    /* Step 1: scores = scale * Q · K^T  (float4-vectorized dot product) */   \
-    const uint hd4 = p.head_dim / 4;                                         \
-    const uint hd_tail = hd4 * 4;                                            \
-    for (uint j = tid; j < p.seqlen_k; j += tg_size) {                      \
-        float4 acc4 = float4(0.0f);                                          \
-        device const TYPE* k_row = k_base + j * p.kv_row_elems;             \
-        for (uint i = 0; i < hd4; ++i)                                       \
-            acc4 += float4(q_h[i*4], q_h[i*4+1], q_h[i*4+2], q_h[i*4+3])   \
-                  * float4(k_row[i*4], k_row[i*4+1], k_row[i*4+2], k_row[i*4+3]); \
-        float dot = acc4.x + acc4.y + acc4.z + acc4.w;                       \
-        for (uint d = hd_tail; d < p.head_dim; ++d)                          \
-            dot += float(q_h[d]) * float(k_row[d]);                          \
-        tg_scores[j] = dot * p.scale;                                        \
-    }                                                                        \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
-                                                                             \
-    /* Step 2: Softmax — parallel max reduction */                           \
-    float local_val = -1e30f;                                                \
-    for (uint j = tid; j < p.seqlen_k; j += tg_size)                        \
-        local_val = max(local_val, tg_scores[j]);                            \
-    tg_reduce[tid] = local_val;                                              \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
-    for (uint s = tg_size / 2; s > 0; s >>= 1) {                            \
-        if (tid < s) tg_reduce[tid] = max(tg_reduce[tid], tg_reduce[tid+s]);\
-        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
-    }                                                                        \
-    float max_val = tg_reduce[0];                                            \
-                                                                             \
-    /* Exp + sum */                                                          \
-    float local_sum = 0.0f;                                                  \
-    for (uint j = tid; j < p.seqlen_k; j += tg_size) {                      \
-        float e = exp(tg_scores[j] - max_val);                               \
-        tg_scores[j] = e;                                                    \
-        local_sum += e;                                                      \
-    }                                                                        \
-    tg_reduce[tid] = local_sum;                                              \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
-    for (uint s = tg_size / 2; s > 0; s >>= 1) {                            \
-        if (tid < s) tg_reduce[tid] += tg_reduce[tid + s];                   \
-        threadgroup_barrier(mem_flags::mem_threadgroup);                      \
-    }                                                                        \
-    float inv_sum = 1.0f / tg_reduce[0];                                     \
-                                                                             \
-    /* Normalize probabilities */                                            \
-    for (uint j = tid; j < p.seqlen_k; j += tg_size)                        \
-        tg_scores[j] *= inv_sum;                                             \
-    threadgroup_barrier(mem_flags::mem_threadgroup);                          \
-                                                                             \
-    /* Step 3: out = prob @ V  (float4-vectorized output accumulation) */     \
-    for (uint d = tid; d < p.head_dim; d += tg_size) {                      \
-        float acc = 0.0f;                                                    \
-        const uint j4 = p.seqlen_k / 4;                                     \
-        for (uint jj = 0; jj < j4; ++jj) {                                  \
-            const uint j0 = jj * 4;                                          \
-            float4 s4 = float4(tg_scores[j0], tg_scores[j0+1],              \
-                               tg_scores[j0+2], tg_scores[j0+3]);           \
-            float4 v4 = float4(v_base[ j0    * p.kv_row_elems + d],         \
-                               v_base[(j0+1) * p.kv_row_elems + d],         \
-                               v_base[(j0+2) * p.kv_row_elems + d],         \
-                               v_base[(j0+3) * p.kv_row_elems + d]);        \
-            acc += dot(s4, v4);                                              \
-        }                                                                    \
-        for (uint j = j4 * 4; j < p.seqlen_k; ++j)                          \
-            acc += tg_scores[j] * float(v_base[j * p.kv_row_elems + d]);     \
-        out_h[d] = TYPE(acc);                                                \
-    }                                                                        \
-}
-
-DEFINE_FUSED_SDPA_DECODE(float, fused_sdpa_decode_float)
-DEFINE_FUSED_SDPA_DECODE(half,  fused_sdpa_decode_half)
-
 )msl";
 
 // Source: src/metal/kernels/conv1d.metal

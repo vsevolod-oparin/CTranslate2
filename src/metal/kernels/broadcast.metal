@@ -77,14 +77,50 @@ kernel void name##_block_broadcast_##T(                                  \
     uint gid [[thread_position_in_grid]])                                 \
 { c[gid] = a[(gid / block) % a_size] op b[gid]; }
 
+// --- M14.3: f32-promoted broadcast variants for half -------------------------
+#define DEFINE_BATCH_BROADCAST_F32(name, op, T)                          \
+kernel void name##_batch_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& a_size [[buffer(3)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[gid % a_size] op (float)b[gid]); }
+
+#define DEFINE_DEPTH_BROADCAST_F32(name, op, T)                          \
+kernel void name##_depth_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& depth [[buffer(3)]],                                 \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[gid / depth] op (float)b[gid]); }
+
+#define DEFINE_BLOCK_BROADCAST_F32(name, op, T)                          \
+kernel void name##_block_broadcast_##T(                                  \
+    device const T* a    [[buffer(0)]],                                  \
+    device const T* b    [[buffer(1)]],                                  \
+    device       T* c    [[buffer(2)]],                                  \
+    constant  uint& block  [[buffer(3)]],                                \
+    constant  uint& a_size [[buffer(4)]],                                \
+    uint gid [[thread_position_in_grid]])                                 \
+{ c[gid] = (T)((float)a[(gid / block) % a_size] op (float)b[gid]); }
+
 #define DEFINE_BROADCAST_OPS(T)       \
   DEFINE_BATCH_BROADCAST(add, +, T)   \
   DEFINE_DEPTH_BROADCAST(add, +, T)   \
   DEFINE_BLOCK_BROADCAST(add, +, T)   \
   DEFINE_BATCH_BROADCAST(mul, *, T)
 
+// M14.3: half uses f32-promoted broadcast; other types use native.
+#define DEFINE_BROADCAST_OPS_F32(T)       \
+  DEFINE_BATCH_BROADCAST_F32(add, +, T)   \
+  DEFINE_DEPTH_BROADCAST_F32(add, +, T)   \
+  DEFINE_BLOCK_BROADCAST_F32(add, +, T)   \
+  DEFINE_BATCH_BROADCAST_F32(mul, *, T)
+
 DEFINE_BROADCAST_OPS(float)
-DEFINE_BROADCAST_OPS(half)
+DEFINE_BROADCAST_OPS_F32(half)
 DEFINE_BROADCAST_OPS(int)
 DEFINE_BROADCAST_OPS(short)
 DEFINE_BROADCAST_OPS(char)

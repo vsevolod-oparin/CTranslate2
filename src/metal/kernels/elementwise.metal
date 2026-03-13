@@ -41,6 +41,27 @@ using namespace metal;
       uint gid [[thread_position_in_grid]])                              \
   { y[gid] = a op x[gid]; }
 
+// --- M14.3: f32-promoted variants for half (float16) -----------------------
+//   Promotes operands to float32 for computation, casts result back to half.
+//   Prevents rounding error accumulation across ~500+ elementwise ops per
+//   forward pass (residual connections, bias adds, scaling).
+//   Performance: memory-bound ops, f32 ALU cost is effectively free.
+#define DEFINE_BINARY_F32(name, op, T)                                  \
+  kernel void name##_##T(                                               \
+      device const T* a [[buffer(0)]],                                  \
+      device const T* b [[buffer(1)]],                                  \
+      device       T* c [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { c[gid] = (T)((float)a[gid] op (float)b[gid]); }
+
+#define DEFINE_SCALAR_F32(name, op, T)                                  \
+  kernel void name##_scalar_##T(                                        \
+      device const T* x [[buffer(0)]],                                  \
+      constant     T& a [[buffer(1)]],                                  \
+      device       T* y [[buffer(2)]],                                  \
+      uint gid [[thread_position_in_grid]])                              \
+  { y[gid] = (T)((float)a op (float)x[gid]); }
+
 #define DEFINE_ALL(T)          \
   DEFINE_BINARY(add, +, T)    \
   DEFINE_BINARY(sub, -, T)    \
@@ -48,8 +69,16 @@ using namespace metal;
   DEFINE_SCALAR(add, +, T)    \
   DEFINE_SCALAR(mul, *, T)
 
+// M14.3: half uses f32-promoted variants; other types use native.
+#define DEFINE_ALL_F32(T)          \
+  DEFINE_BINARY_F32(add, +, T)    \
+  DEFINE_BINARY_F32(sub, -, T)    \
+  DEFINE_BINARY_F32(mul, *, T)    \
+  DEFINE_SCALAR_F32(add, +, T)    \
+  DEFINE_SCALAR_F32(mul, *, T)
+
 DEFINE_ALL(float)
-DEFINE_ALL(half)
+DEFINE_ALL_F32(half)
 DEFINE_ALL(int)
 DEFINE_ALL(short)
 DEFINE_ALL(char)

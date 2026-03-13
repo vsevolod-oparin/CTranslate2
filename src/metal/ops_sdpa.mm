@@ -194,6 +194,25 @@ extern void encode_float32_to_half(
 
 namespace {  // reopen anonymous namespace
 
+// ---------------------------------------------------------------------------
+// M14.2: Per-thread f32 temp buffer cache for SDPA f16 promoted GEMM.
+// Separate from main GEMM cache since SDPA has different matrix sizes.
+// ---------------------------------------------------------------------------
+struct SdpaF16TempCache {
+  id<MTLBuffer> buf[3] = {nil, nil, nil};   // A, B, C temps
+  NSUInteger    cap[3] = {0, 0, 0};
+
+  id<MTLBuffer> get(int idx, NSUInteger bytes) {
+    if (bytes <= cap[idx]) return buf[idx];
+    if (buf[idx]) [buf[idx] release];
+    buf[idx] = alloc_temp_buffer(bytes);
+    cap[idx] = [buf[idx] length];
+    return buf[idx];
+  }
+};
+
+static thread_local SdpaF16TempCache _sdpa_f16_temp_cache;
+
 template <typename T>
 static void sdpa_mps_gemm(bool trans_b,
                             ctranslate2::dim_t m,
@@ -207,117 +226,204 @@ static void sdpa_mps_gemm(bool trans_b,
     return;
   }
 
-  // -----------------------------------------------------------------------
-  // M13: Use native MPS GEMM for all types (float32, float16).
-  // For SDPA, K = head_dim (typically 64), well below the K >= 512
-  // threshold where MPS float16 accumulation causes precision issues.
-  // -----------------------------------------------------------------------
-  const MPSDataType dtype = SdpaMPSDtype<T>::v;
-  constexpr NSUInteger elem = sizeof(T);
+  if constexpr (std::is_same_v<T, ctranslate2::float16_t>) {
+    // -------------------------------------------------------------------
+    // M14.2: Float16 SDPA GEMM with f32 accumulation.
+    //
+    // Matches CUDA Tensor Core behavior: f16 inputs → f32 accum → f16 output.
+    // Three-phase encode-only pipeline (zero CPU/GPU syncs):
+    //   1. GPU half→f32 conversion
+    //   2. MPS f32 GEMM (hardware-optimized, f32 accumulation)
+    //   3. GPU f32→half conversion
+    // -------------------------------------------------------------------
+    const NSUInteger rows_a = (NSUInteger)m, cols_a = (NSUInteger)k;
+    const NSUInteger rows_b = trans_b ? (NSUInteger)n : (NSUInteger)k;
+    const NSUInteger cols_b = trans_b ? (NSUInteger)k : (NSUInteger)n;
 
-  const NSUInteger rows_a = (NSUInteger)m, cols_a = (NSUInteger)k;
-  const NSUInteger rows_b = trans_b ? (NSUInteger)n : (NSUInteger)k;
-  const NSUInteger cols_b = trans_b ? (NSUInteger)k : (NSUInteger)n;
-  const NSUInteger rows_c = (NSUInteger)m, cols_c = (NSUInteger)n;
+    // MPS row-byte alignment for float32 matrices.
+    const NSUInteger mps_rb_a = sdpa_cached_row_bytes(cols_a, MPSDataTypeFloat32);
+    const NSUInteger mps_rb_b = sdpa_cached_row_bytes(cols_b, MPSDataTypeFloat32);
+    const NSUInteger mps_rb_c = sdpa_cached_row_bytes((NSUInteger)n, MPSDataTypeFloat32);
 
-  const NSUInteger nat_rb_a = static_cast<NSUInteger>(ct2_u32(lda)) * elem;
-  const NSUInteger nat_rb_b = static_cast<NSUInteger>(ct2_u32(ldb)) * elem;
-  const NSUInteger nat_rb_c = static_cast<NSUInteger>(ct2_u32(ldc)) * elem;
+    const NSUInteger rb_a = std::max((NSUInteger)lda * sizeof(float), mps_rb_a);
+    const NSUInteger rb_b = std::max((NSUInteger)ldb * sizeof(float), mps_rb_b);
+    const NSUInteger rb_c = std::max((NSUInteger)n   * sizeof(float), mps_rb_c);
 
-  // P2: Use cached rowBytesForColumns (avoids ObjC message send per call).
-  const NSUInteger mps_rb_a = sdpa_cached_row_bytes(cols_a, dtype);
-  const NSUInteger mps_rb_b = sdpa_cached_row_bytes(cols_b, dtype);
-  const NSUInteger mps_rb_c = sdpa_cached_row_bytes(cols_c, dtype);
+    // Per-thread f32 temp buffers (reused across GEMM calls).
+    id<MTLBuffer> tmp_a = _sdpa_f16_temp_cache.get(0, rows_a * rb_a);
+    id<MTLBuffer> tmp_b = _sdpa_f16_temp_cache.get(1, rows_b * rb_b);
+    id<MTLBuffer> tmp_c = _sdpa_f16_temp_cache.get(2, (NSUInteger)m * rb_c);
 
-  const bool pad_a = (nat_rb_a < mps_rb_a);
-  const bool pad_b = (nat_rb_b < mps_rb_b);
-  const bool pad_c = (nat_rb_c < mps_rb_c);
+    // Resolve input half buffers.
+    NSUInteger off_a = 0, off_b = 0;
+    id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+    id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
 
-  id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
-  NSUInteger off_a = 0, off_b = 0, off_c = 0;
-  id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;
+    // Protect input half buffers from premature reuse.
+    ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+    ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
 
-  if (pad_a) {
-    tmp_a = alloc_temp_buffer(rows_a * mps_rb_a);
-    auto* dst = static_cast<uint8_t*>([tmp_a contents]);
-    const auto* src = reinterpret_cast<const uint8_t*>(a);
-    for (NSUInteger r = 0; r < rows_a; ++r) {
-      std::memcpy(dst + r * mps_rb_a, src + r * nat_rb_a, nat_rb_a);
+    // Phase 1: GPU half→f32 conversion (encode-only).
+    encode_half_to_float32(buf_a, off_a, (NSUInteger)lda,
+                            tmp_a, 0, rb_a / sizeof(float),
+                            ct2_u32(rows_a), ct2_u32(cols_a));
+    encode_half_to_float32(buf_b, off_b, (NSUInteger)ldb,
+                            tmp_b, 0, rb_b / sizeof(float),
+                            ct2_u32(rows_b), ct2_u32(cols_b));
+
+    // Phase 2: MPS f32 GEMM (encode-only, hardware-optimized).
+    id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+    @autoreleasepool {
+      MPSMatrixDescriptor* descA =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
+                                                columns:cols_a
+                                               rowBytes:rb_a
+                                               dataType:MPSDataTypeFloat32];
+      MPSMatrixDescriptor* descB =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
+                                                columns:cols_b
+                                               rowBytes:rb_b
+                                               dataType:MPSDataTypeFloat32];
+      MPSMatrixDescriptor* descC =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:(NSUInteger)m
+                                                columns:(NSUInteger)n
+                                               rowBytes:rb_c
+                                               dataType:MPSDataTypeFloat32];
+      MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:tmp_a offset:0 descriptor:descA];
+      MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:tmp_b offset:0 descriptor:descB];
+      MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:tmp_c offset:0 descriptor:descC];
+
+      MPSMatrixMultiplication* gemm_op =
+          get_cached_sdpa_gemm(trans_b, (NSUInteger)m, (NSUInteger)n, (NSUInteger)k, (double)alpha);
+      [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+      [matA release];
+      [matB release];
+      [matC release];
     }
-    buf_a = tmp_a;
-  } else {
-    buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
-  }
 
-  if (pad_b) {
-    tmp_b = alloc_temp_buffer(rows_b * mps_rb_b);
-    auto* dst = static_cast<uint8_t*>([tmp_b contents]);
-    const auto* src = reinterpret_cast<const uint8_t*>(b);
-    for (NSUInteger r = 0; r < rows_b; ++r) {
-      std::memcpy(dst + r * mps_rb_b, src + r * nat_rb_b, nat_rb_b);
+    // Phase 3: GPU f32→half conversion (encode-only).
+    NSUInteger off_c = 0;
+    id<MTLBuffer> buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+    encode_float32_to_half(tmp_c, 0, rb_c / sizeof(float),
+                            buf_c, off_c, (NSUInteger)ldc,
+                            ct2_u32(m), ct2_u32(n));
+
+    // Protect output buffer from premature reuse.
+    ctranslate2::metal::protect_buffer_by_base([buf_c contents]);
+
+    // Temp buffers owned by _sdpa_f16_temp_cache — NOT released here.
+
+  } else {
+    // -------------------------------------------------------------------
+    // Float32 path: native MPS GEMM (already f32 accumulation).
+    // -------------------------------------------------------------------
+    const MPSDataType dtype = SdpaMPSDtype<T>::v;
+    constexpr NSUInteger elem = sizeof(T);
+
+    const NSUInteger rows_a = (NSUInteger)m, cols_a = (NSUInteger)k;
+    const NSUInteger rows_b = trans_b ? (NSUInteger)n : (NSUInteger)k;
+    const NSUInteger cols_b = trans_b ? (NSUInteger)k : (NSUInteger)n;
+    const NSUInteger rows_c = (NSUInteger)m, cols_c = (NSUInteger)n;
+
+    const NSUInteger nat_rb_a = static_cast<NSUInteger>(ct2_u32(lda)) * elem;
+    const NSUInteger nat_rb_b = static_cast<NSUInteger>(ct2_u32(ldb)) * elem;
+    const NSUInteger nat_rb_c = static_cast<NSUInteger>(ct2_u32(ldc)) * elem;
+
+    // P2: Use cached rowBytesForColumns (avoids ObjC message send per call).
+    const NSUInteger mps_rb_a = sdpa_cached_row_bytes(cols_a, dtype);
+    const NSUInteger mps_rb_b = sdpa_cached_row_bytes(cols_b, dtype);
+    const NSUInteger mps_rb_c = sdpa_cached_row_bytes(cols_c, dtype);
+
+    const bool pad_a = (nat_rb_a < mps_rb_a);
+    const bool pad_b = (nat_rb_b < mps_rb_b);
+    const bool pad_c = (nat_rb_c < mps_rb_c);
+
+    id<MTLBuffer> buf_a = nil, buf_b = nil, buf_c = nil;
+    NSUInteger off_a = 0, off_b = 0, off_c = 0;
+    id<MTLBuffer> tmp_a = nil, tmp_b = nil, tmp_c = nil;
+
+    if (pad_a) {
+      tmp_a = alloc_temp_buffer(rows_a * mps_rb_a);
+      auto* dst = static_cast<uint8_t*>([tmp_a contents]);
+      const auto* src = reinterpret_cast<const uint8_t*>(a);
+      for (NSUInteger r = 0; r < rows_a; ++r) {
+        std::memcpy(dst + r * mps_rb_a, src + r * nat_rb_a, nat_rb_a);
+      }
+      buf_a = tmp_a;
+    } else {
+      buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
     }
-    buf_b = tmp_b;
-  } else {
-    buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
-  }
 
-  if (pad_c) {
-    tmp_c = alloc_temp_buffer(rows_c * mps_rb_c);
-    std::memset([tmp_c contents], 0, rows_c * mps_rb_c);
-    buf_c = tmp_c;
-  } else {
-    buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
-  }
-
-  const NSUInteger rb_a = pad_a ? mps_rb_a : nat_rb_a;
-  const NSUInteger rb_b = pad_b ? mps_rb_b : nat_rb_b;
-  const NSUInteger rb_c = pad_c ? mps_rb_c : nat_rb_c;
-
-  // Fetch command buffer BEFORE @autoreleasepool (avoids use-after-free).
-  id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
-  @autoreleasepool {
-    MPSMatrixDescriptor* descA =
-        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
-                                              columns:cols_a
-                                             rowBytes:rb_a
-                                             dataType:dtype];
-    MPSMatrixDescriptor* descB =
-        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
-                                              columns:cols_b
-                                             rowBytes:rb_b
-                                             dataType:dtype];
-    MPSMatrixDescriptor* descC =
-        [MPSMatrixDescriptor matrixDescriptorWithRows:rows_c
-                                              columns:cols_c
-                                             rowBytes:rb_c
-                                             dataType:dtype];
-    MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
-    MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
-    MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
-    // P1: Use cached MPSMatrixMultiplication (saves ~15µs alloc per call).
-    MPSMatrixMultiplication* gemm_op =
-        get_cached_sdpa_gemm(trans_b, (NSUInteger)m, (NSUInteger)n, (NSUInteger)k, (double)alpha);
-    [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
-    [matA release];
-    [matB release];
-    [matC release];
-    // gemm_op is cached — do NOT release.
-  }
-
-  // If C required padding: flush, then unpack the padded temp back to c.
-  if (pad_c) {
-    CT2_COMMIT_AND_WAIT();
-    const auto* src = static_cast<const uint8_t*>([tmp_c contents]);
-    auto* dst = reinterpret_cast<uint8_t*>(c);
-    for (NSUInteger r = 0; r < rows_c; ++r) {
-      std::memcpy(dst + r * nat_rb_c, src + r * mps_rb_c, nat_rb_c);
+    if (pad_b) {
+      tmp_b = alloc_temp_buffer(rows_b * mps_rb_b);
+      auto* dst = static_cast<uint8_t*>([tmp_b contents]);
+      const auto* src = reinterpret_cast<const uint8_t*>(b);
+      for (NSUInteger r = 0; r < rows_b; ++r) {
+        std::memcpy(dst + r * mps_rb_b, src + r * nat_rb_b, nat_rb_b);
+      }
+      buf_b = tmp_b;
+    } else {
+      buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
     }
-  }
 
-  // Release temp buffers (command buffer retains them until GPU completes).
-  if (tmp_a) [tmp_a release];
-  if (tmp_b) [tmp_b release];
-  if (tmp_c) [tmp_c release];
+    if (pad_c) {
+      tmp_c = alloc_temp_buffer(rows_c * mps_rb_c);
+      std::memset([tmp_c contents], 0, rows_c * mps_rb_c);
+      buf_c = tmp_c;
+    } else {
+      buf_c = ctranslate2::metal_buffer_for_ptr(c, &off_c);
+    }
+
+    const NSUInteger rb_a = pad_a ? mps_rb_a : nat_rb_a;
+    const NSUInteger rb_b = pad_b ? mps_rb_b : nat_rb_b;
+    const NSUInteger rb_c = pad_c ? mps_rb_c : nat_rb_c;
+
+    // Fetch command buffer BEFORE @autoreleasepool (avoids use-after-free).
+    id<MTLCommandBuffer> cmd = ctranslate2::metal::get_current_command_buffer();
+    @autoreleasepool {
+      MPSMatrixDescriptor* descA =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:rows_a
+                                                columns:cols_a
+                                               rowBytes:rb_a
+                                               dataType:dtype];
+      MPSMatrixDescriptor* descB =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:rows_b
+                                                columns:cols_b
+                                               rowBytes:rb_b
+                                               dataType:dtype];
+      MPSMatrixDescriptor* descC =
+          [MPSMatrixDescriptor matrixDescriptorWithRows:rows_c
+                                                columns:cols_c
+                                               rowBytes:rb_c
+                                               dataType:dtype];
+      MPSMatrix* matA = [[MPSMatrix alloc] initWithBuffer:buf_a offset:off_a descriptor:descA];
+      MPSMatrix* matB = [[MPSMatrix alloc] initWithBuffer:buf_b offset:off_b descriptor:descB];
+      MPSMatrix* matC = [[MPSMatrix alloc] initWithBuffer:buf_c offset:off_c descriptor:descC];
+      // P1: Use cached MPSMatrixMultiplication (saves ~15µs alloc per call).
+      MPSMatrixMultiplication* gemm_op =
+          get_cached_sdpa_gemm(trans_b, (NSUInteger)m, (NSUInteger)n, (NSUInteger)k, (double)alpha);
+      [gemm_op encodeToCommandBuffer:cmd leftMatrix:matA rightMatrix:matB resultMatrix:matC];
+      [matA release];
+      [matB release];
+      [matC release];
+      // gemm_op is cached — do NOT release.
+    }
+
+    // If C required padding: flush, then unpack the padded temp back to c.
+    if (pad_c) {
+      CT2_COMMIT_AND_WAIT();
+      const auto* src = static_cast<const uint8_t*>([tmp_c contents]);
+      auto* dst = reinterpret_cast<uint8_t*>(c);
+      for (NSUInteger r = 0; r < rows_c; ++r) {
+        std::memcpy(dst + r * nat_rb_c, src + r * mps_rb_c, nat_rb_c);
+      }
+    }
+
+    // Release temp buffers (command buffer retains them until GPU completes).
+    if (tmp_a) [tmp_a release];
+    if (tmp_b) [tmp_b release];
+    if (tmp_c) [tmp_c release];
+  }
 }
 
 // ---------------------------------------------------------------------------

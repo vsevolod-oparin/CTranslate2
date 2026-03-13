@@ -1,10 +1,19 @@
 // src/ops/awq_metal.mm
 //
-// Metal stubs for AWQ (activation-aware weight quantization) ops.
+// Metal linker stubs for AWQ (activation-aware weight quantization) ops.
 //
-// Metal has no native AWQ (INT4-weight quantized) kernel.
-// These stubs satisfy the linker; at runtime, the AWQ path is only triggered
-// when running AWQ-quantized models, which are not yet supported on Metal.
+// AWQ packs weights as INT4 (4-bit) inside INT32 containers and dequantizes
+// on-the-fly during GEMM.  MPS has no native INT4 matmul, so implementing
+// this would require a custom MSL dequant+GEMM kernel.
+//
+// These stubs satisfy the linker so the multi-backend build compiles.
+// At runtime, AWQ is only triggered when loading AWQ-quantized models
+// (e.g. ct2-opus-mt-en-de-awq), which are not yet supported on Metal.
+// Attempting to load one will throw here.
+//
+// To implement: write an MSL kernel that unpacks INT4→FP16/FP32 and
+// fuses with GEMM, similar to CUDA's gemm_awq_kernel.  Low priority —
+// INT8 quantization (already supported) covers most Metal use cases.
 
 #include "ctranslate2/ops/awq/dequantize_awq.h"
 #include "ctranslate2/ops/awq/gemm.h"

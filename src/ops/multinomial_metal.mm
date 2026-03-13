@@ -28,7 +28,7 @@ namespace {
 // ---------------------------------------------------------------------------
 // MSL kernel for multinomial sampling (sample_size == 1).
 //
-// Supports float and half inputs via template specialization at PSO level.
+// Supports float, half, and bfloat inputs via template specialization at PSO level.
 // Output is always int (mapped to int32_t on host).
 //
 // Parameters:
@@ -185,6 +185,74 @@ kernel void multinomial_half(
         output[batch_id] = best;
     }
 }
+
+#if __HAVE_BFLOAT__
+kernel void multinomial_bfloat(
+    device const bfloat*  probs      [[buffer(0)]],
+    device       int*     output     [[buffer(1)]],
+    constant     uint&    class_size [[buffer(2)]],
+    device const float*   rand_vals  [[buffer(3)]],
+    uint  batch_id [[threadgroup_position_in_grid]],
+    uint  tid      [[thread_index_in_threadgroup]],
+    uint  tgs      [[threads_per_threadgroup]])
+{
+    device const bfloat* row = probs + batch_id * class_size;
+    float threshold = rand_vals[batch_id];
+
+    uint chunk = (class_size + tgs - 1) / tgs;
+    uint start = tid * chunk;
+    uint end   = min(start + chunk, class_size);
+
+    float local_sum = 0.0f;
+    for (uint i = start; i < end; ++i)
+        local_sum += float(row[i]);
+
+    threadgroup float shared_sums[1025];
+    shared_sums[tid] = local_sum;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        float total = 0.0f;
+        for (uint i = 0; i < tgs; ++i)
+            total += shared_sums[i];
+        float running = 0.0f;
+        for (uint i = 0; i < tgs; ++i) {
+            float val = shared_sums[i];
+            shared_sums[i] = running;
+            running += val;
+        }
+        shared_sums[tgs] = threshold * total;
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    float my_offset = shared_sums[tid];
+    float scaled_threshold = shared_sums[tgs];
+
+    float cumsum = my_offset;
+    int my_result = -1;
+    for (uint i = start; i < end; ++i) {
+        cumsum += float(row[i]);
+        if (cumsum > scaled_threshold) {
+            my_result = int(i);
+            break;
+        }
+    }
+
+    threadgroup int shared_results[1024];
+    shared_results[tid] = my_result;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    if (tid == 0) {
+        int best = int(class_size) - 1;
+        for (uint i = 0; i < tgs; ++i) {
+            int r = shared_results[i];
+            if (r >= 0 && r < best)
+                best = r;
+        }
+        output[batch_id] = best;
+    }
+}
+#endif
 )";
 
 // ---------------------------------------------------------------------------
@@ -219,9 +287,10 @@ static void dispatch_multinomial_gpu(const T* probs,
     kernel_name = "multinomial_float";
   } else if constexpr (std::is_same_v<T, ctranslate2::float16_t>) {
     kernel_name = "multinomial_half";
+  } else if constexpr (std::is_same_v<T, ctranslate2::bfloat16_t>) {
+    kernel_name = "multinomial_bfloat";
   } else {
-    // BF16 falls back to CPU path (bfloat in MSL requires separate kernel).
-    throw std::runtime_error("GPU multinomial: bfloat16 not supported");
+    throw std::runtime_error("GPU multinomial: unsupported type");
   }
 
   id<MTLComputePipelineState> pso = get_multinomial_pso(kernel_name);
@@ -266,11 +335,10 @@ namespace ctranslate2 {
       const dim_t class_size  = input.dim(-1);
       const dim_t batch_size  = input.size() / class_size;
 
-      // M11.20: GPU path for sample_size == 1 (the only case used by
+      // M11.20 / M15.3: GPU path for sample_size == 1 (the only case used by
       // RandomSampler).  Encode-only — zero commit_and_wait() syncs.
-      if (_sample_size == 1
-          && !std::is_same_v<T, bfloat16_t>
-          && batch_size > 0) {
+      // Supports float, float16, and bfloat16 (bfloat kernel added in M15.3).
+      if (_sample_size == 1 && batch_size > 0) {
         // Generate random values on CPU.
         auto& generator = get_random_generator();
         std::uniform_real_distribution<float> dist(0.0f, 1.0f);

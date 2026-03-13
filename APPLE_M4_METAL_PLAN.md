@@ -1293,20 +1293,20 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - `src/metal/primitives.mm` is a comment-only breadcrumb left after the M4 split into `primitives_{memory,elementwise,reduction,gemm,transpose,beam_search}.mm`. Not in `METAL_SOURCES`, never compiled. Delete it.
 - Files: `src/metal/primitives.mm`
 
-**15.2 Move inline MSL kernels to auto-generation pipeline**
-- `kAlibiMSL` (inline in `ops_alibi.mm`) and `kRotaryMSL`/`kDecodeRopeMSL` (inline in `ops_rotary.mm`) bypass the `tools/gen_msl_strings.py` auto-generation system used by all other 14 kernels.
-- Extract to `src/metal/kernels/alibi.metal` and `src/metal/kernels/rotary.metal`.
-- Add to `gen_msl_strings.py` so they appear in `msl_strings.h`.
-- Remove inline raw strings from the `.mm` files and reference the generated constants.
-- Files: `src/metal/ops_alibi.mm`, `src/metal/ops_rotary.mm`, `src/metal/kernels/`, `tools/gen_msl_strings.py`, `src/metal/msl_strings.h`
+**15.2 ~~Move inline MSL kernels to auto-generation pipeline~~ DROPPED**
+- Alibi/Rotary kernels are small, stable, and self-contained. Inline pattern works. Churn for zero gain.
 
-**15.3 Add BF16 multinomial MSL kernel**
-- `multinomial_metal.mm` has GPU kernels for `float` and `half` but falls back to CPU (`CT2_COMMIT_AND_WAIT` + `std::discrete_distribution`) for `bfloat16_t`. Add a `multinomial_bfloat` MSL kernel (trivial copy of `multinomial_half` with `bfloat` type) to eliminate the CPU fallback and pipeline stall.
+**15.3 Add BF16 multinomial MSL kernel** ✅
+- Added `multinomial_bfloat` MSL kernel (guarded by `#if __HAVE_BFLOAT__`).
+- Wired into `dispatch_multinomial_gpu` type dispatch.
+- Removed BF16 exclusion from GPU path — all 3 types (f32, f16, bf16) now use encode-only GPU kernel for `sample_size == 1`.
+- CPU fallback remains for `sample_size > 1` only (GumbelMax path, rare).
 - Files: `src/ops/multinomial_metal.mm`
 
-**15.4 Document unsupported Metal features in code**
-- Add a top-of-file comment block to `src/ops/awq_metal.mm` and `src/ops/nccl_metal.mm` explaining why these are linker stubs and when (if ever) they might be implemented.
-- Verify existing comments are accurate (AWQ: "not yet implemented", NCCL: "single-device backend").
+**15.4 Document unsupported Metal features in code** ✅
+- Expanded top-of-file comments in both files: what the ops do, why they're stubs, and implementation outlook.
+- AWQ: low priority (needs custom INT4 dequant+GEMM MSL kernel; INT8 covers most use cases).
+- NCCL: permanent limitation (Apple Silicon is single-GPU; no multi-device path exists).
 - Files: `src/ops/awq_metal.mm`, `src/ops/nccl_metal.mm`
 
 **15.5 Audit CPU-only Metal ops for GPU opportunity**

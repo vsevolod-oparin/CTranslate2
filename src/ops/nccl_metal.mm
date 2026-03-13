@@ -1,9 +1,14 @@
 // src/ops/nccl_metal.mm
 //
-// Metal stubs for distributed NCCL ops (ReduceAll, GatherAll).
+// Metal linker stubs for distributed collective ops (ReduceAll, GatherAll).
 //
-// Metal is a single-device backend; distributed collective ops are not
-// supported.  These stubs satisfy the linker; at runtime they throw if called.
+// Metal is a single-GPU backend — Apple Silicon has one unified GPU, so
+// multi-device collective communication (NCCL/MPI) is not applicable.
+// These stubs satisfy the linker; at runtime they throw if called.
+//
+// Unlike AWQ, this is a permanent architectural limitation, not a missing
+// implementation.  Multi-GPU Apple systems do not exist in the consumer
+// or server space, so there is no path to implementing these.
 
 #include "ctranslate2/ops/nccl_ops.h"
 

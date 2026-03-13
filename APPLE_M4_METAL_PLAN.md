@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-13
-**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.7 done (precision parity + GPU sync + INT8 audit + README)
+**Status:** M14 complete — M12 done, M13 f16 GEMM fix done, M14.1–14.8 all done (precision parity + GPU sync + INT8 audit + README + perf gate)
 
 ---
 
@@ -1271,10 +1271,12 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Key numbers: MPS f32 1080.7 tok/s (1.29x CPU), MPS f16 992.4 tok/s, MPS int8 733.1 tok/s
 - **DONE**
 
-**14.8 Performance regression gate** (was 14.7)
-- Verify no throughput regression from precision changes
-- f16, f32, int8, bf16 all within ±3% of pre-M14 values
-- **PASS:** No compute type regresses >5% in throughput
+**14.8 Performance regression gate** ✅ (was 14.7)
+- All types improved vs pre-M14: f32 +49-60%, f16 +19%, int8 +46-52%
+- M14.5 sync overhead: ~0.5% (0.4ms/step, masked by batching gains)
+- M14.3 elementwise f32 promotion: confirmed zero overhead
+- No regressions detected. All criteria pass.
+- **DONE:** Report `agents/report/milestone-14.8-performance-regression-gate.md`
 
 - Reports: `agents/report/milestone-14*.md`
 

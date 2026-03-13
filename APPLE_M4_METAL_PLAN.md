@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-13
-**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.6 done (precision parity + GPU sync bugs + INT8 audit)
+**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.7 done (precision parity + GPU sync + INT8 audit + README)
 
 ---
 
@@ -1263,10 +1263,13 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - All 3 precision criteria pass. Pipeline audit: no issues found.
 - **DONE:** Report `agents/report/milestone-14.6-int8-precision-audit.md`
 
-**14.7 README benchmark update** (was 14.6)
-- Update README MPS table with current f16 BLEU and notes
-- Update summary text regarding f16 precision characteristics
-- **PASS:** README reflects current understanding
+**14.7 README benchmark update** ✅ (was 14.6)
+- Updated MPS table with fresh benchmark data (best of 2 runs, WMT14 2737 sentences)
+- Added int8_float16 row (770.1 tok/s, 593MB, BLEU=25.60)
+- Removed Transformers comparison (outdated versions) and flash attention rows (fused_sdpa_decode kernel missing)
+- Updated summary: f16 beam=4 BLEU note, recommend beam=6+length_penalty=0.6 for quality parity
+- Key numbers: MPS f32 1080.7 tok/s (1.29x CPU), MPS f16 992.4 tok/s, MPS int8 733.1 tok/s
+- **DONE**
 
 **14.8 Performance regression gate** (was 14.7)
 - Verify no throughput regression from precision changes

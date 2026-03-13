@@ -126,22 +126,19 @@ Executed with CUDA 11 on a [*g5.xlarge*](https://aws.amazon.com/ec2/instance-typ
 | | Tokens per second | Max. memory | BLEU |
 | --- | --- | --- | --- |
 | **OpenNMT-py WMT14 model** | | | |
-| CTranslate2 - CPU float32 (4 threads) | 839.0 | 1279MB | 26.57 |
-| CTranslate2 - MPS float32 | 1027.4 | 1152MB | 26.57 |
-| CTranslate2 - MPS int8 | 739.8 | 621MB | 26.55 |
-| CTranslate2 - MPS float32 (flash) | 419.2 | 1137MB | 26.57 |
+| CTranslate2 - CPU float32 (4 threads) | 1023.5 | 1804MB | 26.57 |
+| CTranslate2 - MPS float32 | 1643.4 | 1193MB | 26.57 |
+| CTranslate2 - MPS float16 | 1611.2 | 1075MB | 26.20 |
+| CTranslate2 - MPS int8 | 1079.7 | 660MB | 26.55 |
+| CTranslate2 - MPS int8 + float16 | 1023.7 | 1107MB | 26.23 |
 | **OPUS-MT model** | | | |
-| Transformers 5.2.0 (PyTorch 2.10.0) - CPU float32 (4 threads) | 276.5 | 2735MB | 27.57 |
-| Transformers 5.2.0 (PyTorch 2.10.0) - MPS float32 | 344.9 | 1525MB | 27.57 |
-| Transformers 5.2.0 (PyTorch 2.10.0) - MPS float16 | 395.0 | 1855MB | 27.55 |
-| CTranslate2 - CPU float32 (4 threads) | 580.6 | 1351MB | 27.65 |
-| CTranslate2 - MPS float32 | 726.6 | 1037MB | 27.65 |
-| CTranslate2 - MPS float16 | 837.2 | 1082MB | 25.52 |
-| CTranslate2 - MPS int8 | 481.1 | 607MB | 27.60 |
-| CTranslate2 - MPS float32 (flash) | 383.2 | 1164MB | 27.65 |
-| CTranslate2 - MPS float16 (flash) | 601.0 | 1905MB | 25.39 |
+| CTranslate2 - CPU float32 (4 threads) | 838.9 | 1650MB | 27.65 |
+| CTranslate2 - MPS float32 | 1080.7 | 1075MB | 27.65 |
+| CTranslate2 - MPS float16 | 992.4 | 939MB | 25.76 |
+| CTranslate2 - MPS int8 | 733.1 | 653MB | 27.57 |
+| CTranslate2 - MPS int8 + float16 | 770.1 | 593MB | 25.60 |
 
-Executed on Apple M4 with Metal Performance Shaders. Beam size 4, best of 2 runs. CPU baselines use 4 threads. CTranslate2 MPS float32 is **2.1x faster** than Transformers MPS with **32% less memory**. MPS float16 is the fastest at 837.2 tok/s with ~2 BLEU loss due to reduced precision. INT8 reduces memory by 41% with negligible BLEU loss. Flash attention preserves quality but is slower for encoder-decoder models (optimized for decoder-only). See the [benchmark scripts](tools/benchmark) for details.
+Executed on Apple M4 with Metal Performance Shaders. Beam size 4, best of 2 runs. CPU baselines use 4 threads with Apple Accelerate. MPS float32 is **1.6x** faster than CPU with **35% less memory**. Float16 delivers near-identical speed to float32 with the OpenNMT model (1611 vs 1643 tok/s, BLEU gap 0.37). The OPUS-MT model shows a larger float16 gap (~2 BLEU at beam=4) due to beam search sensitivity — use `beam_size=6, length_penalty=0.6` for quality parity. INT8 reduces memory by 39% with negligible BLEU loss. See the [benchmark scripts](tools/benchmark) for details.
 
 ## Contributing
 

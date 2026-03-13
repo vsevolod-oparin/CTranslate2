@@ -277,9 +277,8 @@ def main():
     # === OpenNMT-py WMT14 model ===
     opennmt_models = {
         "float32": os.path.join(data_dir, "opennmt-py-wmt14"),
-        # f16 excluded: model's intermediate values overflow f16 range (±65504)
-        # for longer WMT14 sentences, producing garbage output. Model-specific
-        # issue, not a code bug — OPUS-MT f16 works correctly.
+        # f16: use f32 model with runtime cast (same as OPUS-MT pattern)
+        "float16": os.path.join(data_dir, "opennmt-py-wmt14"),
         "int8":    os.path.join(data_dir, "opennmt-py-wmt14-int8"),
     }
     for ct, path in opennmt_models.items():

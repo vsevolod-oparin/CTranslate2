@@ -5,6 +5,14 @@
 // Strategy: commit_and_wait() to flush pending GPU writes, then
 // compute the mean (or sum) in float32 on shared-memory pointers.
 // Mean is float-only on both CPU and Metal.
+//
+// GPU opportunity assessment (M15.5):
+//   Call sites: attention head averaging (transformer.cc, ~10–128 elements reduced)
+//   and Whisper alignment post-processing (whisper.cc, followed by CPU sync + DTW).
+//   Both reduce very small axis sizes (num_heads ≈ 8–16).  A GPU kernel would spend
+//   more time on dispatch overhead (~5 µs) than the CPU loop (~0.1 µs for 8 elements).
+//   Whisper alignment calls synchronize_stream() immediately after, so the pipeline
+//   stall from commit_and_wait() here is masked.  NOT worth a GPU kernel.
 
 #include "ctranslate2/ops/mean.h"
 

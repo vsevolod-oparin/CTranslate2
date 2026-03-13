@@ -5,6 +5,15 @@
 // Strategy: commit_and_wait() to flush pending GPU writes, then
 // apply the sliding median filter on shared-memory pointers using
 // std::nth_element.  MedianFilter is float-only.
+//
+// GPU opportunity assessment (M15.5):
+//   Call site: Whisper alignment only (whisper.cc).  Called once per audio
+//   segment, NOT in the decode loop.  Typical shape: [batch, ~tokens, ~3000 frames],
+//   width=7.  The CPU takes ~6 ms (M7 benchmark).  Immediately followed by
+//   Mean + synchronize_stream + move_to(CPU) for DTW, so the pipeline stall
+//   from commit_and_wait() is fully masked by the subsequent CPU sync.
+//   A GPU bitonic-sort-based median filter is possible but complex for
+//   negligible end-to-end impact.  NOT worth implementing.
 
 #include "ctranslate2/ops/median_filter.h"
 

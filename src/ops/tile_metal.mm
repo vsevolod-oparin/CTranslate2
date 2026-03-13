@@ -6,6 +6,16 @@
 // CPU-side memcpy in a nested outer × num_tiles loop.  Metal buffers
 // use MTLResourceStorageModeShared (unified memory) so no device copy
 // is required.
+//
+// GPU opportunity assessment (M15.5):
+//   Call sites: KV-cache replication for beam expansion (language_model.cc, axis=0,
+//   repeats=batch_size ≈ 2–8) and GQA head replication (attention.cc, axis=2,
+//   repeats=num_heads/num_kv_heads ≈ 4–8).  Both are small repeat counts over
+//   contiguous memory — std::memcpy on unified memory is effectively a DMA at
+//   ~50 GB/s, competitive with a GPU blit.  The commit_and_wait() pipeline stall
+//   is the real cost, but Tile is called infrequently (once per generation init
+//   for KV-cache, once per layer for GQA).  A GPU blit_copy version could avoid
+//   the stall but adds complexity for marginal gain.  Low priority.
 
 #include "ctranslate2/ops/tile.h"
 

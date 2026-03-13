@@ -1309,14 +1309,20 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - NCCL: permanent limitation (Apple Silicon is single-GPU; no multi-device path exists).
 - Files: `src/ops/awq_metal.mm`, `src/ops/nccl_metal.mm`
 
-**15.5 Audit CPU-only Metal ops for GPU opportunity**
-- Five ops use `CT2_COMMIT_AND_WAIT()` + CPU algorithm: Mean, Tile, TopPMask, GumbelMax, MedianFilter.
-- M12.13–M12.17 tested GPU versions of some and rejected them (noise or regressions). Document which were tested and why they were rejected, so future developers don't re-attempt.
-- For any untested ops (Mean, Tile), evaluate whether a GPU kernel would be beneficial given typical tensor sizes. Add a comment with the decision.
+**15.5 Audit CPU-only Metal ops for GPU opportunity** ✅
+- Added "GPU opportunity assessment" comment block to all 5 files with call-site analysis, typical tensor sizes, and decision rationale.
+- **Mean**: reduces ~8–16 elements (num_heads), CPU loop ~0.1 µs — dispatch overhead dominates. NOT worth GPU.
+- **Tile**: small repeat counts (2–8×) over contiguous memory, memcpy competitive with blit. Low priority.
+- **TopPMask**: M12.15 explicitly evaluated and rejected GPU sort. Only used in sampling mode, not beam search.
+- **GumbelMax**: CPU RNG dependency, rarely invoked (num_samples > 1 only), ~50 µs. NOT worth GPU.
+- **MedianFilter**: Whisper alignment only (once per segment), pipeline stall masked by subsequent CPU sync. NOT worth GPU.
 - Files: `src/ops/mean_metal.mm`, `src/ops/tile_metal.mm`, `src/ops/topp_mask_metal.mm`, `src/ops/gumbel_max_metal.mm`, `src/ops/median_filter_metal.mm`
 
-**15.6 RMSNorm residual path stub**
-- `normalization_metal.mm` throws for `use_residual=true`. Check if any model in practice hits this path on Metal. If not, add a comment documenting that this is a known limitation with no current user. If models do use it, flag for future implementation.
+**15.6 RMSNorm residual path stub** ✅
+- **Finding: Gemma, Gemma2, and Gemma3 models set `use_residual=True`** — this IS a real gap.
+- These models will throw `std::invalid_argument` at runtime on Metal.
+- Documented in `normalization_metal.mm` with model names and what a fix requires (fused MSL kernel reading both input and residual buffers).
+- **Flagged for future implementation** — Gemma support on Metal is blocked by this.
 - Files: `src/ops/normalization_metal.mm`
 
 **15.7 Cross-model beam search validation (from M14.4.2 TODO)**

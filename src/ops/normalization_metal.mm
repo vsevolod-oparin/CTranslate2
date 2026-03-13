@@ -72,6 +72,14 @@ namespace ctranslate2 {
 
     // -----------------------------------------------------------------------
     // RMSNorm
+    //
+    // use_residual=true is set by Gemma, Gemma2, and Gemma3 converters
+    // (transformers.py).  These models fuse the residual add into the
+    // normalization: output = RMSNorm(input + residual) * gamma.
+    // The Metal kernel currently does NOT support this fused path —
+    // implementing it would require a new MSL kernel that reads both
+    // the input and residual buffers.  Until then, Gemma models will
+    // throw at runtime on Metal.
     // -----------------------------------------------------------------------
 
     template <Device D, typename T>
@@ -80,7 +88,8 @@ namespace ctranslate2 {
                           StorageView& output) const {
       if (_use_residual)
         throw std::invalid_argument(
-            "Metal RMSNorm: use_residual is not supported on Metal");
+            "Metal RMSNorm: use_residual is not supported on Metal"
+            " (needed by Gemma models — see M15.6)");
       const dim_t depth      = input.dim(-1);
       const dim_t batch_size = input.size() / depth;
       metal::rms_norm_metal<T>(input.data<T>(), gamma.data<T>(), output.data<T>(),

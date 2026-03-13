@@ -7,6 +7,15 @@
 // shared-memory pointers.  GumbelMax is float-only.  The TopK step is
 // dispatched by GumbelMax::operator() via the TopK op (which now has a
 // Metal specialization in topk_metal.mm).
+//
+// GPU opportunity assessment (M15.5):
+//   Call site: RandomSampler::sample() when num_samples > 1 (sampling.cc).
+//   Rarely used — single-sample decoding uses Multinomial instead.
+//   The noise generation requires a CPU RNG (std::uniform_real_distribution)
+//   because GPU random state is non-trivial to manage correctly (seeding,
+//   reproducibility).  The actual compute is O(vocab_size) scalar adds (~32K),
+//   taking ~50 µs on CPU.  NOT worth a GPU kernel — the RNG dependency
+//   forces CPU involvement regardless, and the op is rarely invoked.
 
 #include "ctranslate2/ops/gumbel_max.h"
 

@@ -8,6 +8,15 @@
 //
 // max_num_classes<Device::MPS> returns numeric_limits<dim_t>::max()
 // (same as CPU — no artificial vocabulary limit on Metal).
+//
+// GPU opportunity assessment (M15.5, see also M12.15 report):
+//   Call site: RandomSampler::sample() when sampling_topp < 1.0 (sampling.cc).
+//   NOT invoked during beam search (the primary benchmark).  A GPU version would
+//   need a radix sort + parallel prefix sum over vocab_size (~32K–128K), which is
+//   significant MSL complexity.  M12.15 explicitly evaluated and rejected this:
+//   even in sampling mode, the sort is ~5 ms once per step vs ~10–20 ms GEMM time,
+//   and the encode-only dispatch pattern already amortizes kernel launch costs.
+//   NOT worth implementing unless nucleus sampling becomes a bottleneck.
 
 #include "ctranslate2/ops/topp_mask.h"
 

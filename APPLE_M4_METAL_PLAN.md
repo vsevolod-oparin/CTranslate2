@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-13
-**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.5 done (precision parity + GPU sync bugs fixed)
+**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.6 done (precision parity + GPU sync bugs + INT8 audit)
 
 ---
 
@@ -1256,9 +1256,12 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - **Performance:** ~0.4ms/step overhead (negligible vs ~80ms/step decode time)
 - **DONE:** Report `agents/report/milestone-14.5-logits-processor-sync.md`
 
-**14.6 INT8 precision audit** (was 14.5)
-- Compare INT8 BLEU (27.60) with CPU INT8 — any gap?
-- **PASS:** INT8 precision paths documented; any issues fixed
+**14.6 INT8 precision audit** ✅ (was 14.5)
+- MPS INT8 BLEU=27.55 vs CPU INT8=27.45 (gap=0.10, MPS slightly better)
+- MPS INT8 vs CPU f32: gap=0.09 (negligible quantization loss)
+- INT8_f16 gap=1.86 is from f16 beam degeneration (M14.4), not INT8 precision
+- All 3 precision criteria pass. Pipeline audit: no issues found.
+- **DONE:** Report `agents/report/milestone-14.6-int8-precision-audit.md`
 
 **14.7 README benchmark update** (was 14.6)
 - Update README MPS table with current f16 BLEU and notes

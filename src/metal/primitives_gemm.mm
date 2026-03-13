@@ -1097,15 +1097,15 @@ static void dispatch_f16_gemm(
   if (m == 0 || n == 0 || k == 0) return;
 
   if (m <= kF16DirectThreshold) {
+    // Decode path: custom MSL SIMD kernel with f32 accumulation.
     dispatch_f16_gemm_direct(transpose_a, transpose_b, m, n, k,
                              alpha, a, lda, b, ldb, beta, c, ldc);
   } else {
-    // Use MPS float16 GEMM directly — hardware optimized, same as f32 path
-    // but with float16 data type.  The f16 accumulation precision loss is
-    // acceptable for non-autoregressive passes (encoder, first decode step).
-    dispatch_mps_gemm<ctranslate2::float16_t>(
-        transpose_a, transpose_b, m, n, k,
-        alpha, a, lda, b, ldb, beta, c, ldc);
+    // Encode/prefill path: promote half→f32, run MPS f32 GEMM, demote f32→half.
+    // Matches CUDA Tensor Core behavior (f32 accumulation).  ~1.5x slower than
+    // native MPS f16 GEMM but eliminates the ~5 BLEU loss from f16 accumulation.
+    dispatch_f16_promoted_gemm(transpose_a, transpose_b, m, n, k,
+                               alpha, a, lda, b, ldb, beta, c, ldc);
   }
 }
 
@@ -2043,13 +2043,14 @@ namespace ctranslate2 {
       dispatch_mps_gemm<float>(transpose_a, transpose_b, m, n, k,
                                alpha, a, lda, b, ldb, beta, c, ldc);
     } else if constexpr (std::is_same_v<In, float16_t> && std::is_same_v<Out, float16_t>) {
-      // M13: Direct MPS float16 GEMM — half the memory bandwidth of f32,
-      // giving up to 1.4x single / 1.1x batch speedup.
-      // MPS f16 accumulation precision: slight word-choice differences in
-      // autoregressive decode (7/9 strict CPU-f32 match on OPUS-MT), but
-      // semantically correct translations.  Whisper: 18/18 exact match.
-      dispatch_mps_gemm<float16_t>(transpose_a, transpose_b, m, n, k,
-                                   alpha, a, lda, b, ldb, beta, c, ldc);
+      // M13: Float16 GEMM with float32 accumulation to match CUDA precision.
+      // MPS native f16 GEMM accumulates in f16, causing ~5 BLEU loss on
+      // encoder-decoder models (OPUS-MT) due to precision loss at padding
+      // boundaries.  CUDA Tensor Cores accumulate in f32 by default.
+      //   m <= 32: custom MSL SIMD kernel (f32 accum, decode path)
+      //   m >  32: half→f32 promotion + MPS f32 GEMM + f32→half (encode path)
+      dispatch_f16_gemm(transpose_a, transpose_b, m, n, k,
+                        alpha, a, lda, b, ldb, beta, c, ldc);
     } else if constexpr (std::is_same_v<In, bfloat16_t> && std::is_same_v<Out, bfloat16_t>) {
       dispatch_bf16_gemm(transpose_a, transpose_b, m, n, k,
                          alpha, beta, a, lda, b, ldb, c, ldc);

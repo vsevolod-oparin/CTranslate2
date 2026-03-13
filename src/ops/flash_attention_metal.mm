@@ -246,15 +246,21 @@ namespace ctranslate2 {
               }
             }
           } else {
-            // --- Path (B): GPU blit copy only (f32 force_layer_rope) ---
+            // --- Path (B): CPU memcpy for KV cache update ---
+            // GPU blit_copy caused silent data corruption for batched decoding
+            // due to Metal encoder tracking limits.  Using CPU memcpy with a
+            // commit_and_wait to flush prior GPU writes (QKV projection GEMMs).
+            // The commit cost is amortized across the decode loop and negligible
+            // compared to the SDPA kernel execution time.
+            metal::commit_and_wait();
             const size_t row_bytes = seqlen_new * row_elements * sizeof(T);
             for (dim_t b = 0; b < batch_size; ++b) {
-              void*       kd = k_cache + (b * total_cache  + offset) * row_elements;
-              void*       vd = v_cache + (b * total_cache  + offset) * row_elements;
-              const void* ks = k_new   +  b * seqlen_new * row_elements;
-              const void* vs = v_new   +  b * seqlen_new * row_elements;
-              metal::blit_copy(ks, kd, row_bytes);
-              metal::blit_copy(vs, vd, row_bytes);
+              T*       kd = k_cache + (b * total_cache  + offset) * row_elements;
+              T*       vd = v_cache + (b * total_cache  + offset) * row_elements;
+              const T* ks = k_new   +  b * seqlen_new * row_elements;
+              const T* vs = v_new   +  b * seqlen_new * row_elements;
+              std::memcpy(kd, ks, row_bytes);
+              std::memcpy(vd, vs, row_bytes);
             }
           }
 

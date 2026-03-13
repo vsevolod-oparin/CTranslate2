@@ -13,6 +13,7 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1865 ms, 1549 tokens, 830 tok/s (M12.10, protect_buffer)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1950 ms, 1549 tokens, 794 tok/s (M12.12, ptr cache)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1895 ms, 1549 tokens, 817 tok/s (M12.25, final)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1936 ms, 1549 tokens, 800 tok/s (M13, f16 batch + bug fixes)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
@@ -116,6 +117,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 1467 | 1545, 1490, 1467 | 1544 | 96 | 54% | 1053 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.30x |
 | 15 | 0547660b | 1496 | 1535, 1496, 1528 | 1544 | 96 | 54% | 1032 | M12.25 FlashMHA code review complete (within noise, no OPUS-MT impact) | 1.27x |
 | 16 | a4046a63 | 1479 | 1527, 1479, 1487 | 1544 | 96 | 53% | 1044 | Residency sets (within noise) | 1.31x |
+| 17 | 972abc70 | 1443 | 1516, 1506, 1443 | 1544 | 96 | 56% | 1070 | M13 f16 batch + bug fixes (within noise) | 1.34x |
 
 ## Float16 Results (50 sentences)
 
@@ -137,6 +139,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 1051 | 1103, 1053, 1051 | 1550 | 90 | 41% | 1475 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) | 1.83x |
 | 15 | 0547660b | 1060 | 1120, 1060, 1105 | 1550 | 90 | 41% | 1462 | M12.25 FlashMHA code review complete (within noise) | 1.79x |
 | 16 | a4046a63 | 1049 | 1095, 1051, 1049 | 1550 | 90 | 41% | 1478 | Residency sets (within noise) | 1.81x |
+| 17 | 972abc70 | 1080 | 1131, 1096, 1080 | 1550 | 90 | 42% | 1435 | M13 f16 batch + bug fixes (within noise) | |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -158,6 +161,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 2038 | 2047, 2045, 2038 | 1552 | 97 | 55% | 761 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 | 15 | 0547660b | 2008 | 2054, 2008, 2051 | 1552 | 97 | 56% | 773 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1926 | 1968, 1929, 1926 | 1552 | 97 | 56% | 806 | Residency sets (within noise) |
+| 17 | 972abc70 | 2021 | 2085, 2021, 2026 | 1552 | 97 | 56% | 768 | M13 f16 batch + bug fixes (within noise) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -179,6 +183,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 1769 | 2365, 2009, 1769 | 1547 | 93 | 44% | 875 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 | 15 | 0547660b | 1717 | 1764, 1725, 1717 | 1547 | 93 | 45% | 901 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1793 | 1829, 1793, 1810 | 1547 | 93 | 44% | 863 | Residency sets (within noise) |
+| 17 | 972abc70 | 1820 | 1951, 1909, 1820 | 1547 | 93 | 45% | 850 | M13 f16 batch + bug fixes (within noise) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -200,6 +205,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 1547 | 1606, 1626, 1547 | 1550 | 90 | 41% | 1002 | M12.17 GPU decode RoPE (run variance, no RoPE in OPUS-MT) |
 | 15 | 0547660b | 1061 | 1094, 1061, 1061 | 1550 | 90 | 41% | 1461 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1030 | 1072, 1051, 1030 | 1550 | 90 | 41% | 1505 | Residency sets (within noise) |
+| 17 | 972abc70 | 1108 | 1134, 1108, 1171 | 1550 | 90 | 41% | 1399 | M13 f16 batch + bug fixes (within noise) |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -221,6 +227,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 14 | — | 1760 | 1776, 1760, 1765 | 1547 | 93 | 45% | 879 | M12.17 GPU decode RoPE (within noise, no RoPE in OPUS-MT) |
 | 15 | 0547660b | 1721 | 1795, 1733, 1721 | 1547 | 93 | 45% | 899 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1725 | 1792, 1725, 1741 | 1547 | 93 | 44% | 897 | Residency sets (within noise) |
+| 17 | 972abc70 | 1765 | 1828, 1797, 1765 | 1547 | 93 | 45% | 876 | M13 f16 batch + bug fixes (within noise) |
 
 ---
 
@@ -253,6 +260,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | **M12.24** | FlashMHA code review: MEDIUM perf (P1-P3) | SDPA GEMM cache, cached rowBytes, float4 vectorization (5-24% SDPA decode) |
 | **M12.25** | FlashMHA code review: quality + tests (Q1-Q4, T1-T6) | Dead code removal, magic number docs, 22+16 unit tests, GQA ref bug fix |
 | **M12.26** | Metal Residency Sets (macOS 15+) | Pin model buffers in physical memory; no OPUS-MT impact (within noise) — benefits expected under memory pressure with larger models |
+| **M13** | f16 batching inference + bug fixes | No OPUS-MT translation impact (within noise). M13 code changes (f16 GEMM kernels, flash cross-attention, SDPA flush) do not affect the standard MHA sweep path. |
 
 ---
 

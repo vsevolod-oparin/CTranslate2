@@ -193,7 +193,11 @@ namespace ctranslate2 {
                                                                     pre_norm,
                                                                     /*is_decoder=*/true,
                                                                     /*alibi=*/nullptr,
-                                                                    /*use_flash_cross_attention=*/use_flash_attention))
+                                                                    // Flash cross-attention disabled on MPS: the fused
+                                                                    // SDPA kernel has no length mask, so padding in the
+                                                                    // encoder output gets attended to, causing quality
+                                                                    // degradation for batched inference (batch > 1).
+                                                                    /*use_flash_cross_attention=*/false))
       , _ff(model, scope + "/ffn", pre_norm, activation_type)
       , _external_pre_encoder_attention_layer_norm(build_optional_layer<LayerNorm>(
                                      model, scope + "/external_pre_encoder_attention_layer_norm"))

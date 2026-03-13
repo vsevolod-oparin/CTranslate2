@@ -817,6 +817,16 @@ namespace ctranslate2 {
       const dim_t q_lda  = num_heads   * head_dim;
       const dim_t kv_lda = num_heads_k * head_dim;
 
+      // Periodic flush for f32/f16: each sdpa_head_mps encodes ~4 GPU command
+      // encoders (2 MPS GEMMs + causal_mask + softmax).  Metal's resource
+      // tracking becomes unreliable beyond ~128 encoders per command buffer,
+      // causing silent data corruption (manifests as BLEU degradation for
+      // batch_size > 4 with 8 heads).  Flush every kSdpaFlushInterval heads
+      // to keep encoder count safely under the limit.
+      // BF16 is unaffected — sdpa_bf16_gemm already flushes per GEMM.
+      constexpr dim_t kSdpaFlushInterval = 16;  // ~64 encoders between flushes
+      dim_t sdpa_head_count = 0;
+
       for (dim_t b = 0; b < batch_size; ++b) {
         const dim_t kv_b = b / beam_size;  // K/V batch broadcasting
         const dim_t heads_per_kv = num_heads / num_heads_k;
@@ -832,6 +842,11 @@ namespace ctranslate2 {
             sdpa_head_mps<T>(q_row0, k_row0, v_row0, out_row0,
                               q_lda, kv_lda, seqlen_q, seqlen_k, head_dim,
                               scale, is_causal);
+            ++sdpa_head_count;
+            if (sdpa_head_count >= kSdpaFlushInterval) {
+              CT2_COMMIT_AND_WAIT();
+              sdpa_head_count = 0;
+            }
           } else if constexpr (std::is_same_v<T, bfloat16_t>) {
             sdpa_head_bf16(q_row0, k_row0, v_row0, out_row0,
                             q_lda, kv_lda, seqlen_q, seqlen_k, head_dim,

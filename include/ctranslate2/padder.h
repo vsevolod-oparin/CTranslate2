@@ -11,7 +11,13 @@ namespace ctranslate2 {
   public:
     static inline bool allow_padding_removal(const Device device,
                                              const ComputeType compute_type) {
-      return device == Device::CPU || compute_type != ComputeType::FLOAT16;
+      // Padding removal saves compute by eliminating padding tokens before
+      // the encoder.  Previously disabled for GPU f16 due to precision concerns
+      // with f16 accumulation in GEMM.  Now safe on MPS with f32-accumulation
+      // f16 GEMM (M13), and always safe on CUDA (Tensor Cores use f32 accum).
+      (void)compute_type;
+      (void)device;
+      return true;
     }
 
     // If max_time is negative, it is set to the maximum length.

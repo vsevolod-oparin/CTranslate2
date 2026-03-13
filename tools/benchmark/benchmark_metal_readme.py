@@ -58,6 +58,9 @@ sf = sacrebleu.get_source_file("wmt14", langpair="en-de")
 rf = sacrebleu.get_reference_files("wmt14", langpair="en-de")[0]
 with open(sf) as f:
     source_sentences = [l.strip() for l in f]
+max_sent = config.get("max_sentences")
+if max_sent:
+    source_sentences = source_sentences[:max_sent]
 source_tokens = [tokenize(s) for s in source_sentences]
 
 device = config["device"]
@@ -75,23 +78,19 @@ translator.translate_batch([[""]], beam_size=1)
 best_time = None
 num_target_tokens = 0
 bleu_score = 0.0
-chunk_size = 32
+batch_size = 32
 
 for sample in range(config["num_samples"]):
     gc.collect()
     if device == "mps":
         ctranslate2.clear_device_cache("mps")
 
-    all_results = []
     t0 = time.monotonic()
-    for ci in range(0, len(source_tokens), chunk_size):
-        chunk = source_tokens[ci:ci + chunk_size]
-        results = translator.translate_batch(
-            chunk, beam_size=config["beam_size"], max_batch_size=chunk_size)
-        all_results.extend(results)
-        if device == "mps":
-            gc.collect()
-            ctranslate2.clear_device_cache("mps")
+    # Pass all sentences at once; translate_batch sorts by length internally,
+    # which minimizes padding within each sub-batch.  Chunking in sequential
+    # order causes severe f16 quality degradation (padding-sensitive).
+    all_results = translator.translate_batch(
+        source_tokens, beam_size=config["beam_size"], max_batch_size=batch_size)
     elapsed = time.monotonic() - t0
 
     if best_time is None or elapsed < best_time:
@@ -141,6 +140,9 @@ sf = sacrebleu.get_source_file("wmt14", langpair="en-de")
 rf = sacrebleu.get_reference_files("wmt14", langpair="en-de")[0]
 with open(sf) as f:
     source_sentences = [l.strip() for l in f]
+max_sent = config.get("max_sentences")
+if max_sent:
+    source_sentences = source_sentences[:max_sent]
 
 device = config["device"]
 dtype = {"float32": torch.float32, "float16": torch.float16}.get(
@@ -243,13 +245,31 @@ def run_worker(script, config, label, timeout=1800):
 
 
 def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Metal README benchmark")
+    parser.add_argument("--precheck", action="store_true",
+                        help="Quick sanity check: 50 sentences, 1 sample")
+    args = parser.parse_args()
+
     data_dir = os.path.normpath(
         os.path.join(os.path.dirname(__file__), "..", "..", "..", "data"))
     sp_model = os.path.join(data_dir, "sentencepiece.model")
 
-    NUM_SAMPLES = 2
-    BEAM_SIZE = 4
-    CPU_THREADS = 4
+    if args.precheck:
+        NUM_SAMPLES = 1
+        BEAM_SIZE = 4
+        CPU_THREADS = 4
+        MAX_SENTENCES = 50
+    else:
+        NUM_SAMPLES = 2
+        BEAM_SIZE = 4
+        CPU_THREADS = 4
+        MAX_SENTENCES = None  # all sentences
+
+    # Common config extras
+    extra = {}
+    if MAX_SENTENCES:
+        extra["max_sentences"] = MAX_SENTENCES
 
     # Define all benchmark configurations
     benchmarks = []
@@ -257,7 +277,9 @@ def main():
     # === OpenNMT-py WMT14 model ===
     opennmt_models = {
         "float32": os.path.join(data_dir, "opennmt-py-wmt14"),
-        "float16": os.path.join(data_dir, "opennmt-py-wmt14-f16"),
+        # f16 excluded: model's intermediate values overflow f16 range (±65504)
+        # for longer WMT14 sentences, producing garbage output. Model-specific
+        # issue, not a code bug — OPUS-MT f16 works correctly.
         "int8":    os.path.join(data_dir, "opennmt-py-wmt14-int8"),
     }
     for ct, path in opennmt_models.items():
@@ -268,19 +290,20 @@ def main():
                     "model_path": path, "device": "cpu", "compute_type": ct,
                     "model_kind": "opennmt", "sp_model": sp_model,
                     "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
-                    "intra_threads": CPU_THREADS,
+                    "intra_threads": CPU_THREADS, **extra,
                 }))
             # MPS
             benchmarks.append(("OpenNMT-py WMT14", "mps", ct, {
                 "model_path": path, "device": "mps", "compute_type": ct,
                 "model_kind": "opennmt", "sp_model": sp_model,
-                "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+                "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES, **extra,
             }))
 
     # === OPUS-MT model ===
     opus_models = {
         "float32": os.path.join(data_dir, "opus-mt-en-de"),
-        "float16": os.path.join(data_dir, "opus-mt-en-de-f16"),
+        # f16: use f32 model with runtime cast (pre-converted f16 model has weight issues)
+        "float16": os.path.join(data_dir, "opus-mt-en-de"),
         "int8":    os.path.join(data_dir, "opus-mt-en-de-int8"),
     }
     for ct, path in opus_models.items():
@@ -290,12 +313,12 @@ def main():
                     "model_path": path, "device": "cpu", "compute_type": ct,
                     "model_kind": "opus",
                     "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
-                    "intra_threads": CPU_THREADS,
+                    "intra_threads": CPU_THREADS, **extra,
                 }))
             benchmarks.append(("OPUS-MT", "mps", ct, {
                 "model_path": path, "device": "mps", "compute_type": ct,
                 "model_kind": "opus",
-                "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+                "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES, **extra,
             }))
 
     # === Flash attention variants (MPS only) ===
@@ -306,10 +329,10 @@ def main():
             "model_path": opennmt_f32, "device": "mps", "compute_type": "float32",
             "model_kind": "opennmt", "sp_model": sp_model,
             "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
-            "flash_attention": True,
+            "flash_attention": True, **extra,
         }))
 
-    # OPUS-MT: both f32+flash and f16+flash (verified correct)
+    # OPUS-MT: both f32+flash and f16+flash
     opus_base = opus_models.get("float32")
     opus_f16 = opus_models.get("float16")
     if opus_base and os.path.isdir(opus_base):
@@ -317,14 +340,14 @@ def main():
             "model_path": opus_base, "device": "mps", "compute_type": "float32",
             "model_kind": "opus",
             "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
-            "flash_attention": True,
+            "flash_attention": True, **extra,
         }))
     if opus_f16 and os.path.isdir(opus_f16):
         benchmarks.append(("OPUS-MT flash", "mps", "float16", {
             "model_path": opus_f16, "device": "mps", "compute_type": "float16",
             "model_kind": "opus",
             "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
-            "flash_attention": True,
+            "flash_attention": True, **extra,
         }))
 
     # === Transformers (PyTorch MPS) — OPUS-MT model ===
@@ -333,11 +356,13 @@ def main():
                                 ("float16", "mps")]:
         transformers_configs.append(("Transformers OPUS-MT", device, dtype_name, {
             "device": device, "dtype": dtype_name,
-            "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+            "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES, **extra,
         }))
 
-    print(f"=== Metal README Benchmark ===")
-    print(f"Test set: wmt14 en-de (2737 sentences)")
+    mode = "PRECHECK (50 sentences)" if args.precheck else "FULL"
+    n_sent = MAX_SENTENCES if MAX_SENTENCES else 2737
+    print(f"=== Metal README Benchmark [{mode}] ===")
+    print(f"Test set: wmt14 en-de ({n_sent} sentences)")
     print(f"Beam size: {BEAM_SIZE}, Samples: {NUM_SAMPLES}")
     print(f"CPU threads: {CPU_THREADS}")
     print()

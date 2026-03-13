@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
-**Revised:** 2026-03-12
-**Status:** In progress — M12.1-12.25 done, M12.8 re-evaluated (criterion met: whisper-large-v3 f16 8.25×)
+**Revised:** 2026-03-13
+**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14 (precision parity) planned
 
 ---
 
@@ -1199,6 +1199,109 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 
 ---
 
+### Milestone 14: Metal Float16 Precision Parity
+**Goal:** Close the MPS f16 BLEU gap to match CUDA behavior (zero loss vs f32). Systematic audit and fix of all f16 precision loss sources in the Metal backend.
+**Time:** 2–3 weeks
+**Depends on:** M12 (f32-accumulation GEMM wired in), M13 (custom f16 GEMM kernel)
+
+**Context:** After M13 (f32-accumulation GEMM + padding removal), MPS f16 BLEU = 25.74 vs f32 = 27.65 — a 1.91 gap. CUDA f16 has zero gap (27.90 vs 27.92 OPUS-MT). The GEMM is fixed, but many other operations still compute in native f16, compounding rounding errors across layers.
+
+**Reference data (CUDA, from README GPU table):**
+- OpenNMT-py: f16 BLEU = 26.77, f32 BLEU = 26.77 (0.00 gap)
+- OPUS-MT: f16 BLEU = 27.90, f32 BLEU = 27.92 (0.02 gap)
+
+**Success criterion:** MPS f16 BLEU within 0.5 of f32 on OPUS-MT WMT14 (target: ≥27.15).
+
+---
+
+**14.1 Precision audit: catalog all f16 compute paths** ✅
+- Audited 40+ MSL kernels, 16 Metal .mm files, 16 op dispatch wrappers, 4 layer files
+- **Key finding**: CUDA f16 elementwise ops also run in native f16 yet have zero BLEU loss — elementwise is NOT the primary cause
+- **Primary remaining issue**: SDPA GEMM uses native MPS f16 (bypasses promoted f32 path)
+- **Secondary**: Elementwise/broadcast ops in native f16 (but CUDA evidence suggests marginal impact)
+- **Tertiary**: reduce_sum accumulates in native f16
+- **DONE:** Report `agents/report/milestone-14.1-precision-audit.md`
+
+**14.2 SDPA GEMM f32 accumulation**
+- `ops_sdpa.mm`: The attention GEMM (QK^T and AV products) uses native MPS f16 GEMM
+- Comment says "K = head_dim (64), below K≥512 threshold" — but attention scores feed into softmax where small errors amplify exponentially, and this runs per head × per layer × per step
+- Route SDPA f16 GEMMs through the f32-accumulation path (either promoted or direct kernel)
+- Measure: BLEU change, speed impact (SDPA GEMMs are small: m=seq, n=head_dim, k=head_dim)
+- **PASS:** BLEU improvement measurable; no correctness regression
+
+**14.3 Elementwise f32 promotion for f16**
+- `kernels/elementwise.metal`: Binary operations `a[gid] op b[gid]` run in native f16
+- Residual connections alone: ~100+ additions per forward pass (6 enc × 4 residuals + decoder)
+- Each f16 addition loses ~1 ULP, compounding across the pipeline
+- Fix: promote operands to f32, compute, convert back to f16 in the kernel
+- Alternative: selective promotion only for Add (residual connections), not Mul
+- Measure: BLEU change, speed impact (elementwise is memory-bound, ALU cost minimal)
+- **PASS:** BLEU improvement measurable; throughput regression <5%
+
+**14.4 Broadcast operations f32 promotion**
+- `kernels/broadcast.metal`: `add_batch_broadcast`, `add_depth_broadcast` in native f16
+- Affects bias additions throughout model layers
+- Same fix pattern as 14.3: promote to f32 for computation
+- **PASS:** BLEU improvement measurable
+
+**14.5 Investigate additional hidden f16 paths**
+- Check all remaining Metal code paths not covered by audit:
+  - Type conversion kernels (any implicit truncation?)
+  - Gather/scatter operations (index computation precision)
+  - Beam search scoring (log-prob accumulation)
+  - KV-cache copy operations (any precision loss in cache management?)
+  - Concat/split/slice operations
+- For each: determine if f16 intermediate precision could cause error accumulation
+- **PASS:** All paths documented; any newly-found f16 issues fixed or ticketed
+
+**14.6 Per-operation BLEU impact measurement**
+- Establish reproducible BLEU measurement methodology:
+  - Fixed test: OPUS-MT, WMT14 En→De, 2737 sentences, beam=4, best-of-2
+  - Baseline: current f16 (25.74) and f32 (27.65)
+- Apply fixes from 14.2–14.5 incrementally, measure BLEU after each
+- Produce a table: [fix applied, BLEU, delta, cumulative delta, tok/s, tok/s delta]
+- Goal: attribute the 1.91 gap to specific operations
+- **PASS:** Gap reduced to <0.5 BLEU, or all sources identified and documented
+
+**14.7 INT8 precision audit**
+- INT8 GEMM uses CPU dequant→MPS f32 GEMM→CPU requant path
+- Check: does INT8+f16 output type use f16 accumulation anywhere?
+- Check: dequantize kernel precision (scale/zero-point multiplication)
+- Check: `dispatch_gemv_i8_fused` kernel — accumulation type in MSL
+- Compare INT8 BLEU (27.60) with CPU INT8 — any gap?
+- **PASS:** INT8 precision paths documented; any issues fixed
+
+**14.8 BF16 precision audit**
+- BF16 promoted to f16 on MPS (M12.5) — does this introduce precision loss vs native BF16?
+- Check: BF16→f16 conversion (truncation vs round-to-nearest)
+- Compare: MPS bf16 BLEU vs CPU bf16 BLEU
+- **PASS:** BF16 precision paths documented; any conversion issues fixed
+
+**14.9 Cross-model validation**
+- Run precision-fixed f16 on multiple models to verify generalization:
+  - OPUS-MT (WMT14 En→De) — primary benchmark
+  - OpenNMT-py WMT14 (if f16-safe after M13)
+  - Whisper-base (WER comparison)
+  - TinyLlama (perplexity comparison)
+- **PASS:** All models show f16 within 0.5 of f32 quality metric
+
+**14.10 README benchmark update**
+- Re-run full `benchmark_metal_readme.py` with precision fixes
+- Update README MPS table with new f16 BLEU and tok/s numbers
+- Update summary text (currently says "~2 BLEU loss due to reduced precision")
+- **PASS:** README reflects current f16 precision (target: "negligible BLEU loss")
+
+**14.11 Performance regression gate**
+- After all precision fixes, verify no unacceptable throughput regression:
+  - f16 tok/s must remain ≥80% of pre-fix value
+  - f32, int8, bf16 must be unaffected (±3%)
+- Run full performance sweep (`m12_perf_sweep.py`) and update charts
+- **PASS:** No compute type regresses >20% in throughput
+
+- Reports: `agents/report/milestone-14*.md`
+
+---
+
 ## Revised Dependency and Effort Table
 
 | Milestone | Goal | Time | Depends on |
@@ -1217,7 +1320,8 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 | 11 (Perf) | Command batching, pipeline cache, BF16, profiling | 1–2 weeks | 10 |
 | 12 (Pipeline) | Translation pipeline optimization, BF16/INT8 fix | 2 weeks | 11 |
 | 13 (CI/Docs) | Test parameterization, CI, documentation | 1 week | 12 |
-| **Total** | | **~12–18 weeks** | |
+| 14 (Precision) | Float16 precision parity — close BLEU gap to match CUDA | 2–3 weeks | 12, 13 (f16 GEMM) |
+| **Total** | | **~14–21 weeks** | |
 
 ---
 
@@ -1233,6 +1337,8 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 | Existing `switch(device)` exhaustiveness failures | Medium | Add `Device::METAL` cases with `#ifdef CT2_WITH_METAL` guard in M1 |
 | GitHub Actions macos-14 runner is slow/unavailable | Low | Run expensive tests nightly rather than per-PR |
 | INT8 matmul never available in MPS | Medium | Dequantize-before-GEMM workaround in M9; revisit when Apple adds it |
+| F16 precision loss beyond GEMM | High | M14 systematic audit; MPS has no f32-accumulation option for elementwise ops — must promote in MSL kernels |
+| F16 promotion throughput regression | Medium | Elementwise is memory-bound (ALU cost ~0); SDPA GEMM is small (k=64). Expect <10% regression |
 
 ---
 
@@ -1240,7 +1346,8 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 
 ### Correctness
 - [ ] All ops: Metal result matches CPU within tolerance (float32: 1e-4, float16: 5e-3, INT8: 1%)
-- [ ] seq2seq BLEU within 0.5 of CPU reference
+- [ ] seq2seq BLEU within 0.5 of CPU f32 reference (all compute types including f16)
+- [ ] MPS f16 BLEU within 0.5 of MPS f32 (precision parity with CUDA, M14)
 - [ ] Whisper WER within 1% of CPU reference
 - [ ] All existing CPU tests unaffected (zero regression)
 

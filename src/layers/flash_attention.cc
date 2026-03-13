@@ -148,14 +148,9 @@ namespace ctranslate2 {
       if (_layer_norm && !_pre_norm)
         (*_layer_norm)(output, output);
 
-      // F32 MPS: flush GPU work after each attention layer.  Without a
-      // layer-boundary flush, accumulated MPS GEMM complexity (linear
-      // projections + attention ops across 22 layers) causes non-deterministic
-      // numerical drift that compounds and diverges from the standard path.
-      // The fused SDPA kernel (M12.14) eliminated per-head GEMM drift, but
-      // the linear projection GEMMs still require per-layer barriers.
-      if (dtype == DataType::FLOAT32 && device == Device::MPS)
-        synchronize_stream(device);
+      // Per-layer sync not needed: the cross-attention padding fix
+      // (disabling flash cross-attention) was the actual root cause
+      // of batch quality degradation, not missing synchronization.
 
     }
 

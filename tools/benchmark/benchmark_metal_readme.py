@@ -66,6 +66,7 @@ translator = ctranslate2.Translator(
     device=device,
     compute_type=config["compute_type"],
     intra_threads=config.get("intra_threads", 1),
+    flash_attention=config.get("flash_attention", False),
 )
 
 # Warmup
@@ -297,6 +298,35 @@ def main():
                 "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
             }))
 
+    # === Flash attention variants (MPS only) ===
+    # OpenNMT-py: f32+flash only (f16+flash has known degenerate output issue)
+    opennmt_f32 = opennmt_models.get("float32")
+    if opennmt_f32 and os.path.isdir(opennmt_f32):
+        benchmarks.append(("OpenNMT-py WMT14 flash", "mps", "float32", {
+            "model_path": opennmt_f32, "device": "mps", "compute_type": "float32",
+            "model_kind": "opennmt", "sp_model": sp_model,
+            "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+            "flash_attention": True,
+        }))
+
+    # OPUS-MT: both f32+flash and f16+flash (verified correct)
+    opus_base = opus_models.get("float32")
+    opus_f16 = opus_models.get("float16")
+    if opus_base and os.path.isdir(opus_base):
+        benchmarks.append(("OPUS-MT flash", "mps", "float32", {
+            "model_path": opus_base, "device": "mps", "compute_type": "float32",
+            "model_kind": "opus",
+            "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+            "flash_attention": True,
+        }))
+    if opus_f16 and os.path.isdir(opus_f16):
+        benchmarks.append(("OPUS-MT flash", "mps", "float16", {
+            "model_path": opus_f16, "device": "mps", "compute_type": "float16",
+            "model_kind": "opus",
+            "beam_size": BEAM_SIZE, "num_samples": NUM_SAMPLES,
+            "flash_attention": True,
+        }))
+
     # === Transformers (PyTorch MPS) — OPUS-MT model ===
     transformers_configs = []
     for dtype_name, device in [("float32", "cpu"), ("float32", "mps"),
@@ -353,6 +383,10 @@ def main():
             label = f"CTranslate2 - MPS {ct}"
             print(f"| {label} | {r['tokens_per_sec']:.1f} | "
                   f"{r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
+    r = results.get(("OpenNMT-py WMT14 flash", "mps", "float32", "ct2"))
+    if r:
+        print(f"| CTranslate2 - MPS float32 (flash) | {r['tokens_per_sec']:.1f} | "
+              f"{r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
 
     # OPUS-MT
     print("| **OPUS-MT model** | | | |")
@@ -382,6 +416,11 @@ def main():
         if r:
             label = f"CTranslate2 - MPS {ct}"
             print(f"| {label} | {r['tokens_per_sec']:.1f} | "
+                  f"{r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
+    for ct in ["float32", "float16"]:
+        r = results.get(("OPUS-MT flash", "mps", ct, "ct2"))
+        if r:
+            print(f"| CTranslate2 - MPS {ct} (flash) | {r['tokens_per_sec']:.1f} | "
                   f"{r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
 
     print()

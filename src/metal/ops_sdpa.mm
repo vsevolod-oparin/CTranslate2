@@ -179,6 +179,21 @@ template <> struct SdpaMPSDtype<float>
 template <> struct SdpaMPSDtype<ctranslate2::float16_t>
 { static const MPSDataType v = MPSDataTypeFloat16; };
 
+}  // close anonymous namespace for extern declarations
+
+// Forward declarations for f16 conversion kernels (defined in primitives_gemm.mm).
+// These are encode-only GPU kernels — no CPU/GPU sync required.
+extern void encode_half_to_float32(
+    id<MTLBuffer> src_buf, NSUInteger src_off, NSUInteger in_stride,
+    id<MTLBuffer> dst_buf, NSUInteger dst_off, NSUInteger out_stride,
+    uint32_t rows, uint32_t cols);
+extern void encode_float32_to_half(
+    id<MTLBuffer> src_buf, NSUInteger src_off, NSUInteger in_stride,
+    id<MTLBuffer> dst_buf, NSUInteger dst_off, NSUInteger out_stride,
+    uint32_t rows, uint32_t cols);
+
+namespace {  // reopen anonymous namespace
+
 template <typename T>
 static void sdpa_mps_gemm(bool trans_b,
                             ctranslate2::dim_t m,
@@ -192,6 +207,11 @@ static void sdpa_mps_gemm(bool trans_b,
     return;
   }
 
+  // -----------------------------------------------------------------------
+  // M13: Use native MPS GEMM for all types (float32, float16).
+  // For SDPA, K = head_dim (typically 64), well below the K >= 512
+  // threshold where MPS float16 accumulation causes precision issues.
+  // -----------------------------------------------------------------------
   const MPSDataType dtype = SdpaMPSDtype<T>::v;
   constexpr NSUInteger elem = sizeof(T);
 

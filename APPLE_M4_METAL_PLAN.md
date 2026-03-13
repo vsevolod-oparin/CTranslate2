@@ -1282,6 +1282,50 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 
 ---
 
+### Milestone 15: Metal Backend Cleanup
+**Goal:** Remove dead code, delete orphaned files, and document acknowledged limitations. No functional changes — code hygiene only.
+**Time:** 1–2 days
+**Depends on:** M14
+
+---
+
+**15.1 Delete orphaned primitives.mm**
+- `src/metal/primitives.mm` is a comment-only breadcrumb left after the M4 split into `primitives_{memory,elementwise,reduction,gemm,transpose,beam_search}.mm`. Not in `METAL_SOURCES`, never compiled. Delete it.
+- Files: `src/metal/primitives.mm`
+
+**15.2 Move inline MSL kernels to auto-generation pipeline**
+- `kAlibiMSL` (inline in `ops_alibi.mm`) and `kRotaryMSL`/`kDecodeRopeMSL` (inline in `ops_rotary.mm`) bypass the `tools/gen_msl_strings.py` auto-generation system used by all other 14 kernels.
+- Extract to `src/metal/kernels/alibi.metal` and `src/metal/kernels/rotary.metal`.
+- Add to `gen_msl_strings.py` so they appear in `msl_strings.h`.
+- Remove inline raw strings from the `.mm` files and reference the generated constants.
+- Files: `src/metal/ops_alibi.mm`, `src/metal/ops_rotary.mm`, `src/metal/kernels/`, `tools/gen_msl_strings.py`, `src/metal/msl_strings.h`
+
+**15.3 Add BF16 multinomial MSL kernel**
+- `multinomial_metal.mm` has GPU kernels for `float` and `half` but falls back to CPU (`CT2_COMMIT_AND_WAIT` + `std::discrete_distribution`) for `bfloat16_t`. Add a `multinomial_bfloat` MSL kernel (trivial copy of `multinomial_half` with `bfloat` type) to eliminate the CPU fallback and pipeline stall.
+- Files: `src/ops/multinomial_metal.mm`
+
+**15.4 Document unsupported Metal features in code**
+- Add a top-of-file comment block to `src/ops/awq_metal.mm` and `src/ops/nccl_metal.mm` explaining why these are linker stubs and when (if ever) they might be implemented.
+- Verify existing comments are accurate (AWQ: "not yet implemented", NCCL: "single-device backend").
+- Files: `src/ops/awq_metal.mm`, `src/ops/nccl_metal.mm`
+
+**15.5 Audit CPU-only Metal ops for GPU opportunity**
+- Five ops use `CT2_COMMIT_AND_WAIT()` + CPU algorithm: Mean, Tile, TopPMask, GumbelMax, MedianFilter.
+- M12.13–M12.17 tested GPU versions of some and rejected them (noise or regressions). Document which were tested and why they were rejected, so future developers don't re-attempt.
+- For any untested ops (Mean, Tile), evaluate whether a GPU kernel would be beneficial given typical tensor sizes. Add a comment with the decision.
+- Files: `src/ops/mean_metal.mm`, `src/ops/tile_metal.mm`, `src/ops/topp_mask_metal.mm`, `src/ops/gumbel_max_metal.mm`, `src/ops/median_filter_metal.mm`
+
+**15.6 RMSNorm residual path stub**
+- `normalization_metal.mm` throws for `use_residual=true`. Check if any model in practice hits this path on Metal. If not, add a comment documenting that this is a known limitation with no current user. If models do use it, flag for future implementation.
+- Files: `src/ops/normalization_metal.mm`
+
+**15.7 Cross-model beam search validation (from M14.4.2 TODO)**
+- M14.4.2 left a TODO: "Check if other models (Whisper, TinyLlama) show the same beam search pattern" and "Test beam=6 recommendation across models."
+- Run validation and close the TODO.
+- Files: `APPLE_M4_METAL_PLAN.md` (update M14.4.2 status)
+
+---
+
 ## Revised Dependency and Effort Table
 
 | Milestone | Goal | Time | Depends on |
@@ -1301,6 +1345,7 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 | 12 (Pipeline) | Translation pipeline optimization, BF16/INT8 fix | 2 weeks | 11 |
 | 13 (CI/Docs) | Test parameterization, CI, documentation | 1 week | 12 |
 | 14 (Precision) | Float16 precision parity — close BLEU gap to match CUDA | 2–3 weeks | 12, 13 (f16 GEMM) |
+| 15 (Cleanup) | Dead code removal, MSL consistency, doc hygiene | 1–2 days | 14 |
 | **Total** | | **~14–21 weeks** | |
 
 ---

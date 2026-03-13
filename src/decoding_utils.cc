@@ -58,6 +58,7 @@ namespace ctranslate2 {
 
     StorageView previous_ids = sequences.to(device);
     StorageView previous_scores(device, dtype);
+
     ops::Gather(/*axis=*/-1, /*batch_dims=*/1)(logits, previous_ids, previous_scores);
 
 #ifdef CT2_WITH_MPS

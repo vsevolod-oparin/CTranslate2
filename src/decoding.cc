@@ -8,6 +8,7 @@
 #include <memory>
 #include <numeric>
 
+#include "ctranslate2/devices.h"
 #include "ctranslate2/ops/ops.h"
 #include "dispatch.h"
 
@@ -604,6 +605,19 @@ namespace ctranslate2 {
               (return_attention || _coverage_penalty != 0) ? &attention_step : nullptr);
       if (prof.enabled) prof.decoder_call_us += prof.tock_us();
 
+#ifdef CT2_WITH_MPS
+      // M14.5: Sync after decoder before logits processors.
+      // The decoder's last output GEMM uses MPSMatrixMultiplication (for K > 32
+      // with f16 promoted path).  MPS has a driver coherency issue where custom
+      // compute encoders in the SAME command buffer may read stale data from
+      // prior MPS operations.  Logits processors (RepetitionPenalty, DisableTokens)
+      // encode custom compute kernels that read/write the logits buffer.
+      // commit_and_wait ensures the decoder's GPU work is complete and logits
+      // data is coherent before any logits processor touches it.
+      if (device == Device::MPS)
+        synchronize_stream(device);
+#endif
+
       const dim_t cur_batch_size = is_expanded ? logits.dim(0) / _beam_size : logits.dim(0);
 
       // --- logits processing ---
@@ -986,6 +1000,12 @@ namespace ctranslate2 {
               state,
               &logits,
               gather_attention ? &attention_step_device : nullptr);
+
+#ifdef CT2_WITH_MPS
+      // M14.5: Sync after decoder before logits processors (see beam_search).
+      if (device == Device::MPS)
+        synchronize_stream(device);
+#endif
 
       DisableTokens disable_tokens(logits);
 

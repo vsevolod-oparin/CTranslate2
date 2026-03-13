@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2026-03-13
-**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14 (precision parity) planned
+**Status:** In progress — M12 done, M13 f16 GEMM fix done, M14.1–14.5 done (precision parity + GPU sync bugs fixed)
 
 ---
 
@@ -1241,24 +1241,31 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - **Bugs found:** `repetition_penalty` causes GPU page fault; `no_repeat_ngram_size=2` causes GPU errors
 - **DONE:** Report `agents/report/milestone-14.4-beam-search-investigation.md`
 
-  **14.4.1 Fix repetition_penalty GPU page fault** ← TODO
-  - `repetition_penalty=1.2` causes Metal GPU address fault in penalize_previous_tokens kernel
-  - Likely out-of-bounds buffer access
+  **14.4.1 Fix repetition_penalty GPU page fault** ✅ → M14.5
+  - Root cause: MPS driver coherency issue (not OOB). See M14.5.
 
   **14.4.2 Cross-model validation** ← TODO
   - Check if other models (Whisper, TinyLlama) show the same beam search pattern
   - Test beam=6 recommendation across models
 
-**14.5 INT8 precision audit**
+**14.5 Logits processor sync fix** ✅
+- **Root cause:** MPS driver coherency — MPSMatrixMultiplication + custom compute encoders in same CB
+- **Fix:** `synchronize_stream(device)` after decoder call in `decoding.cc` (both beam_search + greedy_search)
+- **Bugs fixed:** `repetition_penalty` GPU page fault + `no_repeat_ngram_size=2` GPU error cascade
+- **Test:** 20/20 pass across f32, f16, int8, int8_f16 (diverse batch, beam=4, stress × 5)
+- **Performance:** ~0.4ms/step overhead (negligible vs ~80ms/step decode time)
+- **DONE:** Report `agents/report/milestone-14.5-logits-processor-sync.md`
+
+**14.6 INT8 precision audit** (was 14.5)
 - Compare INT8 BLEU (27.60) with CPU INT8 — any gap?
 - **PASS:** INT8 precision paths documented; any issues fixed
 
-**14.6 README benchmark update**
+**14.7 README benchmark update** (was 14.6)
 - Update README MPS table with current f16 BLEU and notes
 - Update summary text regarding f16 precision characteristics
 - **PASS:** README reflects current understanding
 
-**14.7 Performance regression gate**
+**14.8 Performance regression gate** (was 14.7)
 - Verify no throughput regression from precision changes
 - f16, f32, int8, bf16 all within ±3% of pre-M14 values
 - **PASS:** No compute type regresses >5% in throughput

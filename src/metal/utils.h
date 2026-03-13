@@ -55,6 +55,12 @@ namespace ctranslate2 {
     void protect_buffer_by_base(void* base_ptr);
     void flush_pending_frees();
 
+    // Non-blocking commit: submits the current command buffer to the GPU
+    // queue without waiting.  The serial queue guarantees prior CBs complete
+    // before this one starts.  Use to split the CB for MPS coherency.
+    // Callable from .cc files (C++ interface).
+    void non_blocking_commit();
+
     // GPU-side barrier: encodes a wait in the current command buffer for all
     // prior committed CBs to complete.  Unlike commit_and_wait(), this does
     // NOT block the CPU.  Use when an encode-only kernel needs to read data

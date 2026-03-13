@@ -106,19 +106,34 @@ CUDA's cuBLAS has different numerical behavior (tensor core FMA ordering, roundi
 
 ## Bugs Found
 
-### GPU Page Fault with repetition_penalty
+### GPU Page Fault with repetition_penalty — **FIXED (M14.5)**
 
-`repetition_penalty=1.2` causes:
+`repetition_penalty=1.2` caused:
 ```
 Metal command buffer error: Caused GPU Address Fault Error
 (0000000b:kIOGPUCommandBufferCallbackErrorPageFault)
 ```
 
-This is a Metal backend bug in the penalize_previous_tokens kernel. Should be investigated separately.
+**Root cause:** MPS driver coherency issue. The decoder's last output GEMM uses
+`MPSMatrixMultiplication` (for K > 32 with f16 promoted path). Custom compute
+encoders (Gather, penalize_previous_tokens) in the SAME command buffer read
+stale data from prior MPS operations. The page fault occurred because the
+penalize kernel accessed logits buffer data that wasn't yet coherent.
 
-### GPU Error with no_repeat_ngram_size=2
+**Fix:** `synchronize_stream(device)` after decoder call in `decoding.cc`,
+before any logits processor runs. This commits and waits for the decoder's
+GPU work, ensuring logits data is coherent. Applied to both `beam_search()`
+and `greedy_search()` code paths.
 
-`no_repeat_ngram_size=2` causes GPU errors in sequence when run in the same process as other configs. Works in subprocess isolation.
+### GPU Error with no_repeat_ngram_size=2 — **FIXED (M14.5)**
+
+`no_repeat_ngram_size=2` caused GPU errors (`kIOGPUCommandBufferCallbackErrorSubmissionsIgnored`)
+as a cascade from the same MPS coherency issue. `NoRepeatNgram::apply()` is CPU-only,
+but `DisableTokens::apply()` (which runs after all logits processors) encodes the
+`indexed_fill` GPU kernel. The stale-logits page fault from a prior CB propagated
+as "submissions ignored" to subsequent CBs.
+
+**Fix:** Same decoder sync fix resolves both bugs — the underlying cause was identical.
 
 ---
 
@@ -128,9 +143,10 @@ This is a Metal backend bug in the penalize_previous_tokens kernel. Should be in
 - **Best quality:** Use `beam_size=6, length_penalty=0.6` with f16 (gap: 0.48 BLEU)
 - **Best speed:** Use `beam_size=4` with f16 (gap: ~2 BLEU but 74% faster)
 - **Alternative:** Use `beam_size=4, no_repeat_ngram_size=3` (gap: 1.5, same speed)
+- `repetition_penalty` and `no_repeat_ngram_size` now work correctly on Metal (M14.5 fix)
 
 ### For Code
-1. **Fix repetition_penalty GPU bug** — investigate penalize_previous_tokens kernel
+1. ~~**Fix repetition_penalty GPU bug**~~ — **DONE (M14.5)**
 2. **Document f16 beam search behavior** — README should note recommended beam_size=6 for f16
 3. **Consider auto-tuning** — detect compute_type=float16 and suggest beam_size=6
 

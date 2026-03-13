@@ -206,6 +206,10 @@ namespace ctranslate2 {
       return enc;
     }
 
+    void non_blocking_commit() {
+      commit_command_buffer();
+    }
+
     void encode_barrier() {
       // GPU-side barrier: ensures all prior committed command buffers have
       // finished executing before any subsequent encodes in the current CB

@@ -277,9 +277,11 @@ def main():
     # === OpenNMT-py WMT14 model ===
     opennmt_models = {
         "float32": os.path.join(data_dir, "opennmt-py-wmt14"),
-        # f16: use f32 model with runtime cast (same as OPUS-MT pattern)
+        # f16/bf16: use f32 model with runtime cast (same as OPUS-MT pattern)
         "float16": os.path.join(data_dir, "opennmt-py-wmt14"),
+        "bfloat16": os.path.join(data_dir, "opennmt-py-wmt14"),
         "int8":    os.path.join(data_dir, "opennmt-py-wmt14-int8"),
+        "int8_float16": os.path.join(data_dir, "opennmt-py-wmt14-int8"),
     }
     for ct, path in opennmt_models.items():
         if os.path.isdir(path):
@@ -301,9 +303,11 @@ def main():
     # === OPUS-MT model ===
     opus_models = {
         "float32": os.path.join(data_dir, "opus-mt-en-de"),
-        # f16: use f32 model with runtime cast (pre-converted f16 model has weight issues)
+        # f16/bf16: use f32 model with runtime cast (pre-converted f16 model has weight issues)
         "float16": os.path.join(data_dir, "opus-mt-en-de"),
+        "bfloat16": os.path.join(data_dir, "opus-mt-en-de"),
         "int8":    os.path.join(data_dir, "opus-mt-en-de-int8"),
+        "int8_float16": os.path.join(data_dir, "opus-mt-en-de-int8"),
     }
     for ct, path in opus_models.items():
         if os.path.isdir(path):
@@ -401,7 +405,7 @@ def main():
     if r:
         print(f"| CTranslate2 - CPU float32 ({CPU_THREADS} threads) | "
               f"{r['tokens_per_sec']:.1f} | {r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
-    for ct in ["float32", "float16", "int8"]:
+    for ct in ["float32", "float16", "bfloat16", "int8", "int8_float16"]:
         r = results.get(("OpenNMT-py WMT14", "mps", ct, "ct2"))
         if r:
             label = f"CTranslate2 - MPS {ct}"
@@ -435,7 +439,7 @@ def main():
               f"{r['tokens_per_sec']:.1f} | {r['max_rss_mb']:.0f}MB | {r['bleu']:.2f} |")
 
     # CT2 MPS
-    for ct in ["float32", "float16", "int8"]:
+    for ct in ["float32", "float16", "bfloat16", "int8", "int8_float16"]:
         r = results.get(("OPUS-MT", "mps", ct, "ct2"))
         if r:
             label = f"CTranslate2 - MPS {ct}"

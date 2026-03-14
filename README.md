@@ -102,7 +102,7 @@ Executed with 4 threads on a [*c5.2xlarge*](https://aws.amazon.com/ec2/instance-
 | --- | --- | --- | --- | --- |
 | **OpenNMT-tf WMT14 model** | | | | |
 | OpenNMT-tf 2.31.0 (with TensorFlow 2.11.0) | 1483.5 | 3031MB | 3122MB | 26.94 |
-| **OpenNMT-py WMT14 model** | | | | |
+| **** | | | | |
 | OpenNMT-py 3.0.4 (with PyTorch 1.13.1) | 1795.2 | 2973MB | 3099MB | 26.77 |
 | FasterTransformer 5.3 | 6979.0 | 2402MB | 1131MB | 26.77 |
 | - float16 | 8592.5 | 1360MB | 1135MB | 26.80 |
@@ -126,19 +126,25 @@ Executed with CUDA 11 on a [*g5.xlarge*](https://aws.amazon.com/ec2/instance-typ
 | | Tokens per second | Max. memory | BLEU |
 | --- | --- | --- | --- |
 | **OpenNMT-py WMT14 model** | | | |
-| CTranslate2 - CPU float32 (4 threads) | 1023.5 | 1804MB | 26.57 |
-| CTranslate2 - MPS float32 | 1643.4 | 1193MB | 26.57 |
-| CTranslate2 - MPS float16 | 1611.2 | 1075MB | 26.20 |
-| CTranslate2 - MPS int8 | 1079.7 | 660MB | 26.55 |
-| CTranslate2 - MPS int8 + float16 | 1023.7 | 1107MB | 26.23 |
+| OpenNMT-py 1.2.0 (PyTorch) - CPU float32 (4 threads) | 439.4 | 2866MB | 26.77 |
+| CTranslate2 - CPU float32 (4 threads) | 1122.2 | 1683MB | 26.57 |
+| CTranslate2 - MPS float32 | 1723.2 | 1194MB | 26.57 |
+| CTranslate2 - MPS float16 | 1856.7 | 1080MB | 26.08 |
+| CTranslate2 - MPS bfloat16 | 1777.4 | 1075MB | 26.08 |
+| CTranslate2 - MPS int8 | 1189.4 | 661MB | 26.55 |
+| CTranslate2 - MPS int8 + float16 | 1251.9 | 616MB | 26.17 |
 | **OPUS-MT model** | | | |
-| CTranslate2 - CPU float32 (4 threads) | 838.9 | 1650MB | 27.65 |
-| CTranslate2 - MPS float32 | 1080.7 | 1075MB | 27.65 |
-| CTranslate2 - MPS float16 | 992.4 | 939MB | 25.76 |
-| CTranslate2 - MPS int8 | 733.1 | 653MB | 27.57 |
-| CTranslate2 - MPS int8 + float16 | 770.1 | 593MB | 25.60 |
+| Transformers (PyTorch) - CPU float32 (4 threads) | 318.5 | 2732MB | 27.57 |
+| Transformers (PyTorch) - MPS float32 | 381.3 | 1530MB | 27.57 |
+| Transformers (PyTorch) - MPS float16 | 449.1 | 1855MB | 27.55 |
+| CTranslate2 - CPU float32 (4 threads) | 889.2 | 1587MB | 27.65 |
+| CTranslate2 - MPS float32 | 1168.6 | 1072MB | 27.65 |
+| CTranslate2 - MPS float16 | 1478.8 | 936MB | 25.55 |
+| CTranslate2 - MPS bfloat16 | 1461.5 | 1008MB | 25.62 |
+| CTranslate2 - MPS int8 | 896.5 | 652MB | 27.55 |
+| CTranslate2 - MPS int8 + float16 | 953.3 | 593MB | 25.65 |
 
-Executed on Apple M4 with Metal Performance Shaders. Beam size 4, best of 2 runs. CPU baselines use 4 threads with Apple Accelerate. MPS float32 is **1.6x** faster than CPU with **35% less memory**. Float16 delivers near-identical speed to float32 with the OpenNMT model (1611 vs 1643 tok/s, BLEU gap 0.37). The OPUS-MT model shows a larger float16 gap (~2 BLEU at beam=4) due to beam search sensitivity — use `beam_size=6, length_penalty=0.6` for quality parity. INT8 reduces memory by 39% with negligible BLEU loss. See the [benchmark scripts](tools/benchmark) for details.
+Executed on Apple M4 with Metal Performance Shaders. Beam size 4, best of 2 runs. CPU baselines use 4 threads with Apple Accelerate. CTranslate2 MPS float16 is the fastest at **1857 tok/s** — **4.2x** faster than OpenNMT-py CPU, **2.6x** faster than CTranslate2 CPU, and **4.1x** faster than Transformers MPS. Bfloat16 is close behind at 1777 tok/s. OpenNMT-py and FasterTransformer do not support MPS. The OPUS-MT model shows a larger float16 BLEU gap (~2 points at beam=4) due to beam search sensitivity — use `beam_size=6, length_penalty=0.6` for quality parity. INT8 reduces memory by **45%** with negligible BLEU loss; int8+float16 adds ~6% speed over int8. See the [benchmark scripts](tools/benchmark) for details.
 
 ## Contributing
 

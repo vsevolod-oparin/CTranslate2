@@ -1352,7 +1352,186 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 
 ---
 
-## Revised Dependency and Effort Table
+### Milestone 16: Multi-Language Whisper Benchmark vs Alternatives
+**Goal:** Systematic benchmark of CTranslate2 Metal backend (standard + FlashMHA) against whisper.cpp, mlx-whisper, and CPU baselines using the FLEURS dataset across 6 languages. Modular per-framework runner scripts + single orchestrator that runs the full matrix and produces a unified report.
+**Time:** 2–3 days
+**Depends on:** M10 (Whisper end-to-end working on Metal)
+
+**Context:** Reference benchmarks (mac-whisper-speedtest, M4) show mlx-whisper ~1.02s, whisper.cpp ~1.23s, faster-whisper CPU ~6.96s for whisper-large. CTranslate2 Metal needs to demonstrate competitive or superior performance with hard numbers.
+
+**Dataset:** FLEURS (`google/fleurs`), streaming mode, 50 samples per language (test split).
+**Languages:** `en_us` (English), `ja_jp` (Japanese), `zh_cn` (Mandarin), `de_de` (German), `es_419` (Spanish), `ar_eg` (Arabic).
+Total: 300 clips, ~37 min audio. Runtime: a few minutes per config.
+
+**Metrics (per language, per config):**
+- **WER** — via `jiwer` with `whisper_normalizer` (Whisper's official text normalizer per language)
+- **RTF** — Real-Time Factor (wall_time / audio_duration), lower is better
+- **Peak RSS** (MB) — memory footprint
+- Audio seconds processed per wall second (throughput)
+
+#### Architecture
+
+```
+tools/benchmark/whisper_fleurs/
+├── orchestrator.py              # Runs full matrix, merges results, produces report
+├── common.py                    # Shared: FLEURS loading, WER computation, result schema
+├── runner_ct2_metal.py          # CTranslate2 Metal (standard MHA)
+├── runner_ct2_metal_flash.py    # CTranslate2 Metal (FlashMHA)
+├── runner_ct2_cpu.py            # CTranslate2 CPU baseline
+├── runner_whisper_cpp.py        # whisper.cpp via pywhispercpp
+├── runner_mlx_whisper.py        # mlx-whisper
+├── runner_openai_whisper.py     # OpenAI whisper (accuracy reference)
+└── results/                     # JSON output per run, auto-created
+```
+
+**Runner contract:** Each `runner_*.py` is a standalone script that:
+1. Accepts CLI args: `--model <name> --quant <type> --beam <n> --languages <list> --samples <n> --data-dir <path>`
+2. Loads the model, runs inference on cached FLEURS data from `--data-dir`
+3. Writes a JSON results file to `--output <path>` with schema:
+```json
+{
+  "framework": "ct2_metal",
+  "model": "whisper-large-v3-turbo",
+  "quant": "float16",
+  "beam_size": 1,
+  "flash_attention": false,
+  "languages": {
+    "en_us": {"wer": 0.05, "rtf": 0.12, "wall_s": 3.2, "audio_s": 26.5, "num_samples": 50},
+    "ja_jp": {"wer": 0.08, ...},
+    ...
+  },
+  "peak_rss_mb": 1850,
+  "timestamp": "2026-03-14T12:00:00"
+}
+```
+4. Can be run independently: `python runner_whisper_cpp.py --model large-v3-turbo --quant F16 --beam 1 --languages en_us,ja_jp --samples 50 --data-dir ./cache --output results/cpp_f16_b1.json`
+
+**Orchestrator:** `orchestrator.py` drives the full matrix:
+1. Runs `common.py` to download/cache FLEURS data once into `--data-dir`
+2. Iterates over the config matrix (framework × model × quant × beam)
+3. Calls each runner as a subprocess (process isolation — one framework crash doesn't kill the run)
+4. Collects all JSON results from `results/`
+5. Merges into unified comparison table (Markdown + JSON)
+6. Produces report: `agents/report/milestone-16-whisper-fleurs-benchmark.md`
+
+**Orchestrator CLI:**
+```bash
+# Full matrix (all frameworks, all quants, beam 1+5)
+python orchestrator.py --all
+
+# Single framework
+python orchestrator.py --frameworks ct2_metal,whisper_cpp
+
+# Quick mode (10 samples, greedy only, turbo only)
+python orchestrator.py --quick
+
+# Resume (skip already-computed results in results/)
+python orchestrator.py --all --resume
+
+# Custom
+python orchestrator.py --frameworks ct2_metal --models large-v3-turbo --quants float16 --beams 1 --languages en_us,ja_jp --samples 20
+```
+
+---
+
+**16.1 Common infrastructure (`common.py`)**
+- FLEURS download via `datasets` streaming → cache as `.npz` (audio arrays) + `.json` (transcriptions)
+- Cache dir: `tools/benchmark/whisper_fleurs/cache/` (git-ignored)
+- WER computation: `compute_wer(hypothesis, reference, language)` using `jiwer` + Whisper text normalizer
+- Result schema definition and validation
+- RSS measurement utility (`resource.getrusage` or `/proc/self/status`)
+- WAV export utility (for whisper.cpp which expects WAV files)
+- **DONE when:** `python common.py --download --languages en_us,ja_jp --samples 50` caches data and prints sample counts
+
+**16.2 Runner: CTranslate2 Metal standard (`runner_ct2_metal.py`)**
+- Uses `faster_whisper.WhisperModel` API with `device="mps"`
+- Models: `whisper-large-v3-turbo`, `whisper-large-v3` (from `CT2_TEST_DATA` or `--model-dir`)
+- Quants: `float32`, `float16`, `int8`, `int8_float16`
+- Warmup: 3 samples discarded before timing
+- Per-sample: record wall_time, collect predicted text
+- Writes JSON result per (model, quant, beam) combination
+- **DONE when:** Standalone run produces valid JSON with WER + RTF for 6 languages
+
+**16.3 Runner: CTranslate2 Metal FlashMHA (`runner_ct2_metal_flash.py`)**
+- Same as 16.2 but sets `flash_attention=True` on the model
+- Can share most code with 16.2 (import + flag), or be a thin wrapper
+- **DONE when:** Flash results JSON, WER delta vs standard should be ~0
+
+**16.4 Runner: CTranslate2 CPU (`runner_ct2_cpu.py`)**
+- `device="cpu"`, quants: `float32`, `int8`
+- Purpose: Metal speedup ratio = CPU_RTF / Metal_RTF
+- **DONE when:** CPU baseline JSON for comparison
+
+**16.5 Runner: whisper.cpp (`runner_whisper_cpp.py`)**
+- Import: `pywhispercpp` (check availability, print skip message if not installed)
+- Models: download GGML from HuggingFace `ggerganov/whisper.cpp` to cache dir
+  - `ggml-large-v3-turbo.bin` (F16), `-q5_0.bin` (Q5_0), `-q8_0.bin` (Q8_0)
+  - Same for `large-v3` if `--model large-v3` requested
+- Reads cached WAV files from `common.py` cache
+- Collects per-sample wall_time + transcription text
+- **DONE when:** whisper.cpp JSON with WER + RTF for all quant levels, 6 languages
+
+**16.6 Runner: mlx-whisper (`runner_mlx_whisper.py`)**
+- Import: `mlx_whisper` (check availability, print skip message if not installed)
+- Models: `mlx-community/whisper-large-v3-turbo` (auto-downloaded by mlx-whisper)
+  - Float16 (default), int4, int8 if available on HuggingFace
+- API: `mlx_whisper.transcribe(audio_path, path_or_hf_repo=...)` — expects file path
+- Reads cached WAV files
+- **DONE when:** mlx-whisper JSON with WER + RTF, 6 languages
+
+**16.7 Runner: OpenAI whisper (`runner_openai_whisper.py`)**
+- Import: `whisper` (check availability, print skip message if not installed)
+- Model: `large-v3-turbo` only, CPU, float32
+- Purpose: WER accuracy anchor (expected slowest)
+- **DONE when:** OpenAI whisper JSON with WER for 6 languages
+
+**16.8 Orchestrator and report (`orchestrator.py`)**
+- Config matrix definition:
+
+| Runner | Models | Quants | Beams |
+|--------|--------|--------|-------|
+| `ct2_metal` | large-v3-turbo, large-v3 | f32, f16, int8, int8_f16 | 1, 5 |
+| `ct2_metal_flash` | large-v3-turbo, large-v3 | f32, f16, int8, int8_f16 | 1, 5 |
+| `ct2_cpu` | large-v3-turbo, large-v3 | f32, int8 | 1, 5 |
+| `whisper_cpp` | large-v3-turbo | F16, Q8_0, Q5_0 | 1, 5 |
+| `mlx_whisper` | large-v3-turbo | f16, int4, int8 | 1 |
+| `openai_whisper` | large-v3-turbo | f32 | 1 |
+
+- `--quick` matrix: ct2_metal f16 beam=1 + whisper_cpp F16 beam=1 + mlx_whisper f16 beam=1, 10 samples, turbo only
+- `--resume`: skip configs whose JSON already exists in `results/`
+- Subprocess invocation: `sys.executable runner_X.py <args>` — catches crashes per-runner, logs stderr, continues
+- Report generation:
+  - Unified Markdown table (as shown in previous plan)
+  - Speedup highlights: CT2 Metal vs whisper.cpp, CT2 Metal vs mlx-whisper, CT2 Metal vs CT2 CPU
+  - Per-language WER heatmap (text-based)
+  - Save to `agents/report/milestone-16-whisper-fleurs-benchmark.md`
+- **DONE when:** `python orchestrator.py --quick` runs end-to-end, produces report
+
+**16.9 Validation and polish**
+- Verify all runners work standalone with `--help`
+- Verify `--resume` correctly skips completed configs
+- Verify report table aligns columns and sorts by Avg RTF
+- Add runner for any additional framework if trivially available
+- **DONE when:** Full `--all` run completes without manual intervention
+
+**Success criteria:**
+- [ ] All 5+ frameworks benchmarked on same FLEURS samples via modular runners
+- [ ] Each runner works standalone with `--help` and produces valid JSON
+- [ ] Orchestrator runs full matrix, subprocess-isolated, with `--resume` support
+- [ ] WER computed per language with proper text normalization
+- [ ] CT2 Metal RTF competitive with whisper.cpp and mlx-whisper (within 2×)
+- [ ] FlashMHA shows measurable RTF improvement over standard MHA
+- [ ] No WER regression: CT2 Metal WER within 3 points of OpenAI whisper reference
+- [ ] `--quick` mode completes in under 5 minutes on Apple M4
+
+**Open questions (resolve during implementation):**
+- pywhispercpp wheel compatibility with current Python version in ct2 env
+- mlx-whisper int4/int8 model availability for large-v3-turbo
+- Whether `whisper_normalizer` or `openai-whisper`'s built-in normalizer handles CJK correctly
+- FLEURS `transcription` vs `raw_transcription` — which to use as reference (normalized preferred)
+- mlx-whisper beam_size control — API may not expose it (greedy only?)
+
+---
 
 | Milestone | Goal | Time | Depends on |
 |-----------|------|------|------------|
@@ -1372,6 +1551,7 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 | 13 (CI/Docs) | Test parameterization, CI, documentation | 1 week | 12 |
 | 14 (Precision) | Float16 precision parity — close BLEU gap to match CUDA | 2–3 weeks | 12, 13 (f16 GEMM) |
 | 15 (Cleanup) | Dead code removal, MSL consistency, doc hygiene | 1–2 days | 14 |
+| 16 (Whisper Bench) | Multi-language Whisper benchmark vs alternatives | 2–3 days | 10 |
 | **Total** | | **~14–21 weeks** | |
 
 ---

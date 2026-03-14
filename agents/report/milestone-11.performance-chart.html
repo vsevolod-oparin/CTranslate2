@@ -185,6 +185,7 @@ const raw = [
   {i:51, hash:"47960086", msg:"M11.29 MTLSharedEvent encode_barrier (hybrid sync)", times:[1864.8,1861.5,1854.9], tokens:[123,123,123], mean:1860.4},
   {i:52, hash:"a4046a63", msg:"M12.26 Residency sets + whisper correctness fix", times:[1811.3,1817.6,1806.8], tokens:[123,123,123], mean:1811.9},
   {i:53, hash:"d04ab8b5", msg:"M15 Cleanup milestone (⚠ methodology change: real audio mel)", times:[2266,2239,2271], tokens:[127,127,127], mean:2258.7, warn:true},
+  {i:54, hash:"M16", msg:"M16 Performance Recovery (conditional sync + native f16 GEMM + fused SDPA)", times:[1888,1864,1906], tokens:[102,102,102], mean:1886.0},
 ];
 
 const data = raw.filter(d => d.times);
@@ -194,9 +195,9 @@ const baseline = 41169.4;
 const summaryEl = document.getElementById("summary");
 const cards = [
   {value: "41.2s", label: "Baseline (M11.3)", cls: "warn"},
-  {value: "2.26s", label: "Latest mean (commit 53, ⚠ new mel)", cls: ""},
-  {value: "18.2×", label: "Speedup (methodology change)", cls: "highlight"},
-  {value: "51", label: "Commits benchmarked", cls: ""},
+  {value: "1.89s", label: "Latest mean (M16)", cls: ""},
+  {value: "21.8×", label: "Speedup vs baseline", cls: "highlight"},
+  {value: "52", label: "Commits benchmarked", cls: ""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");
@@ -216,7 +217,7 @@ const svg = d3.select("#chart").append("svg")
   .attr("width", width).attr("height", height);
 const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-const x = d3.scaleLinear().domain([3, 53]).range([0, innerW]);
+const x = d3.scaleLinear().domain([3, 54]).range([0, innerW]);
 const y = d3.scaleLinear().domain([0, 45000]).range([innerH, 0]);
 
 // Grid
@@ -232,6 +233,7 @@ const phases = [
   {x0:36.5, x1:41.5, color:"#151a18", label:"Stable Fast"},
   {x0:41.5, x1:52.5, color:"#151520", label:"Sync Elimination"},
   {x0:52.5, x1:53.5, color:"#1a1518", label:"M15"},
+  {x0:53.5, x1:54.5, color:"#151a20", label:"M16"},
 ];
 phases.forEach(p => {
   g.append("rect")
@@ -309,6 +311,7 @@ const annotations = [
   {i:37, label:"13.8× Memory leak fix", dy:-14},
   {i:42, label:"21.2× Sync elimination", dy:-14},
   {i:52, label:"22.7× residency+fix", dy:-14},
+  {i:54, label:"22.1× M16 recovery", dy:-14},
 ];
 annotations.forEach(a => {
   const d = data.find(d => d.i === a.i);

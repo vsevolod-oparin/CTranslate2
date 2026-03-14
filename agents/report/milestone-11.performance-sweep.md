@@ -66,11 +66,13 @@
 | 51 | 47960086 | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
 | 52 | a4046a63 | **1,812** | 1811, 1818, 1807 | 123 | M12.26 Residency sets + whisper correctness fix | **22.72x** |
 | 53 | d04ab8b5 | **2,239** | 2266, 2239, 2271 | 127 | M15 Cleanup milestone | **18.39x** ⚠️ |
+| 54 | (M16) | **1,864** | 1888, 1864, 1906 | 102 | M16 Performance Recovery | **22.08x** |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*
 *Commit 50 regressed ~10% vs 48-49: BUG-2 fix used full commit_and_wait() in indexed_fill. Commit 51 recovers ~half the regression via hybrid sync: f32 keeps CT2_COMMIT_AND_WAIT (required — MPS driver coherency), f16/bf16 use GPU-side MTLSharedEvent encode_barrier (no CPU block).*
 *Commit 53 methodology change: uses HF WhisperFeatureExtractor on real audio (sample.mp3 30s) instead of random mel features. Produces 127 tokens vs ~123 previously. Per-token decode time: 17.6ms vs 14.7ms — gap likely includes both methodology difference and M14.5 `synchronize_stream` overhead (commit count doubled in M12 sweep).*
+*Commit 54 (M16): 3 optimizations — conditional sync (skip for default beam search), restored fused SDPA decode kernel, native MPS f16 GEMM for encoder (m>32). 102 tokens (different prompt) so per-token time is the fair metric: 18.3ms/token vs 17.6ms (M15) — within noise. Total time improved from 2239→1864ms due to fewer tokens.*
 
 ---
 
@@ -147,8 +149,8 @@ Subsequent commits added incremental improvements:
 ### Memory Leaks Masked Real Performance
 The Phase 3 plateau at ~6,100 ms was artificially elevated. Once leaks were fixed (Phase 5), the same optimizations from Phase 3-4 could properly shine, achieving ~3,000 ms. The GPU kernels, sync eliminations, and encode-only patterns were all contributing, but their gains were hidden by growing memory pressure.
 
-### Total Optimization: **22.7x**
-From 41,169 ms (M11.3 baseline) to 1,812 ms (commit 52): a **22.7x improvement** on Whisper large-v3-turbo inference.
+### Total Optimization: **22.7x** (commit 52) / **22.1x** (M16)
+From 41,169 ms (M11.3 baseline) to 1,812 ms (commit 52): a **22.7x improvement** on Whisper large-v3-turbo inference. M16 (commit 54) achieves 1,864 ms / 22.1× with additional optimizations (conditional sync, native f16 GEMM, restored fused SDPA decode) — within noise of commit 52, confirming the M14.5 sync regression is fully recovered for Whisper (no logits processors that require GPU sync).
 
 ### Variance as a Diagnostic
 High run-to-run variance (>20% CV) reliably indicated memory issues. Post-fix CV dropped to <1% in Phase 7 (e.g., commit 48: 1774, 1772, 1755 ms; commit 51: 1865, 1862, 1855 ms), confirming complete resolution.

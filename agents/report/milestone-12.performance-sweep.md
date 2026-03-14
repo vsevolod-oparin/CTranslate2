@@ -15,6 +15,7 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1895 ms, 1549 tokens, 817 tok/s (M12.25, final)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1936 ms, 1549 tokens, 800 tok/s (M13, f16 batch + bug fixes)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1898 ms, 1549 tokens, 816 tok/s (M15, cleanup milestone)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1892 ms, 1549 tokens, 819 tok/s (M16, performance recovery)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
@@ -56,9 +57,37 @@ INT8 is now the fastest standard MHA path, beating f16 (25.3 tok/s) by 1.36×.
 
 Code review fixes (critical bugs, defensive gaps, SDPA GEMM cache, float4 vectorization, tests). No OPUS-MT translation impact (standard MHA), but SDPA decode kernel improvements (P3 float4 vectorization: 5-24% in isolated benchmarks). No regressions measured.
 
+### M16 — Performance Recovery (conditional sync + native f16 GEMM + restored fused SDPA decode)
+
+| Path | std tok/s | flash tok/s | Flash speedup |
+|------|-----------|-------------|---------------|
+| **f32** | 16.9 | **18.1** | **1.07x** |
+| **f16** | 22.4 | **27.5** | **1.23x** |
+| **bf16** (→f16) | 20.4 | **28.6** | **1.40x** |
+| **int8** | 26.7 | **26.7** | **1.00x** |
+| **int8_f16** | 23.2 | **32.3** | **1.39x** |
+| **int8_bf16** (→int8_f16) | 23.0 | **31.6** | **1.37x** |
+
+Flash attention fully operational with restored fused SDPA decode kernel (was accidentally deleted in M14.4). Flash f16 at 27.5 tok/s, int8_f16 flash at 32.3 tok/s.
+
 ---
 
-## Translation / OPUS-MT Summary (M15 — cleanup milestone, includes M14.5 sync fix)
+## Translation / OPUS-MT Summary (M16 — performance recovery, conditional sync + native f16 GEMM)
+
+| Backend | Type | tok/s | ms | vs CPU f32 | Notes |
+|---------|------|-------|-----|-----------|-------|
+| **MPS** | **bfloat16** | **1378** | **1121** | **1.68×** | Auto-promoted to f16; **+28% vs M15** |
+| **MPS** | **float16** | **1370** | **1127** | **1.67×** | **+28% vs M15**; now beats f32 |
+| **MPS** | **float32** | **1057** | **1461** | **1.29×** | Within noise of M15 |
+| **MPS** | **int8_bfloat16** | **866** | **1786** | **1.06×** | Auto-promoted to int8_f16; within noise |
+| **MPS** | **int8_float16** | **853** | **1814** | **1.04×** | Within noise |
+| CPU | float32 | 819 | 1892 | 1.00× | Baseline (4 threads, AMX) |
+| **MPS** | **int8** | **733** | **2118** | **0.90×** | Within noise |
+| CPU | int8 (RUY) | 540 | 2882 | 0.66× | Memory-constrained only (M12.7) |
+
+Note: M16 adds 3 optimizations: (1) conditional sync — skip `synchronize_stream` for default beam search (no RepetitionPenalty); (2) native MPS f16 GEMM for encoder (m>32) — eliminates half→f32→MPS→f32→half conversion overhead; (3) restored fused SDPA decode kernel. f16/bf16 recover from M14.5 regression and now beat f32 due to lower memory bandwidth.
+
+### Previous summary (M15 — cleanup milestone, includes M14.5 sync fix)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
@@ -70,8 +99,6 @@ Code review fixes (critical bugs, defensive gaps, SDPA GEMM cache, float4 vector
 | CPU | float32 | 816 | 1898 | 1.00× | — | — | Baseline (4 threads, AMX) |
 | **MPS** | **int8** | **768** | **2020** | **0.94×** | 186 | 54% | Within noise |
 | CPU | int8 (RUY) | 540 | 2882 | 0.66× | — | — | Memory-constrained only (M12.7) |
-
-Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchronize_stream` after decoder for logits processor correctness — doubles commit count (~90→~190), regresses f16 by ~25%. f32/int8/int8_f16 within noise. M15 cleanup changes have zero hot-path impact. OPUS-MT translation uses standard MHA (not FlashMHA), so M12.18–M12.25 (FlashMHA work) have no impact on these numbers.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -120,6 +147,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1479 | 1527, 1479, 1487 | 1544 | 96 | 53% | 1044 | Residency sets (within noise) | 1.31x |
 | 17 | 972abc70 | 1443 | 1516, 1506, 1443 | 1544 | 96 | 56% | 1070 | M13 f16 batch + bug fixes (within noise) | 1.34x |
 | 18 | d04ab8b5 | 1482 | 1537, 1482, 1522 | 1544 | 184 | 54% | 1042 | M15 Cleanup (within noise; commits 2× from M14.5 sync) | 1.28x |
+| 19 | (M16) | 1461 | 1499, 1461, 1495 | 1544 | — | — | 1057 | M16 Performance Recovery (within noise) | 1.29x |
 
 ## Float16 Results (50 sentences)
 
@@ -143,6 +171,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1049 | 1095, 1051, 1049 | 1550 | 90 | 41% | 1478 | Residency sets (within noise) | 1.81x |
 | 17 | 972abc70 | 1080 | 1131, 1096, 1080 | 1550 | 90 | 42% | 1435 | M13 f16 batch + bug fixes (within noise) | |
 | 18 | d04ab8b5 | 1439 | 1488, 1458, 1439 | 1544 | 190 | 48% | 1073 | M15 Cleanup ⚠️ regression: M14.5 sync doubles commits | 1.32x |
+| 19 | (M16) | **1127** | 1221, 1175, 1127 | 1544 | — | — | **1370** | **M16 Recovery: conditional sync + native f16 GEMM (+28%)** | **1.67x** |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -166,6 +195,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1926 | 1968, 1929, 1926 | 1552 | 97 | 56% | 806 | Residency sets (within noise) |
 | 17 | 972abc70 | 2021 | 2085, 2021, 2026 | 1552 | 97 | 56% | 768 | M13 f16 batch + bug fixes (within noise) |
 | 18 | d04ab8b5 | 2020 | 2032, 2038, 2020 | 1552 | 186 | 54% | 768 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
+| 19 | (M16) | 2118 | 2191, 2172, 2118 | 1552 | — | — | 733 | M16 (within noise) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -189,6 +219,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1793 | 1829, 1793, 1810 | 1547 | 93 | 44% | 863 | Residency sets (within noise) |
 | 17 | 972abc70 | 1820 | 1951, 1909, 1820 | 1547 | 93 | 45% | 850 | M13 f16 batch + bug fixes (within noise) |
 | 18 | d04ab8b5 | 1750 | 1819, 1750, 1757 | 1547 | 182 | 44% | 884 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
+| 19 | (M16) | 1814 | 1832, 1814, 1837 | 1547 | — | — | 853 | M16 (within noise) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -212,6 +243,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1030 | 1072, 1051, 1030 | 1550 | 90 | 41% | 1505 | Residency sets (within noise) |
 | 17 | 972abc70 | 1108 | 1134, 1108, 1171 | 1550 | 90 | 41% | 1399 | M13 f16 batch + bug fixes (within noise) |
 | 18 | d04ab8b5 | 1436 | 1530, 1478, 1436 | 1544 | 190 | 50% | 1076 | M15 Cleanup ⚠️ regression: M14.5 sync doubles commits | |
+| 19 | (M16) | **1121** | 1121, 1190, 1181 | 1544 | — | — | **1378** | **M16 Recovery: conditional sync + native f16 GEMM (+28%)** | |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -235,6 +267,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | 16 | a4046a63 | 1725 | 1792, 1725, 1741 | 1547 | 93 | 44% | 897 | Residency sets (within noise) |
 | 17 | 972abc70 | 1765 | 1828, 1797, 1765 | 1547 | 93 | 45% | 876 | M13 f16 batch + bug fixes (within noise) |
 | 18 | d04ab8b5 | 1786 | 1866, 1786, 1805 | 1547 | 182 | 45% | 866 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
+| 19 | (M16) | 1786 | 1786, 1810, 1823 | 1547 | — | — | 866 | M16 (within noise; auto-promoted to int8_f16) |
 
 ---
 
@@ -270,6 +303,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchroni
 | **M13** | f16 batching inference + bug fixes | No OPUS-MT translation impact (within noise). M13 code changes (f16 GEMM kernels, flash cross-attention, SDPA flush) do not affect the standard MHA sweep path. |
 | **M14.5** | Logits processor `synchronize_stream` fix | Correctness fix: prevents GPU page fault + repetition_penalty crash. Commit count ~2× (90→190 for f16). **f16 regression**: 1080→1439 ms (−25%). f32/int8 within noise. Required for correct beam search. |
 | **M15** | Cleanup milestone | No hot-path code changes. All compute types within noise of M14.5 levels. |
+| **M16** | Performance Recovery: conditional sync + native f16 GEMM + fused SDPA | **f16: 1073→1370 tok/s (+28%)**, bf16: 1076→1378 (+28%). Conditional sync skips `synchronize_stream` when no processors need GPU-coherent data. Native MPS f16 GEMM for encoder (m>32) eliminates 3-op promotion overhead. Restored fused SDPA decode kernel (accidentally deleted in M14.4). f32/int8 within noise. |
 
 ---
 

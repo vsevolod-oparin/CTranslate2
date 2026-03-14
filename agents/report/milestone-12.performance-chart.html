@@ -170,7 +170,7 @@
     <div class="legend-item"><div class="legend-dot" style="background:#e0af68"></div> MPS int8</div>
     <div class="legend-item"><div class="legend-dot" style="background:#f7768e"></div> MPS int8_float16</div>
     <div class="legend-item"><div class="legend-dot" style="background:#c0a36e"></div> MPS int8_bfloat16</div>
-    <div class="legend-item"><div class="legend-line" style="background:#555; border-top: 2px dashed #555"></div> CPU f32 baseline (816 tok/s)</div>
+    <div class="legend-item"><div class="legend-line" style="background:#555; border-top: 2px dashed #555"></div> CPU f32 baseline (819 tok/s)</div>
   </div>
   <div id="bar-chart" style="position:relative"></div>
 </div>
@@ -200,7 +200,7 @@
 
 <!-- Summary table -->
 <div class="table-container">
-  <div class="chart-title">Translation Performance Summary (M15 — OPUS-MT, standard MHA; includes M14.5 sync fix regression)</div>
+  <div class="chart-title">Translation Performance Summary (M16 — OPUS-MT, standard MHA; M14.5 sync regression recovered)</div>
   <table id="summary-table">
     <thead>
       <tr>
@@ -224,7 +224,7 @@
 <script>
 
 // ── Raw data ──
-const cpuBaseline = 816;  // CPU f32, 4 threads, 50 sentences (M15)
+const cpuBaseline = 819;  // CPU f32, 4 threads, 50 sentences (M16)
 
 // Timeline data: tok/s at each milestone for each type
 const milestones = [
@@ -246,47 +246,48 @@ const milestones = [
   "M12.25\nFlashMHA\nReview",
   "M12.26\nResidency\nSets",
   "M13\nf16 Batch\n+ Fixes",
-  "M15\nCleanup"
+  "M15\nCleanup",
+  "M16\nPerf\nRecovery"
 ];
 
 const timeline = {
-  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497, 1496, 1490, 1495, 1495, 1495, 1495, 1495, 1475, 1462, 1478, 1435, 1073],
-  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019, 1059, 1053, 1026, 1026, 1026, 1026, 1026, 1053, 1032, 1044, 1070, 1042],
-  int8:         [  77,   83,   84,   84,   84,  453,  462,  467,  779,  769,  769,  769,  769,  769,  761,  773,  806,  768,  768],
-  int8_float16: [  78,   85,   86,   86,   86,  494,  486,  496,  889,  870,  870,  870,  870,  870,  875,  901,  863,  850,  884],
-  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492, 1305, 1490, 1457, 1457, 1457, 1457, 1457, 1457, 1461, 1505, 1399, 1076],
+  float16:      [1286, 1500, 1531, 1476, 1476, 1464, 1497, 1496, 1490, 1495, 1495, 1495, 1495, 1495, 1475, 1462, 1478, 1435, 1073, 1370],
+  float32:      [ 923, 1043, 1056, 1019, 1019, 1000, 1019, 1059, 1053, 1026, 1026, 1026, 1026, 1026, 1053, 1032, 1044, 1070, 1042, 1057],
+  int8:         [  77,   83,   84,   84,   84,  453,  462,  467,  779,  769,  769,  769,  769,  769,  761,  773,  806,  768,  768,  733],
+  int8_float16: [  78,   85,   86,   86,   86,  494,  486,  496,  889,  870,  870,  870,  870,  870,  875,  901,  863,  850,  884,  853],
+  bfloat16:     [   9,    9,    9,    9, 1426, 1426, 1492, 1305, 1490, 1457, 1457, 1457, 1457, 1457, 1457, 1461, 1505, 1399, 1076, 1378],
 };
 
 // Commit counts timeline
 const commitTimeline = {
-  float16:      [188, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 190],
-  float32:      [188, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 184],
-  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522, 3522, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 186],
-  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446, 3446, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 182],
-  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 190],
+  float16:      [188, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 190, 90],
+  float32:      [188, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 96, 184, 96],
+  int8:         [5743, 5692, 5692, 5692, 5692, 3522, 3522, 3522, 97, 97, 97, 97, 97, 97, 97, 97, 97, 97, 186, 97],
+  int8_float16: [5630, 5580, 5580, 5580, 5580, 3446, 3446, 3446, 93, 93, 93, 93, 93, 93, 93, 93, 93, 93, 182, 93],
+  bfloat16:     [2895, 2844, 2844, 2844, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 90, 190, 90],
 };
 
 // Final summary table data
 const finalData = [
-  {backend:"MPS",type:"bfloat16", toks:1076,ms:1436,vsCpu:"1.32×",commits:190, gpu:"50%",notes:"Auto-promoted to f16 (M12.5)",cls:"type-bf16"},
-  {backend:"MPS",type:"float16",  toks:1073,ms:1439,vsCpu:"1.32×",commits:190, gpu:"48%",notes:"⚠ regressed from 1462 (M14.5 sync)",cls:"type-f16"},
-  {backend:"MPS",type:"float32",  toks:1042,ms:1482,vsCpu:"1.28×",commits:184, gpu:"54%",notes:"Within noise",cls:"type-f32"},
-  {backend:"MPS",type:"int8_float16",toks:884,ms:1750,vsCpu:"1.08×",commits:182,gpu:"44%",notes:"Within noise",cls:"type-i8f16"},
-  {backend:"MPS",type:"int8_bfloat16",toks:866,ms:1786,vsCpu:"1.06×",commits:182,gpu:"45%",notes:"Auto-promoted to int8_f16",cls:"type-i8bf16"},
-  {backend:"CPU",type:"float32",  toks:816, ms:1898,vsCpu:"1.00×",commits:0,   gpu:"—",  notes:"Baseline (4 threads, AMX)",cls:"type-cpu"},
-  {backend:"MPS",type:"int8",     toks:768, ms:2020,vsCpu:"0.94×",commits:186, gpu:"54%",notes:"Within noise",cls:"type-i8"},
+  {backend:"MPS",type:"bfloat16", toks:1378,ms:1121,vsCpu:"1.68×",commits:90, gpu:"—",notes:"M16: +28% vs M15 (native f16 GEMM)",cls:"type-bf16"},
+  {backend:"MPS",type:"float16",  toks:1370,ms:1127,vsCpu:"1.67×",commits:90, gpu:"—",notes:"M16: +28% vs M15; now beats f32",cls:"type-f16"},
+  {backend:"MPS",type:"float32",  toks:1057,ms:1461,vsCpu:"1.29×",commits:96, gpu:"—",notes:"Within noise",cls:"type-f32"},
+  {backend:"MPS",type:"int8_bfloat16",toks:866,ms:1786,vsCpu:"1.06×",commits:93,gpu:"—",notes:"Auto-promoted to int8_f16",cls:"type-i8bf16"},
+  {backend:"MPS",type:"int8_float16",toks:853,ms:1814,vsCpu:"1.04×",commits:93,gpu:"—",notes:"Within noise",cls:"type-i8f16"},
+  {backend:"CPU",type:"float32",  toks:819, ms:1892,vsCpu:"1.00×",commits:0,   gpu:"—",  notes:"Baseline (4 threads, AMX)",cls:"type-cpu"},
+  {backend:"MPS",type:"int8",     toks:733, ms:2118,vsCpu:"0.90×",commits:97, gpu:"—",notes:"Within noise",cls:"type-i8"},
   {backend:"CPU",type:"int8 RUY", toks:540, ms:2882,vsCpu:"0.66×",commits:0,   gpu:"—",  notes:"Memory-constrained only (M12.7)",cls:"type-cpu"},
 ];
 
 // ── Summary cards ──
 const summaryEl = document.getElementById("summary");
 const cards = [
-  {value:"1,076", label:"Best tok/s (MPS bf16→f16)",cls:""},
-  {value:"1.32×", label:"vs CPU f32 (816 tok/s)",cls:"highlight"},
-  {value:"⚠ −25%", label:"f16 regression (M14.5 sync)",cls:"warn"},
-  {value:"2×",    label:"Commit count increase (M14.5)",cls:"cpu"},
-  {value:"884",   label:"INT8_f16 tok/s",cls:""},
-  {value:"15",    label:"Milestones completed",cls:""},
+  {value:"1,378", label:"Best tok/s (MPS bf16→f16, M16)",cls:""},
+  {value:"1.68×", label:"vs CPU f32 (819 tok/s)",cls:"highlight"},
+  {value:"+28%", label:"f16 recovery (M16 vs M15)",cls:""},
+  {value:"1,370", label:"float16 tok/s (beats f32)",cls:""},
+  {value:"853",   label:"INT8_f16 tok/s",cls:""},
+  {value:"16",    label:"Milestones completed",cls:""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");
@@ -323,7 +324,7 @@ function hideTip() { tip.style("opacity",0); }
   const g = svg.append("g").attr("transform",`translate(${margin.left},${margin.top})`);
 
   const x = d3.scaleBand().domain(types).range([0,innerW]).padding(0.25);
-  const y = d3.scaleLinear().domain([0,1700]).range([innerH,0]);
+  const y = d3.scaleLinear().domain([0,1800]).range([innerH,0]);
 
   g.append("g").attr("class","grid")
     .call(d3.axisLeft(y).ticks(8).tickSize(-innerW).tickFormat(""));
@@ -334,7 +335,7 @@ function hideTip() { tip.style("opacity",0); }
     .attr("stroke","#555").attr("stroke-dasharray","6,4").attr("stroke-width",1.5);
   g.append("text").attr("x",innerW-4).attr("y",y(cpuBaseline)-6)
     .attr("text-anchor","end").attr("fill","#666").attr("font-size","10px")
-    .text("CPU f32 baseline (816 tok/s)");
+    .text("CPU f32 baseline (819 tok/s)");
 
   // Bars
   g.selectAll(".bar").data(finalData).enter().append("rect")
@@ -386,7 +387,7 @@ function hideTip() { tip.style("opacity",0); }
   const g = svg.append("g").attr("transform",`translate(${margin.left},${margin.top})`);
 
   const x = d3.scalePoint().domain(d3.range(milestones.length)).range([0,innerW]).padding(0.3);
-  const y = d3.scaleLinear().domain([0,1700]).range([innerH,0]);
+  const y = d3.scaleLinear().domain([0,1800]).range([innerH,0]);
 
   g.append("g").attr("class","grid")
     .call(d3.axisLeft(y).ticks(8).tickSize(-innerW).tickFormat(""));
@@ -451,6 +452,8 @@ function hideTip() { tip.style("opacity",0); }
     {i:5, label:"INT8: 84→453 (5.4×)", y:453, dy:-16, color:"#e0af68"},
     {i:8, label:"INT8: 467→779 (1.67×)", y:779, dy:-16, color:"#e0af68"},
     {i:8, label:"INT8_f16: 496→889 (1.79×)", y:889, dy:-16, color:"#f7768e"},
+    {i:19, label:"f16: 1073→1370 (+28%)", y:1370, dy:-16, color:"#9ece6a"},
+    {i:19, label:"bf16: 1076→1378 (+28%)", y:1378, dy:-32, color:"#bb9af7"},
   ];
   annotations.forEach(a => {
     g.append("text").attr("class","annotation")

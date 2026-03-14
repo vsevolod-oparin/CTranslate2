@@ -499,6 +499,28 @@ namespace ctranslate2 {
     }
   }
 
+#ifdef CT2_WITH_MPS
+  // M14.5 conditional sync: only needed when a logits processor reads GPU logits
+  // data.  RepetitionPenalty reads logits via Gather + penalize_previous_tokens.
+  // Built-in processors (SuppressTokens, NoRepeatNgram, etc.) only call
+  // DisableTokens::add() (CPU-side index accumulation); the eventual
+  // DisableTokens::apply() → indexed_fill has its own internal sync.
+  // User-provided processors are conservatively assumed to read logits.
+  static bool needs_logits_sync(
+      const std::vector<std::shared_ptr<LogitsProcessor>>& logits_processors) {
+    for (const auto& p : logits_processors) {
+      if (dynamic_cast<RepetitionPenalty*>(p.get()))
+        return true;
+      if (!dynamic_cast<NoRepeatNgram*>(p.get()) &&
+          !dynamic_cast<SuppressTokens*>(p.get()) &&
+          !dynamic_cast<SuppressTokensBegin*>(p.get()) &&
+          !dynamic_cast<SuppressSequences*>(p.get()))
+        return true;
+    }
+    return false;
+  }
+#endif
+
 
   BeamSearch::BeamSearch(const dim_t beam_size,
                          const float length_penalty,
@@ -582,6 +604,11 @@ namespace ctranslate2 {
                                         return_prefix,
                                         use_hard_prefix ? prefix_ids : nullptr);
 
+#ifdef CT2_WITH_MPS
+    const bool sync_after_decoder = (device == Device::MPS
+                                     && needs_logits_sync(logits_processors));
+#endif
+
     // M12.4: Decode-loop profiling.
     DecodeProfiler prof;
     prof.enabled = decode_profile_enabled();
@@ -607,14 +634,11 @@ namespace ctranslate2 {
 
 #ifdef CT2_WITH_MPS
       // M14.5: Sync after decoder before logits processors.
-      // The decoder's last output GEMM uses MPSMatrixMultiplication (for K > 32
-      // with f16 promoted path).  MPS has a driver coherency issue where custom
-      // compute encoders in the SAME command buffer may read stale data from
-      // prior MPS operations.  Logits processors (RepetitionPenalty, DisableTokens)
-      // encode custom compute kernels that read/write the logits buffer.
-      // commit_and_wait ensures the decoder's GPU work is complete and logits
-      // data is coherent before any logits processor touches it.
-      if (device == Device::MPS)
+      // Only needed when a processor reads GPU logits (RepetitionPenalty or
+      // user-provided).  Built-in write-only processors (SuppressTokens,
+      // NoRepeatNgram, etc.) only call DisableTokens::add() (CPU-side);
+      // DisableTokens::apply() → indexed_fill has its own internal sync.
+      if (sync_after_decoder)
         synchronize_stream(device);
 #endif
 
@@ -993,6 +1017,11 @@ namespace ctranslate2 {
 
     const dim_t max_step = get_max_step(max_length, return_prefix, prefix_ids);
 
+#ifdef CT2_WITH_MPS
+    const bool sync_after_decoder = (device == Device::MPS
+                                     && needs_logits_sync(logits_processors));
+#endif
+
     for (dim_t step = 0; step < max_step; ++step) {
       convert_to_original_word_ids(decoder, sample_from);
       decoder(start_step + step,
@@ -1003,7 +1032,7 @@ namespace ctranslate2 {
 
 #ifdef CT2_WITH_MPS
       // M14.5: Sync after decoder before logits processors (see beam_search).
-      if (device == Device::MPS)
+      if (sync_after_decoder)
         synchronize_stream(device);
 #endif
 

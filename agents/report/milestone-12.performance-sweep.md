@@ -14,6 +14,7 @@
 **CPU baseline**: float32, 4 threads, 50 sentences → 1950 ms, 1549 tokens, 794 tok/s (M12.12, ptr cache)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1895 ms, 1549 tokens, 817 tok/s (M12.25, final)
 **CPU baseline**: float32, 4 threads, 50 sentences → 1936 ms, 1549 tokens, 800 tok/s (M13, f16 batch + bug fixes)
+**CPU baseline**: float32, 4 threads, 50 sentences → 1898 ms, 1549 tokens, 816 tok/s (M15, cleanup milestone)
 **Chart**: `agents/report/milestone-12.performance-chart.html`
 
 ---
@@ -57,20 +58,20 @@ Code review fixes (critical bugs, defensive gaps, SDPA GEMM cache, float4 vector
 
 ---
 
-## Translation / OPUS-MT Summary (M12.25 — final, all FlashMHA code review fixes complete)
+## Translation / OPUS-MT Summary (M15 — cleanup milestone, includes M14.5 sync fix)
 
 | Backend | Type | tok/s | ms | vs CPU f32 | Commits | GPU% | Notes |
 |---------|------|-------|-----|-----------|---------|------|-------|
-| **MPS** | **float16** | **1462** | **1060** | **1.79×** | 90 | 41% | Best overall |
-| **MPS** | **bfloat16** | **1461** | **1061** | **1.79×** | 90 | 41% | Auto-promoted to f16 (M12.5) |
-| **MPS** | **float32** | **1032** | **1496** | **1.26×** | 96 | 54% | Precision-sensitive |
-| **MPS** | **int8_float16** | **901** | **1717** | **1.10×** | 93 | 45% | M12.10: 1.79× vs M12.9 |
-| **MPS** | **int8_bfloat16** | **899** | **1721** | **1.10×** | 93 | 45% | Auto-promoted to int8_f16 |
-| CPU | float32 | 817 | 1895 | 1.00× | — | — | Baseline (4 threads, AMX) |
-| **MPS** | **int8** | **773** | **2008** | **0.95×** | 97 | 56% | M12.10: 1.67× vs M12.9 |
+| **MPS** | **bfloat16** | **1076** | **1436** | **1.32×** | 190 | 50% | Auto-promoted to f16 (M12.5) |
+| **MPS** | **float16** | **1073** | **1439** | **1.32×** | 190 | 48% | ⚠️ regressed from 1462 (M14.5 sync) |
+| **MPS** | **float32** | **1042** | **1482** | **1.28×** | 184 | 54% | Within noise |
+| **MPS** | **int8_float16** | **884** | **1750** | **1.08×** | 182 | 44% | Within noise |
+| **MPS** | **int8_bfloat16** | **866** | **1786** | **1.06×** | 182 | 45% | Auto-promoted to int8_f16 |
+| CPU | float32 | 816 | 1898 | 1.00× | — | — | Baseline (4 threads, AMX) |
+| **MPS** | **int8** | **768** | **2020** | **0.94×** | 186 | 54% | Within noise |
 | CPU | int8 (RUY) | 540 | 2882 | 0.66× | — | — | Memory-constrained only (M12.7) |
 
-Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation uses standard MHA (not FlashMHA), so M12.18–M12.25 (FlashMHA work) have no impact on these numbers. Translation performance stabilized at M12.12 levels. M12.13 aggressive GEMV: **REJECTED** (20% slower). M12.14 decode bookkeeping: **REJECTED** — consistent slight regression. M12.15 BiasAdd fusion: **REJECTED** — ±3% noise. M12.16 object pooling: **REJECTED** — ±3% noise. M12.17 GPU decode RoPE: **REJECTED** — dead code on MPS. M12.18–M12.25: FlashMHA optimizations (correctness, commit count, fused INT8 GEMV, code review) — Generator/decoder-only path only.
+Note: CPU baseline varies between runs (741–830 tok/s). M14.5 added `synchronize_stream` after decoder for logits processor correctness — doubles commit count (~90→~190), regresses f16 by ~25%. f32/int8/int8_f16 within noise. M15 cleanup changes have zero hot-path impact. OPUS-MT translation uses standard MHA (not FlashMHA), so M12.18–M12.25 (FlashMHA work) have no impact on these numbers.
 
 ### CPU INT8 Thread Scaling (50 sentences, beam=4, RUY)
 
@@ -118,6 +119,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 1496 | 1535, 1496, 1528 | 1544 | 96 | 54% | 1032 | M12.25 FlashMHA code review complete (within noise, no OPUS-MT impact) | 1.27x |
 | 16 | a4046a63 | 1479 | 1527, 1479, 1487 | 1544 | 96 | 53% | 1044 | Residency sets (within noise) | 1.31x |
 | 17 | 972abc70 | 1443 | 1516, 1506, 1443 | 1544 | 96 | 56% | 1070 | M13 f16 batch + bug fixes (within noise) | 1.34x |
+| 18 | d04ab8b5 | 1482 | 1537, 1482, 1522 | 1544 | 184 | 54% | 1042 | M15 Cleanup (within noise; commits 2× from M14.5 sync) | 1.28x |
 
 ## Float16 Results (50 sentences)
 
@@ -140,6 +142,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 1060 | 1120, 1060, 1105 | 1550 | 90 | 41% | 1462 | M12.25 FlashMHA code review complete (within noise) | 1.79x |
 | 16 | a4046a63 | 1049 | 1095, 1051, 1049 | 1550 | 90 | 41% | 1478 | Residency sets (within noise) | 1.81x |
 | 17 | 972abc70 | 1080 | 1131, 1096, 1080 | 1550 | 90 | 42% | 1435 | M13 f16 batch + bug fixes (within noise) | |
+| 18 | d04ab8b5 | 1439 | 1488, 1458, 1439 | 1544 | 190 | 48% | 1073 | M15 Cleanup ⚠️ regression: M14.5 sync doubles commits | 1.32x |
 
 ## INT8 Results (50 sentences, post-M12.6)
 
@@ -162,6 +165,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 2008 | 2054, 2008, 2051 | 1552 | 97 | 56% | 773 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1926 | 1968, 1929, 1926 | 1552 | 97 | 56% | 806 | Residency sets (within noise) |
 | 17 | 972abc70 | 2021 | 2085, 2021, 2026 | 1552 | 97 | 56% | 768 | M13 f16 batch + bug fixes (within noise) |
+| 18 | d04ab8b5 | 2020 | 2032, 2038, 2020 | 1552 | 186 | 54% | 768 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
 
 ## INT8+Float16 Results (50 sentences, post-M12.6)
 
@@ -184,6 +188,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 1717 | 1764, 1725, 1717 | 1547 | 93 | 45% | 901 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1793 | 1829, 1793, 1810 | 1547 | 93 | 44% | 863 | Residency sets (within noise) |
 | 17 | 972abc70 | 1820 | 1951, 1909, 1820 | 1547 | 93 | 45% | 850 | M13 f16 batch + bug fixes (within noise) |
+| 18 | d04ab8b5 | 1750 | 1819, 1750, 1757 | 1547 | 182 | 44% | 884 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
 
 ## BFloat16 Results (50 sentences, post-M12.5)
 
@@ -206,6 +211,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 1061 | 1094, 1061, 1061 | 1550 | 90 | 41% | 1461 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1030 | 1072, 1051, 1030 | 1550 | 90 | 41% | 1505 | Residency sets (within noise) |
 | 17 | 972abc70 | 1108 | 1134, 1108, 1171 | 1550 | 90 | 41% | 1399 | M13 f16 batch + bug fixes (within noise) |
+| 18 | d04ab8b5 | 1436 | 1530, 1478, 1436 | 1544 | 190 | 50% | 1076 | M15 Cleanup ⚠️ regression: M14.5 sync doubles commits | |
 
 ## INT8+BFloat16 Results (50 sentences, post-M12.5)
 
@@ -228,6 +234,7 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | 15 | 0547660b | 1721 | 1795, 1733, 1721 | 1547 | 93 | 45% | 899 | M12.25 FlashMHA code review complete (within noise) |
 | 16 | a4046a63 | 1725 | 1792, 1725, 1741 | 1547 | 93 | 44% | 897 | Residency sets (within noise) |
 | 17 | 972abc70 | 1765 | 1828, 1797, 1765 | 1547 | 93 | 45% | 876 | M13 f16 batch + bug fixes (within noise) |
+| 18 | d04ab8b5 | 1786 | 1866, 1786, 1805 | 1547 | 182 | 45% | 866 | M15 Cleanup (within noise; commits 2× from M14.5 sync) |
 
 ---
 
@@ -261,6 +268,8 @@ Note: CPU baseline varies between runs (741–830 tok/s). OPUS-MT translation us
 | **M12.25** | FlashMHA code review: quality + tests (Q1-Q4, T1-T6) | Dead code removal, magic number docs, 22+16 unit tests, GQA ref bug fix |
 | **M12.26** | Metal Residency Sets (macOS 15+) | Pin model buffers in physical memory; no OPUS-MT impact (within noise) — benefits expected under memory pressure with larger models |
 | **M13** | f16 batching inference + bug fixes | No OPUS-MT translation impact (within noise). M13 code changes (f16 GEMM kernels, flash cross-attention, SDPA flush) do not affect the standard MHA sweep path. |
+| **M14.5** | Logits processor `synchronize_stream` fix | Correctness fix: prevents GPU page fault + repetition_penalty crash. Commit count ~2× (90→190 for f16). **f16 regression**: 1080→1439 ms (−25%). f32/int8 within noise. Required for correct beam search. |
+| **M15** | Cleanup milestone | No hot-path code changes. All compute types within noise of M14.5 levels. |
 
 ---
 

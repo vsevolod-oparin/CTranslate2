@@ -65,10 +65,12 @@
 | 50 | 7af87e39 | 1,946 | 1907, 1947, 1986 | 123 | Code review #2: BUG-2 fix (commit_and_wait) | 21.16x |
 | 51 | 47960086 | **1,860** | 1865, 1862, 1855 | 123 | **M11.29 MTLSharedEvent encode_barrier** | **22.13x** |
 | 52 | a4046a63 | **1,812** | 1811, 1818, 1807 | 123 | M12.26 Residency sets + whisper correctness fix | **22.72x** |
+| 53 | d04ab8b5 | **2,239** | 2266, 2239, 2271 | 127 | M15 Cleanup milestone | **18.39x** ⚠️ |
 
 *Commits 1-2 failed to benchmark (API incompatibility with earlier code).*
 *Commits 15-16 ran fast but produced only 8-10 tokens (correctness bug, later fixed).*
 *Commit 50 regressed ~10% vs 48-49: BUG-2 fix used full commit_and_wait() in indexed_fill. Commit 51 recovers ~half the regression via hybrid sync: f32 keeps CT2_COMMIT_AND_WAIT (required — MPS driver coherency), f16/bf16 use GPU-side MTLSharedEvent encode_barrier (no CPU block).*
+*Commit 53 methodology change: uses HF WhisperFeatureExtractor on real audio (sample.mp3 30s) instead of random mel features. Produces 127 tokens vs ~123 previously. Per-token decode time: 17.6ms vs 14.7ms — gap likely includes both methodology difference and M14.5 `synchronize_stream` overhead (commit count doubled in M12 sweep).*
 
 ---
 

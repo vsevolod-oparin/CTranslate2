@@ -184,6 +184,7 @@ const raw = [
   {i:50, hash:"7af87e39", msg:"Code review #2: BUG-2 fix (commit_and_wait)", times:[1906.9,1946.5,1985.5], tokens:[123,123,123], mean:1946.3},
   {i:51, hash:"47960086", msg:"M11.29 MTLSharedEvent encode_barrier (hybrid sync)", times:[1864.8,1861.5,1854.9], tokens:[123,123,123], mean:1860.4},
   {i:52, hash:"a4046a63", msg:"M12.26 Residency sets + whisper correctness fix", times:[1811.3,1817.6,1806.8], tokens:[123,123,123], mean:1811.9},
+  {i:53, hash:"d04ab8b5", msg:"M15 Cleanup milestone (⚠ methodology change: real audio mel)", times:[2266,2239,2271], tokens:[127,127,127], mean:2258.7, warn:true},
 ];
 
 const data = raw.filter(d => d.times);
@@ -193,9 +194,9 @@ const baseline = 41169.4;
 const summaryEl = document.getElementById("summary");
 const cards = [
   {value: "41.2s", label: "Baseline (M11.3)", cls: "warn"},
-  {value: "1.81s", label: "Latest mean (commit 52)", cls: ""},
-  {value: "22.7×", label: "Total speedup", cls: "highlight"},
-  {value: "50", label: "Commits benchmarked", cls: ""},
+  {value: "2.26s", label: "Latest mean (commit 53, ⚠ new mel)", cls: ""},
+  {value: "18.2×", label: "Speedup (methodology change)", cls: "highlight"},
+  {value: "51", label: "Commits benchmarked", cls: ""},
 ];
 cards.forEach(c => {
   const el = document.createElement("div");
@@ -215,7 +216,7 @@ const svg = d3.select("#chart").append("svg")
   .attr("width", width).attr("height", height);
 const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
 
-const x = d3.scaleLinear().domain([3, 52]).range([0, innerW]);
+const x = d3.scaleLinear().domain([3, 53]).range([0, innerW]);
 const y = d3.scaleLinear().domain([0, 45000]).range([innerH, 0]);
 
 // Grid
@@ -230,6 +231,7 @@ const phases = [
   {x0:16.5, x1:36.5, color:"#1a1818", label:"Memory Leak Era"},
   {x0:36.5, x1:41.5, color:"#151a18", label:"Stable Fast"},
   {x0:41.5, x1:52.5, color:"#151520", label:"Sync Elimination"},
+  {x0:52.5, x1:53.5, color:"#1a1518", label:"M15"},
 ];
 phases.forEach(p => {
   g.append("rect")

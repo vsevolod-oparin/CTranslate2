@@ -1244,9 +1244,24 @@ Report: `agents/report/milestone-7-remaining-ops.md`
   **14.4.1 Fix repetition_penalty GPU page fault** ✅ → M14.5
   - Root cause: MPS driver coherency issue (not OOB). See M14.5.
 
-  **14.4.2 Cross-model validation** ← TODO
-  - Check if other models (Whisper, TinyLlama) show the same beam search pattern
-  - Test beam=6 recommendation across models
+  **14.4.2 Cross-model validation** ✅ (M15.7, 2026-03-14)
+  Results (WMT14 2737 sentences for seq2seq, 5 prompts for TinyLlama, 60s audio for Whisper):
+
+  | Model | f32 beam=4 | f16 beam=4 | f16 beam=6 | f16 b6+lp0.6 | Gap b4 | Gap b6+lp |
+  |-------|-----------|-----------|-----------|-------------|--------|-----------|
+  | OPUS-MT | 27.65 | 25.63 | 26.97 | 27.22 | 2.02 | **0.43** |
+  | OpenNMT-py | 26.57 | 26.16 | 26.22 | 26.36 | 0.41 | **0.21** |
+  | Whisper | (identical f32/f16 output at all beam sizes) | — | — |
+
+  - **OPUS-MT**: Confirms M14.4 — beam=6+lp0.6 closes gap to 0.43 (meets <0.5 criterion).
+  - **OpenNMT-py**: Much smaller gap (0.41 at beam=4), beam=6+lp0.6 reduces to 0.21. Less sensitive to f16 noise.
+  - **Whisper**: f16 and f32 produce **identical** transcriptions at beam=1,4,6. No beam search degeneration.
+  - **TinyLlama**: f16 greedy differs from f32 (expected for decoder-only with different logit distributions).
+    f16 beam=4 and beam=6 produce coherent but different completions vs f32 — no repetition-loop degeneration.
+
+  **Conclusion**: beam search degeneration is model-specific, not universal. OPUS-MT is most sensitive.
+  The beam=6+length_penalty=0.6 recommendation is valid but primarily needed for OPUS-MT-style models.
+  No blanket recommendation change needed — document as model-specific guidance.
 
 **14.5 Logits processor sync fix** ✅
 - **Root cause:** MPS driver coherency — MPSMatrixMultiplication + custom compute encoders in same CB
@@ -1325,10 +1340,15 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - **Flagged for future implementation** — Gemma support on Metal is blocked by this.
 - Files: `src/ops/normalization_metal.mm`
 
-**15.7 Cross-model beam search validation (from M14.4.2 TODO)**
-- M14.4.2 left a TODO: "Check if other models (Whisper, TinyLlama) show the same beam search pattern" and "Test beam=6 recommendation across models."
-- Run validation and close the TODO.
-- Files: `APPLE_M4_METAL_PLAN.md` (update M14.4.2 status)
+**15.7 Cross-model beam search validation (from M14.4.2 TODO)** ✅
+- Tested 4 models: OPUS-MT, OpenNMT-py (seq2seq), TinyLlama (decoder-only), Whisper (ASR).
+- **OPUS-MT**: Confirms M14.4 — f16 beam=4 gap=2.02, beam=6+lp0.6 closes to 0.43 (meets criterion).
+- **OpenNMT-py**: Smaller gap (0.41 at beam=4), beam=6+lp0.6 → 0.21. Less sensitive.
+- **Whisper**: f16 == f32 at all beam sizes. No degeneration.
+- **TinyLlama**: Coherent f16 output, no repetition loops. Different completions expected.
+- **Conclusion**: Beam search degeneration is OPUS-MT-specific, not universal. beam=6+lp0.6 is valid guidance for affected models but not a blanket requirement.
+- Closed M14.4.2 TODO in plan.
+- Files: `APPLE_M4_METAL_PLAN.md`
 
 ---
 

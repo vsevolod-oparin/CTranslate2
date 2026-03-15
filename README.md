@@ -146,6 +146,23 @@ Executed with CUDA 11 on a [*g5.xlarge*](https://aws.amazon.com/ec2/instance-typ
 
 Executed on Apple M4 with Metal Performance Shaders. Beam size 4, best of 2 runs. CPU baselines use 4 threads with Apple Accelerate. CTranslate2 MPS float16 is the fastest at **1857 tok/s** — **4.2x** faster than OpenNMT-py CPU, **2.6x** faster than CTranslate2 CPU, and **4.1x** faster than Transformers MPS. Bfloat16 is close behind at 1777 tok/s. OpenNMT-py and FasterTransformer do not support MPS. The OPUS-MT model shows a larger float16 BLEU gap (~2 points at beam=4) due to beam search sensitivity — use `beam_size=6, length_penalty=0.6` for quality parity. INT8 reduces memory by **45%** with negligible BLEU loss; int8+float16 adds ~6% speed over int8. See the [benchmark scripts](tools/benchmark) for details.
 
+#### Whisper (Apple Metal)
+
+| | RTF | EN WER | Avg WER (6 lang) | Max. memory |
+| --- | --- | --- | --- | --- |
+| CTranslate2 - MPS float16 | **0.155** | 4.7% | 14.0% | 4326MB |
+| CTranslate2 - MPS float16 (FlashMHA) | 0.164 | 4.7% | 14.0% | 4853MB |
+| CTranslate2 - MPS float16 beam=5 | 0.166 | 4.5% | 14.3% | 5209MB |
+| CTranslate2 - MPS float32 | 0.185 | 4.7% | 14.0% | 4682MB |
+| mlx-whisper float16 | 0.221 | 4.7% | 13.9% | 2011MB |
+| whisper.cpp Q5_0 | 0.279 | 4.3% | — | 1452MB |
+| whisper.cpp F16 | 0.300 | 4.3% | — | 2170MB |
+| OpenAI whisper float32 (CPU) | 0.317 | 4.7% | 14.0% | 4882MB |
+| CTranslate2 - CPU float32 | 0.388 | 4.7% | 14.0% | 4698MB |
+| CTranslate2 - CPU int8 | 0.560 | 4.7% | 14.0% | 2357MB |
+
+Whisper-large-v3-turbo on Apple M4, greedy decoding (beam=1 unless noted), evaluated on the [FLEURS](https://huggingface.co/datasets/google/fleurs) test set (50 samples per language, 6 languages: EN, JA, ZH, DE, ES, AR). RTF = wall time / audio duration (lower is better, < 1.0 means faster than real-time). CTranslate2 MPS float16 is the fastest at **RTF 0.155** — **1.9x** faster than whisper.cpp F16, **1.4x** faster than mlx-whisper, and **2.0x** faster than OpenAI whisper — with identical transcription quality (WER 14.0% matching OpenAI reference). whisper.cpp non-English WER omitted due to a pywhispercpp language setting issue in the benchmark runner. See the [benchmark scripts](tools/benchmark/whisper_fleurs) and [benchmark report](agents/report/milestone-16-whisper-fleurs-benchmark.md) for details.
+
 ## Contributing
 
 CTranslate2 is a community-driven project. We welcome contributions of all kinds:

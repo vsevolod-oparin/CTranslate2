@@ -13,3 +13,4 @@ docs/build/
 docs/python/
 
 .claude/
+tools/benchmark/whisper_fleurs/results_backup/

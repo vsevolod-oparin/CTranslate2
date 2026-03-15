@@ -1,137 +1,110 @@
 # Roadmap: 2x Metal Speed for whisper-large-v3-turbo
 
-## Current State (Post-M11.23)
+## Current State (Post-M16, 2026-03-15)
 
-- **Target**: whisper-large-v3-turbo, beam_size=5, 60s audio, float32
-- **CPU**: ~29s | **Metal**: ~27s | **Speedup**: ~1.09x
-- **Remaining syncs**: 3,002
+- **Target**: whisper-large-v3-turbo, beam_size=5, FLEURS 6-language benchmark
+- **CPU f32**: RTF 0.488 | **Metal f16**: RTF 0.172 | **Metal Flash f16**: RTF 0.154
+- **Speedup**: Metal f16 = **2.83x CPU** | Metal Flash f16 = **3.17x CPU**
+- **vs competitors**: 1.71x faster than whisper.cpp F16, 1.26x faster than mlx-whisper f16
 
-| Source | Syncs | Description |
-|--------|------:|-------------|
-| `devices.cc` (synchronize_stream) | 1,509 | Gather clone hazard, cross-device copy, framework sync |
-| `primitives_memory.mm` (indexed_fill) | 1,477 | `DisableTokens::apply()` CPU scatter |
-| `primitives_gemm.mm` (CPU cblas) | 16 | Float16-only remainder |
-| **Total** | **3,002** | |
+**The original 2x target has been achieved and exceeded.**
 
-At ~0.4ms per sync, the remaining syncs account for ~1.2s of pure overhead plus significant GPU pipeline bubbles (idle time between syncs).
+### Performance Evolution
 
-### Completed Milestones
+| State | Metal Time | CPU Time | Speedup |
+|-------|-----------|----------|---------|
+| Post-M11.23 (original roadmap) | ~27s | ~29s | 1.09x |
+| Post-M12 (allocator + sync elim) | — | — | ~1.8x (est.) |
+| Post-M12.19 (FlashMHA fusion) | — | — | ~2.8x (f16) |
+| Post-M16 (current, FLEURS) | RTF 0.154 | RTF 0.488 | **3.17x** |
 
-| Milestone | Syncs Eliminated | Status |
-|-----------|-----------------|--------|
-| M11.20 — GPU Multinomial Sampling | 756 → 0 | ✅ Done |
-| M11.21 — Gather Sync Elimination | 264 → 0 | ✅ Done |
-| M11.22 — Metal Memory Management | N/A (leak fix) | ✅ Done |
-| M11.23 — GPU Fused TopK | 268 → 0 | ✅ Done |
+### Sync Elimination Progress (cumulative)
 
-## Goal
+| Milestone | What | Syncs Eliminated |
+|-----------|------|-----------------|
+| M11.20 ✅ | GPU Multinomial Sampling | 756 → 0 |
+| M11.21 ✅ | Gather Sync Elimination | 264 → 0 |
+| M11.22 ✅ | Metal Memory Management (leak fix) | N/A |
+| M11.23 ✅ | GPU Fused TopK | 268 → 0 |
+| M11.25 ✅ | GPU Indexed Fill Kernel | CPU scatter → GPU kernel |
+| M11.26 ✅ | Padded GEMM → MPS Routing | 548 CPU cblas syncs → 0 |
+| M11.27 ✅ | MPS GEMM Object Cache | Alloc overhead eliminated |
+| M11.28 ✅ | Indexed Fill F16 Sync Elimination | Pre-sync removed (f16 only) |
+| M12.1 ✅ | Bucketed Allocator | Pool 30GB→2.5GB, commits 188→90 |
+| M12.10 ✅ | INT8 protect_buffer Sync Elimination | Commits 3500→97 |
+| M12.19 ✅ | FlashMHA Commit Optimization | Fused SDPA + GPU blit |
+| M12.21 ✅ | Fused INT8 GEMV | int8 3.1→34.3 (11.1x) |
+| M13 ✅ | Float16 Custom MSL GEMM (f32 accum) | BLEU 22.48→25.74 |
+| M14.5 ✅ | Logits Processor Sync Fix | Correctness fix (added sync) |
+| M16 ✅ | Conditional Sync Skip | Skip decoder sync when no logits processors |
 
-Metal **2.0x CPU** → target Metal time ~14s (from ~27s).
+**Current syncs per decode step (f16)**: ~1 (sampler copy_from only, unavoidable for beam search)
 
-Need to save ~13s. Sync elimination alone (~1.2s direct + pipeline bubble reduction) won't reach 2x — also need compute overlap and reduced framework overhead.
+## Original Roadmap Items — What Was Done
 
-## Phase 1: Remaining Sync Elimination (est. -2–4s)
+### Completed
 
-### M11.24 — Reduce synchronize_stream Calls (1,509 → ~200)
+| Item | How It Was Done |
+|------|----------------|
+| **M11.25** — Batch indexed_fill | GPU kernel implemented (M11.25). F16 pre-sync eliminated (M11.28). F32 retains pre-sync due to MPS ordering issue. |
+| **M11.28** — MPS Object Caching | GEMM PSO cache and SDPA GEMM cache. Keyed by (transpose, m, n, k, alpha, beta, batch_size). 50-200 entries typical. |
+| **M11.24** — Reduce synchronize_stream | Not done as a single audit, but the goal was achieved through targeted work across M11.25–M11.28, M12.1, M12.10, M16. Syncs reduced from ~3,002 to ~1/step (f16). |
 
-**Problem**: `synchronize_stream()` called from data type conversions and framework-level operations. Many are unnecessary when both source and destination are Metal-allocated.
+### Additional Completed Work (beyond original roadmap)
 
-**Solution**: Audit all `synchronize_stream()` call sites. Categories:
-1. **Type conversions** (float32↔float16): If both buffers are Metal, encode a GPU cast kernel instead of sync+CPU conversion
-2. **StorageView copies**: If source data is already on GPU, skip sync
-3. **Framework-level syncs**: Some are required (e.g., before CPU-side decisions), but many can be deferred
+| Milestone | Impact |
+|-----------|--------|
+| M12.1 Bucketed Allocator | Pool convergence, eliminated allocation-related syncs |
+| M12.19 FlashMHA Fusion | Fused SDPA + GPU blit: f32 5x, f16 1.28x |
+| M12.21 Fused INT8 GEMV | int8 decode 11.1x faster |
+| M13 Float16 GEMM Fix | Custom MSL with f32 accum, BLEU recovery |
+| M14.4 Beam Search Tuning | beam=6 + length_penalty=0.6 closes f16 quality gap |
+| M14.5 Logits Sync Fix | Correctness fix for repetition_penalty/no_repeat_ngram |
+| M16 Whisper Benchmark | Full competitive benchmark, WER validation |
 
-**Priority**: HIGH — largest remaining sync source. Requires careful auditing to avoid breaking correctness.
+### Not Yet Done (still viable)
 
-### M11.25 — Batch indexed_fill Across Decode Steps (1,477 → ~50)
+These items were not pursued because the 2x target was met through other work. They remain valid optimization directions for future gains:
 
-**Problem**: GPU `indexed_fill` kernel is encode-only (M11.17), but `DisableTokens::apply()` is called multiple times per decode step with separate index lists. Each call may trigger a sync from the caller.
+| Item | Est. Savings | Why Not Yet |
+|------|-------------|-------------|
+| **M11.26** — Persistent Command Encoder | 2–5% | Modest savings; not blocking at 3.17x |
+| **M11.27** — Fused LayerNorm+Linear | 2–5% | BF16-only via MPSGraph exists; custom f32 MSL not yet needed |
+| **M11.29** — Decode Pipeline Fusion | 10–20% | Largest remaining compute win, but high complexity |
+| **M11.30** — Cross-Attention KV Reuse | ~1% | Cross-attention already cached efficiently |
 
-**Solution**: Batch all token disabling into a single GPU dispatch per decode step.
-- Accumulate all disable indices, then dispatch once
-- Requires restructuring `DisableTokens` to defer the actual fill
+## Remaining Opportunities (Beyond 3x)
 
-**Priority**: MEDIUM — the indexed_fill kernel itself is already encode-only. The remaining syncs come from callers that sync before reading logits. Needs investigation of exact call patterns.
+The 2x target is met. Further optimization could target 4x+ CPU:
 
-## Phase 2: Compute Optimization (est. -2–4s)
+| Opportunity | Est. Savings | Effort | Priority |
+|-------------|-------------|--------|----------|
+| Decode Pipeline Fusion (M11.29) | 10–20% | High | MEDIUM |
+| GPU-side EOS Check | 5–10% (eliminate last sync) | High | LOW |
+| Speculative Decoding | 30–50% (architectural) | Very High | MEDIUM |
+| Persistent Command Encoder | 2–5% | Low | LOW |
+| Fused LN+Linear | 2–5% | Medium | LOW |
+| Larger SIMD GEMM Tiles (32x32+) | 5–10% | Medium | LOW |
 
-### M11.26 — Persistent Command Encoder
+## Attempted and Rejected Optimizations (M12.13–M12.17)
 
-**Problem**: ~15 compute encoder create/end cycles per decoder layer × 4 layers × ~200 decode steps = ~12,000 transitions at ~10µs each ≈ ~120ms.
+These were tried during M12 and found to be ineffective or counterproductive on Apple M4:
 
-**Solution**: Keep a single compute encoder open across multiple kernel dispatches where possible. Requires careful barrier management between kernels that read each other's output.
+| Attempt | Result | Why |
+|---------|--------|-----|
+| M12.13 GEMV float4 vectorization | 20% slower | Memory-bound; wider loads didn't help |
+| M12.14 Bookkeeping optimization | Regression | Overhead already negligible (0.4% CPU) |
+| M12.15 BiasAdd fusion | Noise | Within measurement error |
+| M12.16 Pooling optimization | Noise | Within measurement error |
+| M12.17 GPU RoPE for decode | Dead code, no impact | sq=1 decode too small for GPU benefit |
 
-**Priority**: LOW — modest savings alone, but improves GPU utilization.
+## Conclusion
 
-### M11.27 — Float32 Fused LayerNorm+Linear
+The roadmap's original 2x target (**Metal ~14s, CPU ~29s**) has been exceeded. Metal Flash f16 achieves **3.17x CPU** on the FLEURS benchmark. The primary drivers were:
 
-**Problem**: LayerNorm and the following GEMM are separate dispatches with intermediate buffer materialization.
+1. **Sync elimination** (M11.20–M11.28, M12.1, M12.10): reduced commits from ~3,000 to ~1/step
+2. **FlashMHA fusion** (M12.19): fused SDPA + GPU blit for dramatic decode speedup
+3. **Allocator bucketing** (M12.1): eliminated pool bloat and allocation-related syncs
+4. **Precision fixes** (M13, M14): f32-accumulate GEMM + beam search tuning restored quality
 
-**Solution**: Fused MSL kernel that computes LayerNorm and feeds result directly to GEMM (or at least avoids writing/reading the intermediate buffer). Currently BF16-only via MPSGraph; extend to float32 with custom MSL.
-
-**Priority**: LOW — saves ~100-200ms from reduced memory traffic.
-
-### M11.28 — MPS Object Caching
-
-**Problem**: `MPSMatrix` and `MPSMatrixMultiplication` objects recreated per GEMM call (~1-5µs each).
-
-**Solution**: Cache MPS objects keyed by (rows, cols, dataType, rowBytes). Invalidate on shape change.
-
-**Priority**: LOW — microseconds per call, thousands of calls, but total is only ~5-20ms.
-
-## Phase 3: Architectural (est. -3–5s)
-
-### M11.29 — Decode-Step Pipeline Fusion
-
-**Problem**: Each decode step has ~15+ separate GPU dispatches (LayerNorm, GEMM×4, SDPA, Add, ...) with encoder transitions and intermediate buffers between them.
-
-**Solution**: Fuse the entire decoder layer into fewer, larger GPU dispatches:
-1. Fused Q/K/V projection (3 GEMMs → 1 concatenated GEMM)
-2. Fused attention output projection + residual add
-3. Fused FFN (Linear+ReLU+Linear+Add)
-
-**Priority**: MEDIUM-HIGH — largest potential savings but highest complexity. Each fusion needs correctness verification.
-
-### M11.30 — Cross-Attention KV Reuse Optimization
-
-**Problem**: Cross-attention K/V are cached but the cache lookup and SDPA dispatch still have per-step overhead.
-
-**Solution**: Since cross-attention K/V are constant across decode steps, pre-compute and cache the `MPSMatrix` objects for K/V. Possibly pre-factorize attention if beam patterns allow.
-
-**Priority**: LOW — cross-attention is already efficient due to caching.
-
-## Priority Summary
-
-| Milestone | Est. Savings | Effort | Priority | Status |
-|-----------|-------------|--------|----------|--------|
-| M11.20 GPU Multinomial | -0.3s | Low | **HIGH** | ✅ Done |
-| M11.21 Gather Sync Elimination | -0.1s | Low | **HIGH** | ✅ Done |
-| M11.22 Metal Memory Management | perf fix | Medium | **CRITICAL** | ✅ Done |
-| M11.23 GPU Fused TopK | -0.1s + compound | Medium | MEDIUM | ✅ Done |
-| M11.24 Reduce sync_stream | -1–2s | Medium | **HIGH** | Planned |
-| M11.25 Batch indexed_fill | -0.4s | Medium | MEDIUM | Planned |
-| M11.29 Decode Pipeline Fusion | -3–5s | High | **MEDIUM-HIGH** | Planned |
-| M11.26 Persistent Encoder | -0.1s | Low | LOW | Planned |
-| M11.27 Fused LN+Linear | -0.2s | Medium | LOW | Planned |
-| M11.28 MPS Object Cache | -0.02s | Low | LOW | Planned |
-
-## Recommended Execution Order
-
-1. ~~**M11.20** — GPU Multinomial~~ ✅
-2. ~~**M11.21** — Gather sync elimination~~ ✅
-3. ~~**M11.22** — Metal memory management~~ ✅
-4. ~~**M11.23** — GPU Fused TopK~~ ✅
-5. **M11.24** — synchronize_stream audit (biggest remaining sync source)
-6. **M11.25** — Batch indexed_fill (cleanup remaining scatter syncs)
-7. **M11.29** — Decode pipeline fusion (biggest compute win, do after syncs are minimized)
-
-After Phase 1 (M11.24–M11.25), expected: ~1.5–2.0x CPU.
-After Phase 3 (M11.29), expected: ~2.0–2.5x CPU.
-
-## Non-Sync Analysis
-
-Most remaining Metal overhead is sync-related. Non-sync optimizations (MPS object caching, encoder transitions, fused ops) would add ~5-10% improvement at most. The path to 2x is primarily:
-
-1. Eliminate remaining ~3,000 syncs → longer uninterrupted GPU command sequences
-2. Reduce pipeline bubbles → better GPU utilization from fewer sync points
-3. Fuse decoder operations → fewer dispatches, less intermediate memory traffic
+Further gains would require architectural changes (speculative decoding, pipeline fusion) with diminishing returns relative to effort.

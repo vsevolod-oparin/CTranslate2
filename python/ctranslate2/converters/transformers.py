@@ -3,6 +3,7 @@ import argparse
 import gc
 import itertools
 import os
+import tempfile
 
 from typing import List, Optional
 
@@ -160,7 +161,23 @@ class TransformersConverter(Converter):
                 for filename in self._copy_files:
                     spec.register_file(self.get_model_file(filename))
 
+            # Save tokenizer.json so downstream tools (e.g. faster_whisper)
+            # use the correct token IDs, especially for models with extra
+            # special tokens like whisper-large-v3-turbo's <|yue|>.
+            self._register_tokenizer(spec, tokenizer)
+
             return spec
+
+    def _register_tokenizer(self, spec, tokenizer):
+        """Saves the tokenizer as tokenizer.json in the model directory."""
+        try:
+            backend = tokenizer.backend_tokenizer
+            tmpdir = tempfile.mkdtemp()
+            tokenizer_path = os.path.join(tmpdir, "tokenizer.json")
+            backend.save(tokenizer_path)
+            spec.register_file(tokenizer_path)
+        except Exception:
+            pass  # Non-critical: tokenizer.json is optional
 
     def load_model(self, model_class, model_name_or_path, **kwargs):
         return model_class.from_pretrained(model_name_or_path, **kwargs)

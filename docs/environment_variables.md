@@ -72,6 +72,26 @@ Enable the packed GEMM API for Intel MKL which can improve performance for singl
 
 Force CTranslate2 to use (or not) Intel MKL. By default, the runtime automatically decides whether to use Intel MKL or not based on the CPU vendor.
 
+## `CT2_MPS_ALLOW_BF16`
+
+Allow using BF16 computation on Metal even if the device does not support it natively. By default, BF16 support is auto-detected using `MTLGPUFamilyApple9` (Apple M3 or later). Set to `1` to force-enable BF16 on older devices (may fall back to FP16 internally).
+
+## `CT2_METAL_POOL_MAX_MB`
+
+Set a maximum size (in megabytes) for the Metal buffer pool allocator. By default, the pool is unlimited and grows as needed. Setting this variable constrains peak GPU memory usage, which can be useful when running alongside other GPU-intensive applications.
+
+```bash
+export CT2_METAL_POOL_MAX_MB=2048
+```
+
+## `CT2_MPS_TRACE`
+
+Enable per-callsite commit-and-wait tracing for Metal command buffers. When set, tracing information is accumulated during execution and dumped at process exit. Useful for profiling Metal GPU synchronization overhead.
+
+## `CT2_DECODE_PROFILE`
+
+Enable decode loop profiling. When set to `1`, logs timing breakdown of each decode step component (decoder call, sampler, beam bookkeeping, etc.) at the end of each translation. Useful for identifying CPU vs GPU bottlenecks.
+
 ## `CT2_VERBOSE`
 
 Configure the default logs verbosity:

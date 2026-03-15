@@ -115,6 +115,7 @@ The following options can be set with `-DOPTION=VALUE` during the CMake configur
 | WITH_OPENBLAS | **OFF**, ON | Compiles with the OpenBLAS backend |
 | WITH_RUY | **OFF**, ON | Compiles with the Ruy backend |
 | WITH_HIP | **OFF**, ON | Compiles with the AMD HIP GPU backend |
+| WITH_METAL | **OFF**, ON | Compiles with the Apple Metal GPU backend (Apple Silicon only) |
 
 Some build options require additional dependencies. See their respective documentation for installation instructions.
 
@@ -125,9 +126,23 @@ Some build options require additional dependencies. See their respective documen
 * `-DWITH_ACCELERATE=ON` requires [Accelerate](https://developer.apple.com/documentation/accelerate)
 * `-DWITH_OPENBLAS=ON` requires [OpenBLAS](https://github.com/xianyi/OpenBLAS)
 * `-DWITH_HIP=ON` requires [ROCm libraries](https://rocm.docs.amd.com/en/latest/reference/api-libraries.html)
+* `-DWITH_METAL=ON` requires macOS 14+ with Apple Silicon (M1 or later). The Metal, MetalPerformanceShaders, and MetalPerformanceShadersGraph frameworks are provided by the system.
 
 Multiple backends can be enabled for a single build, for example:
 
 * `-DWITH_MKL=ON -DWITH_CUDA=ON`: enable CPU and GPU support
 * `-DWITH_MKL=ON -DWITH_DNNL=ON`: during runtime, the library will select Intel MKL when running on Intel and oneDNN when running on AMD
 * `-DWITH_OPENBLAS=ON -DWITH_RUY=ON`: use Ruy for quantized models and OpenBLAS for non quantized models
+* `-DWITH_METAL=ON -DWITH_ACCELERATE=ON`: enable Metal GPU and Apple Accelerate CPU backend (recommended for Apple Silicon)
+
+### Building on Apple Silicon
+
+```bash
+mkdir build && cd build
+cmake .. -DWITH_METAL=ON -DWITH_ACCELERATE=ON -DOPENMP_RUNTIME=NONE
+make -j$(sysctl -n hw.logicalcpu)
+```
+
+```{note}
+`OPENMP_RUNTIME=NONE` is recommended to avoid OpenMP double-initialization when using CTranslate2 alongside PyTorch or other frameworks that bundle their own OpenMP runtime.
+```

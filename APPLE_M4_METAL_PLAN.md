@@ -1177,17 +1177,13 @@ Report: `agents/report/milestone-7-remaining-ops.md`
 - Mitigation: M13.7 smoke test script for local developer verification
 - **Revisit** when GitHub adds `macos-arm64-metal` runners or if self-hosted runner is set up
 
-**13.4 Documentation**
-- `docs/hardware_support.md`: add Apple Silicon section
-- `docs/installation.md`: Metal build instructions
-- `ARCHITECTURE.md`: add Metal backend to Section 6 (dispatch) and Section 9 (memory/allocator)
-- `ARCHITECTURE.md` Section 12 (Runtime Configuration): add `CT2_MPS_ALLOW_BF16` to the env vars table (introduced in M11.3)
-- Document known limitations:
-  - AWQ not supported on MPS (no INT8 matmul)
-  - BF16 requires macOS 14 + M3 or later
-  - `gemm_pack_b` always returns 0 (weight pre-packing not supported)
-  - RMSNorm residual path not supported (blocks Gemma models, see M15.6)
-  - FlashMHA implemented and faster than standard MHA (see M12.19–M12.25)
+**13.4 Documentation** ✅ (2026-03-15)
+- `docs/hardware_support.md`: added "GPU (Apple Silicon / Metal)" section with requirements, compute type table, known limitations, env var tips
+- `docs/installation.md`: added `WITH_METAL` build option, Metal dependency note, Apple Silicon build example, `OPENMP_RUNTIME=NONE` recommendation
+- `docs/environment_variables.md`: added `CT2_MPS_ALLOW_BF16`, `CT2_METAL_POOL_MAX_MB`, `CT2_MPS_TRACE`, `CT2_DECODE_PROFILE`
+- `ARCHITECTURE.md` Section 12: fixed env var names (`CT2_METAL_ALLOW_BF16`→`CT2_MPS_ALLOW_BF16`, `CT2_METAL_TRACE`→`CT2_MPS_TRACE`), added `CT2_METAL_POOL_MAX_MB` and `CT2_DECODE_PROFILE`
+- Known limitations documented in `docs/hardware_support.md`: AWQ, gemm_pack_b, RMSNorm residual, BF16 requirements
+- Note: Section 6 (dispatch) and Section 9 (memory/allocator) in `ARCHITECTURE.md` already included Metal backend entries
 
 **13.5 Fuzz testing — shape randomization** ✅ (2026-03-15)
 - **Scope:** Randomize tensor shapes across key ops, translation params (beam size, max_len, batch size), and precision types (f32, f16, int8) to catch MSL kernel dispatch bugs with unusual threadgroup sizes

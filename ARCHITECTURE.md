@@ -970,8 +970,10 @@ Maps source tokens to allowed target tokens for constrained decoding:
 | `CT2_CUDA_TRUE_FP16_GEMM` | `1` | Use native FP16 cuBLAS GEMM (vs FP32 accumulation) |
 | `CT2_CUDA_ALLOW_FP16` | `0` | Allow FP16 compute on GPUs without native support |
 | `CT2_CUDA_ALLOW_BF16` | `0` | Allow BF16 compute on older CUDA devices |
-| `CT2_METAL_ALLOW_BF16` | _(auto)_ | Allow BF16 on Metal (auto-detected via MTLGPUFamilyApple9, M3+) |
-| `CT2_METAL_TRACE` | _(off)_ | Enable per-callsite commit_and_wait tracing (dumped at exit) |
+| `CT2_MPS_ALLOW_BF16` | _(auto)_ | Allow BF16 on Metal (auto-detected via MTLGPUFamilyApple9, M3+) |
+| `CT2_MPS_TRACE` | _(off)_ | Enable per-callsite commit_and_wait tracing (dumped at exit) |
+| `CT2_METAL_POOL_MAX_MB` | _(unlimited)_ | Cap Metal buffer pool size in MB |
+| `CT2_DECODE_PROFILE` | _(off)_ | Enable decode loop timing breakdown |
 | `OMP_NUM_THREADS` | _(nproc)_ | OpenMP thread count for CPU parallelism |
 
 ### Profiling

@@ -56,8 +56,10 @@ static void dispatch_transpose(const char* kname,
       ctranslate2::metal::create_compute_encoder();
   [enc setComputePipelineState:pso];
   NSUInteger off_a = 0, off_b = 0;
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(a, &off_a) offset:off_a atIndex:0];
-  [enc setBuffer:ctranslate2::metal_buffer_for_ptr(b, &off_b) offset:off_b atIndex:1];
+  id<MTLBuffer> buf_a = ctranslate2::metal_buffer_for_ptr(a, &off_a);
+  id<MTLBuffer> buf_b = ctranslate2::metal_buffer_for_ptr(b, &off_b);
+  [enc setBuffer:buf_a offset:off_a atIndex:0];
+  [enc setBuffer:buf_b offset:off_b atIndex:1];
   [enc setBytes:args length:args_size atIndex:2];
   NSUInteger tg = std::min<NSUInteger>(pso.maxTotalThreadsPerThreadgroup,
                                        static_cast<NSUInteger>(n));
@@ -65,6 +67,12 @@ static void dispatch_transpose(const char* kname,
       threadsPerThreadgroup:MTLSizeMake(tg, 1, 1)];
   [enc endEncoding];
   [enc release];
+
+  // Protect buffers from premature pool reuse (encode-only, no immediate sync).
+  // Without this, a temporary source StorageView freed before GPU execution
+  // could have its buffer recycled, causing the transpose to read stale data.
+  ctranslate2::metal::protect_buffer_by_base([buf_a contents]);
+  ctranslate2::metal::protect_buffer_by_base([buf_b contents]);
 }
 
 }  // anonymous namespace

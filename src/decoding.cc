@@ -379,8 +379,7 @@ namespace ctranslate2 {
     log_probs.reshape(logits.shape());
     ops::Split(0, /*no_copy=*/true)(log_probs, log_prob_beam_views);
 
-    // Scalar's need to be allocated on CPUs.
-    StorageView scalar_discount(1 - _prefix_bias_beta, Device::CPU);
+    StorageView scalar_discount(1 - _prefix_bias_beta, device);
     assert (num_beams % cur_batch_size == 0);
     const dim_t cur_beam_size = num_beams / cur_batch_size;
     for (dim_t b = 0; b < num_beams; ++b) {
@@ -396,6 +395,13 @@ namespace ctranslate2 {
                    scalar_discount.to(log_prob_beam.dtype()),
                    _spare_beam);
         const size_t biased_word_id = prefix[step];
+#ifdef CT2_WITH_MPS
+        // Flush pending GPU writes (SoftMax + Mul) before CPU reads _spare_beam
+        // via the copy constructor below (MPS→MPS copy uses CPU memcpy in shared
+        // memory, which would read stale data without this sync).
+        if (device == Device::MPS)
+          synchronize_stream(Device::MPS);
+#endif
         StorageView spare_scalar_view;
         TYPE_DISPATCH(
           _spare_beam.dtype(),
@@ -404,8 +410,7 @@ namespace ctranslate2 {
         StorageView beta_scalar;
         TYPE_DISPATCH(
           _spare_beam.dtype(),
-          // Scalar's need to be allocated on CPUs.
-          beta_scalar = StorageView(static_cast<T>(_prefix_bias_beta), Device::CPU));
+          beta_scalar = StorageView(static_cast<T>(_prefix_bias_beta), device));
         ops::Add()(spare_scalar_copy, beta_scalar, spare_scalar_view);
         ops::Log()(_spare_beam, log_prob_beam);
       } else {

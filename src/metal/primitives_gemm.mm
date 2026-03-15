@@ -391,6 +391,7 @@ kernel void gemm_f16_acc32(
     // Use threadgroup memory as intermediate for the 8×8 float tile.
     threadgroup float tg_acc[4][TILE * TILE];  // one per SIMD group
     simdgroup_store(acc, &tg_acc[sg_id][0], TILE);
+    simdgroup_barrier(mem_flags::mem_threadgroup);
 
     // Each of the 32 lanes writes ~2 elements.
     for (uint i = lane; i < TILE * TILE; i += 32) {

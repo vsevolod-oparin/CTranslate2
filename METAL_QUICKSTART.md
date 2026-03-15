@@ -137,7 +137,14 @@ list(model.transcribe(args.audio, beam_size=5, language=None)[0])
 # Timed run
 print("Timed run...")
 t0 = time.monotonic()
-segments, info = model.transcribe(args.audio, beam_size=5, language=None)
+segments, info = model.transcribe(
+    args.audio,
+    beam_size=5,
+    language=None,
+    temperature=0.0,                   # no fallback retries (default tries 6 temperatures)
+    condition_on_previous_text=False,   # skip cross-segment dependency
+    vad_filter=True,                    # skip silent regions
+)
 segments = list(segments)
 elapsed = time.monotonic() - t0
 
@@ -170,10 +177,10 @@ python workspace/transcribe.py --device cpu
 
 | Device | Compute | Inference time |
 |--------|---------|----------------|
-| Metal GPU (`mps`) | float16 | **8.3s** |
-| CPU | float32 | 27.3s |
+| Metal GPU (`mps`) | float16 | **7.4s** |
+| CPU | float32 | 27.8s |
 
-**Metal GPU is 3.3x faster** than CPU on this workload.
+**Metal GPU is 3.7x faster** than CPU on this workload.
 
 ## Recommended Settings
 

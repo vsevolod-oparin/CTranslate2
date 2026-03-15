@@ -49,6 +49,13 @@ require_cuda = pytest.mark.skipif(
     ctranslate2.get_cuda_device_count() == 0, reason="Test case requires a CUDA device"
 )
 
+require_mps = pytest.mark.skipif(
+    ctranslate2.get_mps_device_count() == 0, reason="Test case requires an MPS device"
+)
+
 on_available_devices = pytest.mark.parametrize(
-    "device", ["cpu"] + (["cuda"] if ctranslate2.get_cuda_device_count() > 0 else [])
+    "device",
+    ["cpu"]
+    + (["cuda"] if ctranslate2.get_cuda_device_count() > 0 else [])
+    + (["mps"] if ctranslate2.get_mps_device_count() > 0 else []),
 )

@@ -93,8 +93,17 @@ namespace ctranslate2 {
   }
 
   StorageView StorageView::to(DataType dtype) const {
-    if (_dtype == dtype)
+    if (_dtype == dtype) {
+#ifdef CT2_WITH_MPS
+      // Flush pending GPU writes before the copy constructor reads the buffer
+      // via CPU memcpy.  Without this, encode-only Metal kernels that wrote to
+      // this StorageView may not have committed yet, causing the copy to read
+      // stale (zero) data.
+      if (_device == Device::MPS)
+        synchronize_stream(Device::MPS);
+#endif
       return *this;
+    }
     StorageView converted(_shape, dtype, _device);
     if (_dtype == DataType::FLOAT32 && dtype == DataType::FLOAT16) {
       DEVICE_DISPATCH(_device,

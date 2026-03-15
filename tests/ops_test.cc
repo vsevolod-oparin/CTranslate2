@@ -1422,3 +1422,10 @@ INSTANTIATE_TEST_SUITE_P(CUDA, OpDeviceFPTest,
                                            FloatType{Device::CUDA, DataType::BFLOAT16, 4e-2}),
                          fp_test_name);
 #endif
+#ifdef CT2_WITH_MPS
+INSTANTIATE_TEST_SUITE_P(MPS, OpDeviceTest, ::testing::Values(Device::MPS));
+INSTANTIATE_TEST_SUITE_P(MPS, OpDeviceFPTest,
+                         ::testing::Values(FloatType{Device::MPS, DataType::FLOAT32, 1e-5},
+                                           FloatType{Device::MPS, DataType::FLOAT16, 1e-2}),
+                         fp_test_name);
+#endif

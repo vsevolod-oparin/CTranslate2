@@ -721,6 +721,12 @@ INSTANTIATE_TEST_SUITE_P(CUDA, BiasedDecodingDeviceFPTest,
                                            FloatType{Device::CUDA, DataType::FLOAT16}),
                          fp_test_name);
 #endif
+#ifdef CT2_WITH_MPS
+INSTANTIATE_TEST_SUITE_P(MPS, BiasedDecodingDeviceFPTest,
+                         ::testing::Values(FloatType{Device::MPS, DataType::FLOAT32},
+                                           FloatType{Device::MPS, DataType::FLOAT16}),
+                         fp_test_name);
+#endif
 
 TEST(TranslatorTest, TranslatePrefixWithLargeBeam) {
   // Related to issue https://github.com/OpenNMT/CTranslate2/issues/277

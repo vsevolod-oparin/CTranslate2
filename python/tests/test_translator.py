@@ -824,3 +824,43 @@ def test_logging():
     with wurlitzer.pipes() as (_, err):
         _get_transliterator()
     assert not err.read()
+
+
+@test_utils.require_mps
+class TestTranslatorMPS:
+    @staticmethod
+    def _model_path():
+        return _get_model_path()
+
+    def test_translate_f32(self):
+        translator = ctranslate2.Translator(self._model_path(), device="mps")
+        assert translator.device == "mps"
+        output = translator.translate_batch([["آ", "ت", "ز", "م", "و", "ن"]])
+        assert output[0].hypotheses[0]
+
+    def test_translate_f16(self):
+        translator = ctranslate2.Translator(
+            self._model_path(), device="mps", compute_type="float16"
+        )
+        output = translator.translate_batch([["آ", "ت", "ز", "م", "و", "ن"]])
+        assert output[0].hypotheses[0]
+
+    def test_translate_beam_search(self):
+        translator = ctranslate2.Translator(self._model_path(), device="mps")
+        output = translator.translate_batch(
+            [["آ", "ت", "ز", "م", "و", "ن"]],
+            beam_size=4,
+            num_hypotheses=2,
+        )
+        assert len(output[0].hypotheses) == 2
+
+    def test_translate_batch(self):
+        translator = ctranslate2.Translator(self._model_path(), device="mps")
+        batch = [
+            ["آ", "ت", "ز", "م", "و", "ن"],
+            ["آ", "ز", "ا", "د"],
+        ]
+        output = translator.translate_batch(batch)
+        assert len(output) == 2
+        for result in output:
+            assert result.hypotheses[0]

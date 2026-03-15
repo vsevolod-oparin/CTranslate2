@@ -100,6 +100,29 @@ def test_storageview_cuda_to_device():
     assert x.sum() == 2 * cpu_x.sum()
 
 
+@test_utils.require_mps
+def test_storageview_mps_to_device():
+    x = np.ones(10, dtype="float32")
+    mps_x = ctranslate2.StorageView.from_array(x).to_device(ctranslate2.Device.mps)
+    assert mps_x.device == "mps"
+
+    x *= 2
+    cpu_x = np.array(mps_x.to_device(ctranslate2.Device.cpu))
+
+    assert cpu_x.dtype == x.dtype
+    assert x.sum() == 2 * cpu_x.sum()
+
+
+@test_utils.require_mps
+def test_storageview_mps_f16():
+    x = np.ones((2, 4), dtype=np.float32)
+    sv = ctranslate2.StorageView.from_array(x).to_device(ctranslate2.Device.mps)
+    sv_f16 = sv.to(ctranslate2.DataType.float16)
+    assert sv_f16.dtype == ctranslate2.DataType.float16
+    cpu_f16 = sv_f16.to_device(ctranslate2.Device.cpu).to(ctranslate2.DataType.float32)
+    np.testing.assert_allclose(np.array(cpu_f16), x, atol=1e-3)
+
+
 def test_storageview_conversion():
     x = np.ones((2, 4), dtype=np.float32)
     s = ctranslate2.StorageView.from_array(x)

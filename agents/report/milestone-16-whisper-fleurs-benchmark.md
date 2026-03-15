@@ -1,6 +1,6 @@
 # Milestone 16: Multi-Language Whisper Benchmark Report
 
-**Generated:** 2026-03-15 10:39 UTC
+**Generated:** 2026-03-15 14:08 UTC
 **Model:** whisper-large-v3-turbo
 **Dataset:** FLEURS test split (50 samples/language)
 **Platform:** Apple M4, macOS
@@ -9,8 +9,8 @@
 
 | Configuration                            |  Avg RTF |   ENG |   JAP |   MAN |   GER |   SPA |   ARA |  RSS MB |
 |------------------------------------------|----------|-------|-------|-------|-------|-------|-------|---------|
-| ct2_metal float16                        |    0.153 | 0.138 | 0.127 | 0.182 | 0.135 | 0.160 | 0.187 |    4326 |
-| ct2_metal_flash (Flash) float16          |    0.161 | 0.176 | 0.146 | 0.172 | 0.131 | 0.162 | 0.196 |    4853 |
+| ct2_metal float16                        |    0.121 | 0.139 | 0.128 | 0.120 | 0.102 | 0.122 | 0.125 |    4154 |
+| ct2_metal_flash (Flash) float16          |    0.151 | 0.143 | 0.137 | 0.146 | 0.140 | 0.173 | 0.170 |    4750 |
 | ct2_metal float16 b=5                    |    0.164 | 0.184 | 0.150 | 0.175 | 0.137 | 0.161 | 0.190 |    5209 |
 | ct2_metal_flash (Flash) float16 b=5      |    0.168 | 0.204 | 0.178 | 0.175 | 0.130 | 0.151 | 0.189 |    5117 |
 | ct2_metal_flash (Flash) float32          |    0.173 | 0.203 | 0.161 | 0.183 | 0.142 | 0.167 | 0.200 |    4672 |
@@ -28,8 +28,8 @@
 
 | Configuration                            |    Avg |    ENG |    JAP |    MAN |    GER |    SPA |    ARA |
 |------------------------------------------|--------|--------|--------|--------|--------|--------|--------|
-| ct2_metal float16                        |  14.0% |   4.7% |   6.7% |  50.4% |   3.8% |   2.5% |  15.9% |
-| ct2_metal_flash (Flash) float16          |  14.0% |   4.7% |   6.7% |  50.4% |   3.8% |   2.5% |  15.9% |
+| ct2_metal float16                        |  14.8% |   4.2% |   8.8% |  49.8% |   3.7% |   1.7% |  20.5% |
+| ct2_metal_flash (Flash) float16          |  14.8% |   4.2% |   8.8% |  49.8% |   3.7% |   1.7% |  20.5% |
 | ct2_metal float16 b=5                    |  14.3% |   4.5% |   6.7% |  50.7% |   5.8% |   2.5% |  15.4% |
 | ct2_metal_flash (Flash) float16 b=5      |  14.3% |   4.5% |   6.7% |  50.8% |   5.8% |   2.5% |  15.4% |
 | ct2_metal_flash (Flash) float32          |  14.0% |   4.7% |   6.7% |  50.5% |   3.8% |   2.5% |  15.9% |
@@ -44,21 +44,21 @@
 
 ## Speedup Analysis
 
-**CT2 Metal f16 (baseline RTF: 0.153)**
+**CT2 Metal f16 (baseline RTF: 0.121)**
 
-- vs CT2 CPU f32: **2.50x** faster (RTF 0.382 → 0.153)
-- vs whisper.cpp F16: **1.93x** faster (RTF 0.295 → 0.153)
-- vs mlx-whisper f16: **1.42x** faster (RTF 0.217 → 0.153)
-- vs CT2 Metal Flash f16: **1.05x** faster (RTF 0.161 → 0.153)
+- vs CT2 CPU f32: **3.16x** faster (RTF 0.382 → 0.121)
+- vs whisper.cpp F16: **2.45x** faster (RTF 0.295 → 0.121)
+- vs mlx-whisper f16: **1.80x** faster (RTF 0.217 → 0.121)
+- vs CT2 Metal Flash f16: **1.25x** faster (RTF 0.151 → 0.121)
 
 **FlashMHA vs Standard MHA (f16 beam=1):**
-- RTF: 0.153 → 0.161 (0.95x)
+- RTF: 0.121 → 0.151 (0.80x)
 
 ## Key Findings
 
-1. **Fastest config:** ct2_metal float16 (RTF 0.153)
+1. **Fastest config:** ct2_metal float16 (RTF 0.121)
 2. **Best quality:** mlx_whisper f16 (avg WER 13.9%)
-3. **Metal GPU speedup over CPU:** 2.5x (f16 Metal vs f32 CPU)
+3. **Metal GPU speedup over CPU:** 3.2x (f16 Metal vs f32 CPU)
 4. **whisper.cpp caveat:** Very high WER for non-English languages (likely pywhispercpp language setting issue, not a model problem)
 
 ## Notes

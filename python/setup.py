@@ -47,7 +47,11 @@ package_data = {}
 if sys.platform == "darwin":
     # std::visit requires macOS 10.14
     cflags.append("-mmacosx-version-min=10.14")
-    ldflags.append("-Wl,-rpath,/usr/local/lib")
+    # Use @loader_path so the .so finds the bundled dylib relative to itself,
+    # regardless of which conda env or prefix it's installed into.
+    ldflags.append("-Wl,-rpath,@loader_path")
+    # Bundle the dylib inside the wheel so it's truly self-contained.
+    package_data["ctranslate2"] = ["*.dylib"]
 elif sys.platform == "win32":
     cflags = ["/std:c++17", "/d2FH4-"]
     package_data["ctranslate2"] = ["*.dll"]

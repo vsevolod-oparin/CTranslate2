@@ -2,6 +2,8 @@
 /.vs
 /build
 
+**/.DS_Store
+
 CMake*.json
 .idea
 python/build/

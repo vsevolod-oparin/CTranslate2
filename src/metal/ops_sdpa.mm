@@ -750,7 +750,9 @@ static void dispatch_fused_sdpa_decode(
 
   // Threadgroup memory index 0: softmax scores (seqlen_k floats).
   // Scores are always float in the kernel, regardless of T.
+  // Metal requires threadgroup memory length to be a multiple of 16 bytes.
   NSUInteger tg_scores_bytes = static_cast<NSUInteger>(seqlen_k) * sizeof(float);
+  tg_scores_bytes = (tg_scores_bytes + 15) & ~NSUInteger(15);
   [enc setThreadgroupMemoryLength:tg_scores_bytes atIndex:0];
 
   // Threadgroup memory index 1: reduction scratch (kTgSize floats).

@@ -41,6 +41,11 @@ def _maybe_add_library_root(lib_name):
 
 _maybe_add_library_root("CTRANSLATE2")
 
+# CT2_MPS_BUILD=1 produces a "ctranslate2-mps" wheel that links against libctranslate2.mps
+_mps_build = os.environ.get("CT2_MPS_BUILD", "0") == "1"
+_lib_name = "ctranslate2.mps" if _mps_build else "ctranslate2"
+_pkg_name = "ctranslate2-mps" if _mps_build else "ctranslate2"
+
 cflags = ["-std=c++17", "-fvisibility=hidden"]
 ldflags = []
 package_data = {}
@@ -66,13 +71,13 @@ ctranslate2_module = Extension(
     extra_link_args=ldflags,
     include_dirs=include_dirs,
     library_dirs=library_dirs,
-    libraries=["ctranslate2"],
+    libraries=[_lib_name],
 )
 
 ParallelCompile("CMAKE_BUILD_PARALLEL_LEVEL").install()
 
 setup(
-    name="ctranslate2",
+    name=_pkg_name,
     version=_get_project_version(),
     license="MIT",
     description="Fast inference engine for Transformer models",

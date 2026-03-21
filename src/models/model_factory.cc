@@ -2,6 +2,7 @@
 
 #include <mutex>
 
+#include "ctranslate2/models/moonshine.h"
 #include "ctranslate2/models/whisper.h"
 #include "ctranslate2/models/wav2vec2.h"
 #include "ctranslate2/models/wav2vec2bert.h"
@@ -22,6 +23,8 @@ namespace ctranslate2 {
       register_model<TransformerEncoderModel>("TransformerEncoderSpec");
 
       register_model<WhisperModel>("WhisperSpec");
+
+      register_model<MoonshineModel>("MoonshineSpec");
 
       register_model<Wav2Vec2Model>("Wav2Vec2Spec");
 

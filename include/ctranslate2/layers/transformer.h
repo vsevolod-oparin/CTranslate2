@@ -152,6 +152,16 @@ namespace ctranslate2 {
         return _layers.back()->output_size();
       }
 
+      // Accessors for direct layer iteration (used by MoonshineEncoder which
+      // bypasses the embedding + position encoding path).
+      const std::vector<std::unique_ptr<const TransformerEncoderLayer>>& get_layers() const {
+        return _layers;
+      }
+
+      const LayerNorm& get_output_norm() const {
+        return *_output_norm;
+      }
+
     private:
       const ParallelEmbeddings _embeddings;
       const std::unique_ptr<const StorageView> _embeddings_scale;

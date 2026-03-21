@@ -137,6 +137,7 @@ set(SOURCES
   src/layers/common.cc
   src/layers/decoder.cc
   src/layers/transformer.cc
+  src/layers/moonshine.cc
   src/layers/wav2vec2.cc
   src/layers/wav2vec2bert.cc
   src/layers/whisper.cc

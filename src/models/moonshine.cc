@@ -65,7 +65,13 @@ namespace ctranslate2 {
       : ModelReplica(model)
       , _model(model)
       , _frontend(std::make_unique<layers::MoonshineAudioFrontend>(*model, "encoder/frontend"))
-      , _encoder(std::make_unique<layers::TransformerEncoder>(*model, "encoder"))
+      , _encoder_layers(layers::build_layers_list<const layers::TransformerEncoderLayer>(
+            *model, "encoder/layer",
+            model->get_attribute_with_default<int32_t>("encoder/num_heads", 8),
+            /*pre_norm=*/true,
+            static_cast<ops::ActivationType>(
+                model->get_attribute_with_default<int8_t>("encoder/activation", 3))))
+      , _encoder_norm(std::make_unique<const layers::LayerNorm>(*model, "encoder/layer_norm"))
       , _decoder(std::make_unique<layers::TransformerDecoder>(*model, "decoder"))
       , _adapter_pos_emb(model->get_variable_if_exists("adapter/position_embeddings/weight"))
       , _adapter_proj_weight(model->get_variable_if_exists("adapter/projection/weight"))
@@ -131,25 +137,15 @@ namespace ctranslate2 {
       StorageView frontend_output(dtype, device);
       (*_frontend)(audio, frontend_output);
 
-      // Step 2: Transformer encoder → [batch, time/4, hidden]
-      // The encoder expects [batch_size, features, time] for embedding input,
-      // but our MoonshineEncoder uses the TransformerEncoder which expects
-      // vector<StorageView> ids input... Actually, TransformerEncoder calls
-      // _embeddings first. Moonshine doesn't use that — the frontend replaces it.
-      // We need to feed frontend_output directly through the encoder layers.
-      //
-      // Since TransformerEncoder expects embedding input (token IDs), we can't use
-      // it directly. Instead, feed frontend_output through the encoder layers manually.
+      // Step 2: Transformer encoder layers → [batch, time/4, hidden]
       StorageView encoder_output(dtype, device);
       {
         StorageView input = std::move(frontend_output);
-        const auto& layers = _encoder->get_layers();
-        for (const auto& layer : layers) {
+        for (const auto& layer : _encoder_layers) {
           (*layer)(input, nullptr, encoder_output);
           input = std::move(encoder_output);
         }
-        // Final layer norm
-        _encoder->get_output_norm()(input, encoder_output);
+        (*_encoder_norm)(input, encoder_output);
       }
 
       // Step 3: Adapter → [batch, time/4, dec_hidden]
@@ -177,12 +173,11 @@ namespace ctranslate2 {
       StorageView encoder_output(dtype, device);
       {
         StorageView input = std::move(frontend_output);
-        const auto& layers = _encoder->get_layers();
-        for (const auto& layer : layers) {
+        for (const auto& layer : _encoder_layers) {
           (*layer)(input, nullptr, encoder_output);
           input = std::move(encoder_output);
         }
-        _encoder->get_output_norm()(input, encoder_output);
+        (*_encoder_norm)(input, encoder_output);
       }
 
       return apply_adapter(encoder_output);

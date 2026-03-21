@@ -146,7 +146,7 @@ class MoonshineSpec(model_spec.LanguageModelSpec):
             num_heads_kv=num_encoder_heads_kv,
             head_dim=encoder_head_dim,
             sliding_windows=sliding_windows,
-            rms_norm=True,  # encoder uses gamma-only norms
+            rms_norm=False,  # encoder uses standard LayerNorm (not RMSNorm)
         )
 
         self.adapter = MoonshineAdapterSpec(project=adapter_project)

@@ -166,14 +166,17 @@ namespace ctranslate2 {
       StorageView chan_major(projected.dtype(), projected.device());
       _to_chan_major(projected, chan_major);
 
-      // Step 7: CausalConv1d #1 (hidden → hidden*2, kernel=5, stride=2)
+      // Step 7: CausalConv1d #1 (hidden → hidden*2, kernel=5, stride=2) + SiLU
       // Left-pad by (kernel_size - 1) = 4
       StorageView padded(chan_major.dtype(), chan_major.device());
       causal_pad(chan_major, 4, padded);
       StorageView conv1_out(chan_major.dtype(), chan_major.device());
       _conv1(padded, conv1_out);
 
-      // Step 8: CausalConv1d #2 (hidden*2 → hidden, kernel=5, stride=2)
+      // SiLU activation between conv layers (matches HF forward pass)
+      swish_op(conv1_out, conv1_out);
+
+      // Step 8: CausalConv1d #2 (hidden*2 → hidden, kernel=5, stride=2) — no activation after
       // Left-pad by (kernel_size - 1) = 4
       causal_pad(conv1_out, 4, padded);
       StorageView conv2_out(chan_major.dtype(), chan_major.device());

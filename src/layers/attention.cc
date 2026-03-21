@@ -678,12 +678,15 @@ namespace ctranslate2 {
       }
 
       // Build sliding window attention mask for encoder self-attention.
-      // Needed when sliding_window > 0 on encoder layers (no KV cache to trim).
+      // Only applied when values_lengths is set (i.e., batch has padding), matching
+      // HuggingFace behavior where sliding window masks are only created when
+      // attention_mask is provided. Without padding, full attention is used.
       // For [left, right>0]: banded bidirectional mask.
       // For [left, right=0]: causal banded mask (left-only).
       // Decoder sliding window uses KV cache trimming instead (existing path).
       std::unique_ptr<StorageView> sw_mask;
-      if (_sliding_window > 0 && _self_attention && !_is_decoder && !cached_keys) {
+      if (_sliding_window > 0 && _self_attention && !_is_decoder && !cached_keys
+          && values_lengths) {
         const dim_t seq_q = queries_proj.dim(2);
         const dim_t seq_k = keys_proj.dim(2);
         sw_mask = std::make_unique<StorageView>(

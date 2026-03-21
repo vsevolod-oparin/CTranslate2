@@ -119,13 +119,20 @@ class MoonshineConverter(Converter):
         fe.conv2.weight = encoder.embedder.conv2.weight
         fe.conv2.bias = encoder.embedder.conv2.bias
 
-        # Final layer norm (RMS-style: gamma only)
-        spec.layer_norm.gamma = encoder.final_norm.gamma
+        # Final layer norm — MoonshineStreamingLayerNorm uses unit_offset:
+        # effective_gamma = gamma + 1.0 (unit_offset=True)
+        # CT2 LayerNorm applies: LN(x) * gamma + beta
+        # So we save gamma+1.0 as gamma, and 0 as beta.
+        spec.layer_norm.gamma = encoder.final_norm.gamma + encoder.final_norm.unit_offset
+        spec.layer_norm.beta = torch.zeros_like(encoder.final_norm.gamma)
 
         # Layers
         for layer_spec, layer in zip(spec.layer, encoder.layers):
-            # Self-attention norm
-            layer_spec.self_attention.layer_norm.gamma = layer.input_layernorm.gamma
+            # Self-attention norm (apply unit_offset)
+            layer_spec.self_attention.layer_norm.gamma = (
+                layer.input_layernorm.gamma + layer.input_layernorm.unit_offset)
+            layer_spec.self_attention.layer_norm.beta = torch.zeros_like(
+                layer.input_layernorm.gamma)
 
             # Self-attention: fuse Q+K+V → linear[0], O → linear[1]
             wq = layer.self_attn.q_proj.weight
@@ -134,8 +141,11 @@ class MoonshineConverter(Converter):
             layer_spec.self_attention.linear[0].weight = torch.cat([wq, wk, wv])
             layer_spec.self_attention.linear[1].weight = layer.self_attn.o_proj.weight
 
-            # FFN norm
-            layer_spec.ffn.layer_norm.gamma = layer.post_attention_layernorm.gamma
+            # FFN norm (apply unit_offset)
+            layer_spec.ffn.layer_norm.gamma = (
+                layer.post_attention_layernorm.gamma + layer.post_attention_layernorm.unit_offset)
+            layer_spec.ffn.layer_norm.beta = torch.zeros_like(
+                layer.post_attention_layernorm.gamma)
 
             # FFN: standard GELU (NOT SwiGLU for encoder)
             layer_spec.ffn.linear_0.weight = layer.mlp.fc1.weight

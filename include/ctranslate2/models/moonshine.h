@@ -86,7 +86,9 @@ namespace ctranslate2 {
     private:
       const std::shared_ptr<const MoonshineModel> _model;
       const std::unique_ptr<layers::MoonshineAudioFrontend> _frontend;
-      const std::unique_ptr<layers::TransformerEncoder> _encoder;
+      // Encoder layers built directly (TransformerEncoder expects embeddings which Moonshine lacks)
+      const std::vector<std::unique_ptr<const layers::TransformerEncoderLayer>> _encoder_layers;
+      const std::unique_ptr<const layers::LayerNorm> _encoder_norm;
       const std::unique_ptr<layers::TransformerDecoder> _decoder;
 
       // Adapter weights (loaded manually, not via a Layer subclass)

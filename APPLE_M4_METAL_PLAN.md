@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2025-03-21
-**Status:** M14 complete — M12 done, M13 f16 GEMM fix done, M14.1–14.8 all done (precision parity + GPU sync + INT8 audit + README + perf gate). M17.1–17.7 done (sliding window, frontend, spec, converter, model class, tokenizer, E2E validation). M17.8+ pending.
+**Status:** M14 complete — M12 done, M13 f16 GEMM fix done, M14.1–14.8 all done (precision parity + GPU sync + INT8 audit + README + perf gate). M17.1–17.8 done (sliding window, frontend, spec, converter, model class, tokenizer, E2E validation, Python API). M17.9 (streaming) deferred. **M19 (MPS buffer cache corruption) added** — F16TempCache/SdpaF16TempCache reuse oversized buffers with stale data, corrupting mixed-dimension GEMM sequences (beam search → greedy).
 
 ---
 
@@ -1554,7 +1554,9 @@ python orchestrator.py --frameworks ct2_metal --models large-v3-turbo --quants f
 | 14 (Precision) | Float16 precision parity — close BLEU gap to match CUDA | 2–3 weeks | 12, 13 (f16 GEMM) |
 | 15 (Cleanup) | Dead code removal, MSL consistency, doc hygiene | 1–2 days | 14 |
 | 16 (Whisper Bench) ✅ | Multi-language Whisper benchmark vs alternatives | 2–3 days | 10 |
-| **Total** | | **~14–21 weeks** | |
+| 17 (Moonshine) | Moonshine streaming model — offline inference | 1–2 weeks | 10, 14 | 17.1–17.7 ✅, 17.8 TODO, 17.9 → M18 |
+| 18 (Streaming) | Encoder KV caching for streaming Moonshine | 2–3 weeks | 17 |
+| **Total** | | **~17–26 weeks** | |
 
 ---
 
@@ -1955,19 +1957,139 @@ xcrun xctrace record --template 'GPU Activity' \
 - Tests: `tests/metal/moonshine_e2e_test.mm` (10/10 pass)
 - Report: `agents/report/milestone-17.7-e2e-validation.md`
 
-**17.8 Python API**
-- Add `ctranslate2.converters.Moonshine` converter class
-- Add `ctranslate2.models.Moonshine` model class (NOT reusing `ctranslate2.models.Whisper`)
-- Expose `transcribe(audio)` convenience method
-- Add usage example in docs
-- **PASS:** `converter.convert()` + `ctranslate2.models.Moonshine(path)` → transcription works
+**17.8 Python API** ✅ (2026-03-21)
+- Pybind11 bindings: `ctranslate2._ext.Moonshine` (model pool) + `MoonshineResult` (output)
+- API: `encode(audio_sv, to_cpu)` → encoder output; `generate(audio_sv, prompts, ...)` → MoonshineResult
+- Full E2E pipeline verified: load model → encode audio → generate tokens → decode with HF tokenizer
+- Test: `Moonshine('/tmp/moonshine-tiny-ct2')` loads, `encode()` returns `[1,50,320]`, `generate()` returns tokens
+- Files: `python/cpp/moonshine.cc`, `python/cpp/module.h`, `python/cpp/module.cc`
+- Report: `agents/report/milestone-17.8-python-api.md`
 
-**17.9 Encoder KV caching for streaming (Phase 2 — DEFERRED)**
-- Not in scope for M17. Requires encoder KV cache infrastructure that CT2 doesn't have.
-- Prerequisite: bidirectional sliding window (17.1) working correctly
-- Would enable O(chunk_size) incremental encoding instead of O(total_audio)
-- Estimated effort: 2-3 weeks additional
-- Track as separate milestone if/when needed
+**17.9 Encoder KV caching for streaming (Phase 2 — DEFERRED → M18)**
+- Moved to M18 as a separate milestone.
+
+---
+
+## Milestone 18 — Streaming Encoder (Encoder KV Caching)
+
+**Goal:** Enable O(chunk_size) incremental encoding for Moonshine streaming, instead of re-encoding all audio from scratch on every chunk (current O(N²) behavior).
+
+**Why:** Moonshine is designed as a streaming model — audio arrives in chunks (~640ms), and transcription should update incrementally. Without encoder KV caching, the encoder re-runs the full audio pipeline on every chunk. For 30s audio in 1s chunks, that's ~450× the minimum necessary compute. Streaming enables real-time captioning, voice assistants, and live translation.
+
+**Prerequisites:** M17.1 (sliding window ✅), M17.5 (MoonshineModel ✅), M17.8 (Python API)
+
+**18.1 Audio frontend streaming**
+- Incremental CMVN: online running mean/variance instead of full-sequence normalization
+- CausalConv1d state carry-over: cache previous conv outputs for left-padding across chunk boundaries
+- Chunk-to-frame alignment: handle stride-2 convolution boundaries when chunk size isn't a multiple of stride
+- Ring buffer for incoming audio so partial frames carry over between chunks
+- **PASS:** Frontend produces identical output whether fed 10s as one block or as 10×1s chunks
+- Files: `moonshine.h`, `moonshine.cc`
+
+**18.2 EncoderState container**
+- New `EncoderState` type (analogous to `DecoderState`) — per-layer K/V caches + offset tracking
+- `initial_encoder_state()` factory on `MoonshineReplica`
+- Lifecycle: init → update per chunk → reset between utterances
+- Memory bounded by sliding window size, not total audio length
+- Files: `moonshine.h`, `moonshine.cc`, possibly `transformer.h`
+
+**18.3 TransformerEncoderLayer KV cache support**
+- Extend `TransformerEncoderLayer::operator()` signature with `cached_keys*`, `cached_values*`, `offset`
+- Wire through to existing `AttentionLayer` (which already supports cache params)
+- Backward compatible: existing callers pass `nullptr` → no behavior change
+- **PASS:** Encoder layer with cache produces same output as without cache for single-chunk input
+- Files: `transformer.h`, `transformer.cc`
+
+**18.4 Sliding window KV eviction**
+- When offset exceeds window size, evict old K/V entries to bound memory
+- Coordinate eviction with mask generation (M17.1's `make_sliding_window_mask`)
+- Re-index mask positions relative to cumulative offset
+- Memory usage: O(window_size × num_layers × hidden) regardless of total audio length
+- **PASS:** 60s audio streamed in 1s chunks uses constant memory after window fills
+- Files: `attention.cc`, `moonshine.cc`
+
+**18.5 Lookahead buffering for bidirectional layers**
+- Moonshine layers 0-1 and 12-13 use `[16, 4]` — need 3 future frames before emitting
+- Implement chunk buffering: hold back output until lookahead frames arrive
+- Layers 2-11 use `[16, 0]` (causal) — can emit immediately
+- Handle final chunk: flush buffered frames on `finalize()`
+- **PASS:** Bidirectional layers produce identical output whether streamed or offline
+- Files: `moonshine.cc`
+
+**18.6 Streaming encode pipeline**
+- Integrate 18.1–18.5 into `MoonshineReplica`
+- New API: `encode_chunk(audio_chunk, encoder_state)` → incremental encoder output
+- `reset_encoder_state(state)` — clear caches for next utterance
+- Thread safety: state is per-replica (no shared mutation), compatible with `ReplicaPool`
+- **PASS:** Full utterance streamed in chunks produces same final transcription as offline `encode()`
+- Files: `moonshine.h`, `moonshine.cc`, `models/moonshine.cc`
+
+**18.7 Python bindings**
+- Expose `encode_chunk()`, `reset_encoder_state()`, `create_encoder_state()` in Python
+- Streaming transcription API: `model.transcribe_stream(audio_iterator)` convenience method
+- **PASS:** Python streaming produces same text as `model.transcribe(full_audio)`
+- Files: `python/cpp/moonshine.cc`, `python/ctranslate2/models/moonshine.py`
+
+**18.8 Correctness validation**
+- Numerical comparison: streamed vs offline encoder output (max diff < 1e-5 for f32)
+- All chunk sizes: 320ms, 640ms, 1s, 2s, 5s — same final output
+- Edge cases: very short audio (< 1 chunk), exact chunk boundary alignment, single-sample remainder
+- Multi-utterance: reset between utterances, verify no state leakage
+- **PASS:** All chunk sizes produce identical transcription; memory bounded
+
+**18.9 Performance benchmarks**
+- Latency: time-to-first-token for streaming vs offline
+- Throughput: tokens/sec for 30s audio streamed in 1s chunks vs offline
+- Memory: peak RSS for streaming vs offline on 60s+ audio
+- Target: streaming latency < 200ms per chunk on Apple M4
+- Report with comparison table
+
+---
+
+## Milestone 19 — MPS Buffer Cache Corruption Fix
+
+**Goal:** Fix GPU state corruption when encoder/decoder dimensions change between calls (e.g., beam search → greedy, or 3000-frame → 200-frame encoding).
+
+**Bug:** `F16TempCache` and `SdpaF16TempCache` in the Metal GEMM/SDPA paths reuse oversized buffers without clearing stale data. When a large GEMM (beam search, 3000 frames) is followed by a smaller GEMM (greedy, 200 frames), the conversion kernels write only the new (smaller) region but MPS reads beyond the declared matrix dimensions for alignment, encountering stale float32 values from the previous call. This corrupts the accumulation and produces all-zero logits.
+
+**Reproduction:** Call `Whisper::generate()` with `beam_size=5` on 3000-frame mel, then `beam_size=1` on 200-frame mel → second call produces token ID 0 for every position. Consistent 3000-frame calls work fine.
+
+**Root cause files:**
+- `src/metal/primitives_gemm.mm:980-993` — `F16TempCache::get()` returns oversized buffer with stale content
+- `src/metal/ops_sdpa.mm:196-214` — `SdpaF16TempCache::get()` — same pattern
+
+**Impact:** MetalWhisper streaming transcription (`MWStreamingTranscriber`) cannot use variable-frame mel encoding, forcing 3000-frame padding on every iteration (~1s encode vs ~100ms). Also breaks any application that mixes beam search and greedy decoding on the same model instance.
+
+**19.1 Diagnostic: confirm temp cache is the root cause**
+- Build with `F16TempCache::get()` and `SdpaF16TempCache::get()` bypassed (fresh allocation per call)
+- Run reproduction sequence: beam=5 (3000 frames) → beam=1 (200 frames)
+- If the second call produces correct output, the temp cache is confirmed as root cause
+- **PASS:** Fresh-allocation build produces correct output for mixed-dimension calls
+
+**19.2 Fix: zero temp buffers on reuse**
+- In `F16TempCache::get()`: when `bytes <= cap[idx]`, `memset([buf[idx] contents], 0, cap[idx])` before returning
+- Same fix in `SdpaF16TempCache::get()`
+- This is the minimal fix — stale data beyond the active region becomes zero, which is safe for GEMM accumulation
+- Alternative (better perf): only zero the region beyond `bytes` up to `cap[idx]`
+- **PASS:** Mixed-dimension GEMM sequence produces correct results; no stale data corruption
+
+**19.3 Regression test**
+- Add test: `test_metal_gemm_dimension_change` — run f16 GEMM with large M, then small M, verify output
+- Add test: `test_whisper_beam_then_greedy` — encode(3000) + generate(beam=5), then encode(200) + generate(beam=1), verify text output
+- Add test: `test_sdpa_dimension_change` — SDPA with large sequence, then small sequence
+- **PASS:** All three tests pass; existing test suite still passes
+
+**19.4 Performance validation**
+- Benchmark the zero-fill overhead: `memset` on Metal shared-memory buffers is fast but adds ~microseconds per GEMM
+- Compare: zero entire buffer vs zero only stale region vs fresh allocation
+- Choose the approach with < 1% regression on encode + generate benchmarks
+- **PASS:** Chosen approach adds < 1% overhead to GEMM-heavy workloads
+
+**19.5 Remove workaround in MetalWhisper**
+- After CT2 fix is validated, update `MWStreamingTranscriber.mm` to use variable-frame mel encoding again
+- Remove 3000-frame padding workaround
+- Benchmark: encode speedup (expected 4-12× for short buffers)
+- **PASS:** Streaming with variable-frame encoding works correctly after `transcribeURL:` with beam search
 
 ---
 

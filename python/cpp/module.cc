@@ -112,6 +112,7 @@ PYBIND11_MODULE(_ext, m)
   ctranslate2::python::register_translator(m);
   ctranslate2::python::register_generator(m);
   ctranslate2::python::register_encoder(m);
+  ctranslate2::python::register_moonshine(m);
   ctranslate2::python::register_whisper(m);
   ctranslate2::python::register_wav2vec2(m);
   ctranslate2::python::register_wav2vec2bert(m);

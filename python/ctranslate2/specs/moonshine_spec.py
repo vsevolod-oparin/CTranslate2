@@ -7,7 +7,7 @@ import numpy as np
 from ctranslate2.specs import attention_spec, common_spec, model_spec, transformer_spec
 
 
-class MoonshineConfig(model_spec.ModelConfig):
+class MoonshineConfig(model_spec.LanguageModelConfig):
     """Configuration for the Moonshine model."""
 
     def __init__(self, **kwargs):
@@ -25,11 +25,12 @@ class MoonshineAudioFrontendSpec(model_spec.LayerSpec):
 
 
 class MoonshineAdapterSpec(model_spec.LayerSpec):
-    """Encoder→decoder adapter: position embeddings + linear projection."""
+    """Encoder→decoder adapter: position embeddings + optional linear projection."""
 
-    def __init__(self):
+    def __init__(self, project: bool = True):
         self.position_embeddings = common_spec.EmbeddingsSpec()  # [max_pos, dec_hidden]
-        self.projection = common_spec.LinearSpec()               # Linear(enc_hidden → dec_hidden, no bias)
+        if project:
+            self.projection = common_spec.LinearSpec()           # Linear(enc_hidden → dec_hidden, no bias)
 
 
 class MoonshineEncoderSpec(model_spec.LayerSpec):
@@ -119,6 +120,7 @@ class MoonshineSpec(model_spec.LanguageModelSpec):
         rotary_dim: Optional[int] = None,
         rotary_interleave: bool = False,
         rotary_base: float = 10000,
+        adapter_project: bool = True,
     ):
         """Initializes the Moonshine model specification.
 
@@ -144,9 +146,10 @@ class MoonshineSpec(model_spec.LanguageModelSpec):
             num_heads_kv=num_encoder_heads_kv,
             head_dim=encoder_head_dim,
             sliding_windows=sliding_windows,
+            rms_norm=True,  # encoder uses gamma-only norms
         )
 
-        self.adapter = MoonshineAdapterSpec()
+        self.adapter = MoonshineAdapterSpec(project=adapter_project)
 
         self.decoder = transformer_spec.TransformerDecoderSpec(
             num_layers=num_decoder_layers,

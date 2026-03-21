@@ -1,7 +1,7 @@
 # Apple M4 Metal Backend Implementation Plan
 
 **Revised:** 2025-03-21
-**Status:** M14 complete — M12 done, M13 f16 GEMM fix done, M14.1–14.8 all done (precision parity + GPU sync + INT8 audit + README + perf gate). M17 (Moonshine) proposed.
+**Status:** M14 complete — M12 done, M13 f16 GEMM fix done, M14.1–14.8 all done (precision parity + GPU sync + INT8 audit + README + perf gate). M17.1–17.4 done (sliding window, frontend, spec, converter). M17.5+ in progress.
 
 ---
 
@@ -1853,105 +1853,72 @@ xcrun xctrace record --template 'GPU Activity' \
 
 ---
 
-**17.1 Per-layer bidirectional sliding window attention** (HIGHEST RISK — do first)
-- **Problem:** CT2's sliding window is (a) per-model not per-layer, (b) past-only (trims KV cache to last N tokens). Moonshine needs per-layer config AND future-attending (right window) support.
-- **Device agnosticism constraint:** Implementation MUST work on CPU, CUDA, and MPS with zero backend-specific code.
+**17.1 Per-layer bidirectional sliding window attention** ✅ (2026-03-21)
+- Added `_sliding_window_right` member to `AttentionLayer` (C++) and `sliding_window=[left, right]` tuple support to `MultiHeadAttentionSpec` (Python)
+- Implemented `make_sliding_window_mask()` — generates `[1, seq_q, seq_k]` additive mask with `-1e9` for out-of-window positions
+- Mask applied via `add_batch_broadcast` before softmax in `dot_product_attention` — device-agnostic (CPU/CUDA/MPS)
+- Only activated for encoder self-attention without KV cache (`!_is_decoder && !cached_keys`)
+- Backward compatible: `sliding_window_right` defaults to 0; Mistral/Gemma3 unaffected
+- Tests: 7 cases, 84 assertions — causal `[4,0]`, bidirectional `[16,4]`, symmetric `[3,3]`, self-only `[1,0]`, full window, shape, boundary checks
+- Files: `attention_spec.py`, `attention_layer.h`, `attention_layer.cc`, `attention.cc`, `tests/metal/sliding_window_test.mm`
+- Report: `agents/report/milestone-17.1-sliding-window.md`
 
-- **Current state (verified by code audit):**
-  - `AttentionLayer` reads `sliding_window` from model scope as single int32 (`attention_layer.cc:141`)
-  - KV cache trimming in `attention.cc:625-671` uses `ops::Slide` — already device-agnostic
-  - CUDA FlashAttention supports `window_size_left`/`window_size_right` natively (`flash_attention_gpu.cu:213-214`)
-  - Metal FlashAttention **throws** if `sliding_window > 0` (`flash_attention_metal.mm:153`)
-  - CPU uses `dot_product_attention` path (no FlashAttention), mask-based
+**17.2 Audio frontend** ✅ (2026-03-21)
+- `MoonshineAudioFrontend` C++ Layer class: Frame CMVN → asinh(x*exp(log_k)) → Dense → SiLU → CausalConv1d×2
+- CMVN + asinh on CPU (trivial cost on 80-sample frames); Dense/Conv dispatch to all backends
+- CausalConv1d: manual left-pad via `ops::Concat` + Conv1D(padding=0) — device-agnostic
+- Asinh uses `std::asinhf()` directly (CPU-side, no decomposition needed)
+- Output: `[batch, time/4, hidden_size]` at 50Hz (250 frames for 5s audio)
+- Tests: 13 cases, 40 assertions — CMVN (zero mean, unit variance, multi-frame, constant, realistic), asinh (identity, scale, zero, odd), causal padding, framing, output shape
+- Files: `include/ctranslate2/layers/moonshine.h`, `src/layers/moonshine.cc`, `CMakeLists.txt`, `tests/metal/moonshine_frontend_test.mm`
+- Report: `agents/report/milestone-17.2-audio-frontend.md`
 
-- **Part A — Per-layer storage:**
-  - Add `sliding_window` as per-layer attribute to `MultiHeadAttentionSpec` (Python) and `AttentionLayer` (C++)
-  - Currently set once in `TransformerEncoderSpec.__init__()` and read from model scope in `attention_layer.cc:141`
-  - Change: store as attribute on each layer's attention scope, read per-layer during construction
-  - Must not break Mistral/Gemma3 (which use uniform sliding window)
+**17.3 MoonshineSpec — Python model specification** ✅ (2026-03-21)
+- `MoonshineSpec` (top-level), `MoonshineEncoderSpec`, `MoonshineAudioFrontendSpec`, `MoonshineAdapterSpec`, `MoonshineConfig`
+- Decoder reuses `TransformerDecoderSpec` with SWISH + GLU + RoPE + cross-attention (no new class)
+- Encoder layers reuse `TransformerEncoderLayerSpec` with per-layer `sliding_window=[left, right]`
+- Encoder uses `rms_norm=True` (gamma-only norms, verified from HF weight names `.gamma`)
+- Adapter projection is optional (`project=False` when enc_hidden == dec_hidden)
+- **Correction from plan:** encoder does NOT use SwiGLU — uses standard GELU FFN. Only decoder uses SwiGLU.
+- Tests: Tiny/Medium configs, edge cases (wrong window count, no window, unset weights)
+- File: `python/ctranslate2/specs/moonshine_spec.py`
+- Report: `agents/report/milestone-17.3-moonshine-spec.md`
 
-- **Part B — Bidirectional (left+right) window mask (device-agnostic approach):**
-  - Moonshine `[16, 4]` means: for each query position q, attend to positions in `[q-16, q+4)` range
-  - **Implementation: attention mask tensor, NOT KV cache manipulation.**
-    - Generate a `[seq_len, seq_len]` mask tensor in the encoder before calling attention
-    - `mask[i][j] = (j >= i - left_window) && (j < i + right_window)` — pure tensor math
-    - Pass through existing `values_lengths` / attention mask path in `dot_product_attention`
-    - `dot_product_attention` already supports masks on ALL backends (CPU, CUDA, MPS)
-  - **Do NOT use FlashAttention for encoder sliding window** — Metal FlashAttention doesn't support it.
-    The standard `dot_product_attention` path handles masks on all devices identically.
-  - For layers with `right_window == 0`: mask is lower-triangular with bandwidth = left_window (causal)
-  - For layers with `right_window > 0`: mask is banded (non-causal, attends to limited future)
-  - Store as `[left_window, right_window]` pair per layer (int32 × 2)
-  - Mask is created once per `encode()` call (not per layer) and indexed by layer
-
-- **Part C — Encoder-only scope:**
-  - Moonshine's bidirectional sliding window is encoder-only (decoder is standard causal)
-  - Decoder uses no sliding window — standard causal autoregressive attention
-  - No changes needed to decoder attention path
-
-- **Device verification plan:**
-  - Test identical encoder output on CPU, CUDA (if available), and MPS for same input
-  - Verify mask tensor is created on the same device as input (via `StorageView(dtype, device)`)
-  - Confirm no `#ifdef CT2_WITH_*` guards in the sliding window mask code
-
-- **PASS:** Encoder with per-layer `[16,4]`/`[16,0]` windows produces output matching HF reference within 1e-4, on all available backends
-- **Estimated effort:** ~200-300 lines across Python spec + C++ attention layer + mask generation
-
-**17.2 Audio frontend**
-- **New C++ component:** `MoonshineAudioFrontend` in `src/layers/moonshine.cc`
-- Pipeline (in order):
-  1. Frame CMVN: per-frame mean subtraction + RMS normalization (no learned params, just epsilon)
-  2. Asinh compression: `asinh(x * exp(log_k))` where `log_k` is a learned scalar (stored as model weight)
-  3. Linear projection: Dense(1 → hidden_size) — maps raw samples to feature dim
-  4. SiLU activation
-  5. CausalConv1d(hidden_size → hidden_size×2, kernel=5, stride=2) + activation
-  6. CausalConv1d(hidden_size×2 → hidden_size, kernel=5, stride=2)
-- **CausalConv1d:** Left-pad input by `(kernel_size - 1)` before Conv1d. CT2's Conv1d already supports arbitrary padding — just set `padding = kernel_size - 1` and slice output.
-- **Asinh op:** Not currently in CT2. Options: (a) implement as MSL + CPU kernel, (b) decompose as `log(x + sqrt(x² + 1))` using existing ops. Option (b) preferred — fewer new ops.
-- Input: raw 16kHz float32 waveform `[batch, samples]`
-- Output: `[batch, time/4, hidden_size]` (50Hz features at 20ms/frame)
-- **PASS:** Frontend output matches HF reference within 1e-5 on 5s audio clip
-
-**17.3 MoonshineSpec — Python model specification**
-- New file: `python/ctranslate2/specs/moonshine_spec.py`
-- `MoonshineEncoderSpec`: transformer layers (14) + frontend weights (CMVN eps, asinh log_k, linear projection, 2× conv weights/biases) + per-layer sliding window config as `[left, right]` pairs
-- `MoonshineAdapterSpec`: position embeddings weight (640 × 4096) + linear projection weight (768 → 640, no bias)
-- `MoonshineDecoderSpec`: extend/reuse `TransformerDecoderSpec` with RoPE + cross-attention + fused SwiGLU
-- `MoonshineSpec`: combines encoder + adapter + decoder
-- **SwiGLU weight handling:** Moonshine's fused `fc1` (hidden → 2×intermediate) must be split into `linear_0` (with activation) + `linear_0_noact` (gate) during conversion, OR CT2 must support fused GLU weights. Splitting during conversion is simpler and matches existing CT2 FFN pattern.
-- **PASS:** Spec instantiates; field structure matches config.json
-
-**17.4 Model converter — HuggingFace → CT2**
-- New file: `python/ctranslate2/converters/moonshine.py`
-- Load from `UsefulSensors/moonshine-streaming-{tiny,small,medium}` safetensors
-- Key weight mapping (corrected from proposal):
+**17.4 Model converter — HuggingFace → CT2** ✅ (2026-03-21)
+- Verified weight mapping against actual `moonshine-streaming-tiny` (161 tensors) and `moonshine-streaming-medium` (362 tensors)
+- Actual HF weight key names (corrected from plan — prefixed with `model.`, different submodule names):
   ```
-  HuggingFace                                    → CTranslate2
-  ──────────────────────────────────────────────────────────────
-  encoder.preprocessor.cmvn.eps                  → encoder/frontend/cmvn_eps (scalar)
-  encoder.preprocessor.log_k                     → encoder/frontend/log_k (scalar)
-  encoder.preprocessor.linear.weight/bias        → encoder/frontend/linear/weight,bias
-  encoder.preprocessor.conv1.weight/bias         → encoder/frontend/conv1/weight,bias
-  encoder.preprocessor.conv2.weight/bias         → encoder/frontend/conv2/weight,bias
-  encoder.layers.{i}.input_layernorm.*           → encoder/layer_{i}/self_attention/layer_norm/*
-  encoder.layers.{i}.self_attn.{q,k,v,o}_proj.* → encoder/layer_{i}/self_attention/linear_{0,1,2,3}/*
-  encoder.layers.{i}.post_attention_layernorm.*  → encoder/layer_{i}/ffn/layer_norm/*
-  encoder.layers.{i}.mlp.fc1.weight             → encoder/layer_{i}/ffn/linear_0/weight (split for GLU?)
-  encoder.layers.{i}.mlp.fc2.weight             → encoder/layer_{i}/ffn/linear_1/weight
-  encoder.final_layer_norm.*                     → encoder/layer_norm/*
-  decoder.model.pos_emb.weight                   → adapter/position_embeddings/weight
-  decoder.model.proj.weight                      → adapter/projection/weight
-  decoder.model.embed_tokens.weight              → decoder/embeddings/weight
-  decoder.model.layers.{i}.self_attn.*           → decoder/layer_{i}/self_attention/*
-  decoder.model.layers.{i}.encoder_attn.*        → decoder/layer_{i}/attention/*
-  decoder.model.layers.{i}.mlp.fc1.weight        → decoder/layer_{i}/ffn/linear_0/weight + linear_0_noact/weight (SPLIT)
-  decoder.model.layers.{i}.mlp.fc2.weight        → decoder/layer_{i}/ffn/linear_1/weight
-  decoder.lm_head.weight                         → decoder/projection/weight
+  HuggingFace                                           → CTranslate2
+  ─────────────────────────────────────────────────────────────────────
+  model.encoder.embedder.comp.log_k                     → encoder/frontend/log_k
+  model.encoder.embedder.linear.weight                  → encoder/frontend/linear/weight
+  model.encoder.embedder.conv1.weight/bias              → encoder/frontend/conv1/weight,bias
+  model.encoder.embedder.conv2.weight/bias              → encoder/frontend/conv2/weight,bias
+  model.encoder.layers.{i}.input_layernorm.gamma        → layer_{i}/self_attention/layer_norm/gamma
+  model.encoder.layers.{i}.self_attn.{q,k,v}_proj.w    → layer_{i}/self_attention/linear_0/weight (FUSED)
+  model.encoder.layers.{i}.self_attn.o_proj.weight      → layer_{i}/self_attention/linear_1/weight
+  model.encoder.layers.{i}.post_attention_layernorm.gamma → layer_{i}/ffn/layer_norm/gamma
+  model.encoder.layers.{i}.mlp.fc1.weight/bias          → layer_{i}/ffn/linear_0/weight,bias (GELU, NOT SwiGLU)
+  model.encoder.layers.{i}.mlp.fc2.weight/bias          → layer_{i}/ffn/linear_1/weight,bias
+  model.encoder.final_norm.gamma                         → encoder/layer_norm/gamma
+  model.decoder.pos_emb.weight                           → adapter/position_embeddings/weight
+  model.decoder.proj.weight                              → adapter/projection/weight (only if enc_H ≠ dec_H)
+  model.decoder.embed_tokens.weight                      → decoder/embeddings/weight
+  model.decoder.layers.{i}.self_attn.{q,k,v}_proj       → layer_{i}/self_attention/linear_0 (FUSED)
+  model.decoder.layers.{i}.self_attn.o_proj              → layer_{i}/self_attention/linear_1
+  model.decoder.layers.{i}.encoder_attn.q_proj           → layer_{i}/attention/linear_0
+  model.decoder.layers.{i}.encoder_attn.{k,v}_proj       → layer_{i}/attention/linear_1 (FUSED)
+  model.decoder.layers.{i}.encoder_attn.o_proj           → layer_{i}/attention/linear_2
+  model.decoder.layers.{i}.mlp.fc1.weight[:mid]          → layer_{i}/ffn/linear_0/weight (SwiGLU value)
+  model.decoder.layers.{i}.mlp.fc1.weight[mid:]          → layer_{i}/ffn/linear_0_noact/weight (SwiGLU gate)
+  model.decoder.layers.{i}.mlp.fc2                       → layer_{i}/ffn/linear_1
+  proj_out.weight                                        → decoder/projection/weight
   ```
-- **Fused SwiGLU split:** `fc1.weight` shape is `[2*intermediate, hidden]`. Split along dim=0 into two `[intermediate, hidden]` tensors: one for `linear_0` (value path), one for `linear_0_noact` (gate path). Verify split order matches HF's `chunk(2, dim=-1)` — gate is second half.
-- **NOTE:** Exact HF weight key names must be verified by inspecting `model.safetensors` keys. The names above are educated guesses from the modeling code.
-- Support quantization: float32, float16, int8, int8_float16
-- **PASS:** Convert moonshine-streaming-medium, load in CT2, no errors
+- Conversion tested: `moonshine-streaming-tiny` float32 (134MB) + float16 (67MB, 0.50x)
+- Full `spec.validate()` passes with vocabulary (32768 tokens)
+- Medium model Q/K/V shapes confirmed: encoder attention projects 768→640 (inner_dim = num_heads × head_dim)
+- File: `python/ctranslate2/converters/moonshine.py`
+- Report: `agents/report/milestone-17.4-model-converter.md`
 
 **17.5 MoonshineModel + MoonshineReplica — C++ model class**
 - New files: `src/models/moonshine.cc`, `include/ctranslate2/models/moonshine.h`

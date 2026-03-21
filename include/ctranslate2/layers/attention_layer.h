@@ -67,6 +67,7 @@ namespace ctranslate2 {
       const bool _multi_query;
       const dim_t _num_heads_kv;
       const dim_t _sliding_window;
+      const dim_t _sliding_window_right;
     };
 
     enum class RotaryScalingType {

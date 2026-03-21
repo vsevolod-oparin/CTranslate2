@@ -2,7 +2,12 @@
 
 **Date:** 2025-03-21
 **Author:** Research analysis for MPS/Metal backend integration
-**Status:** Proposal
+**Status:** Proposal — **SUPERSEDED by corrected M17 plan in APPLE_M4_METAL_PLAN.md (2026-03-21)**
+
+> **WARNING:** This proposal contains errors in the audio frontend, adapter, SwiGLU weight layout,
+> and sliding window description. These were based on the non-streaming Moonshine variant and/or
+> incomplete analysis. See the corrected M17 milestone in `APPLE_M4_METAL_PLAN.md` for accurate
+> architecture details verified against HuggingFace `modeling_moonshine_streaming.py` and `config.json`.
 
 ---
 

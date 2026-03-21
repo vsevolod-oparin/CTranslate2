@@ -95,4 +95,10 @@ class MultiHeadAttentionSpec(model_spec.LayerSpec):
             self.head_dim = np.dtype("int32").type(head_dim)
 
         if sliding_window is not None:
-            self.sliding_window = np.dtype("int32").type(sliding_window)
+            if isinstance(sliding_window, (list, tuple)) and len(sliding_window) == 2:
+                # Bidirectional sliding window: [left_window, right_window]
+                self.sliding_window = np.dtype("int32").type(sliding_window[0])
+                self.sliding_window_right = np.dtype("int32").type(sliding_window[1])
+            else:
+                # Past-only sliding window (backward compatible)
+                self.sliding_window = np.dtype("int32").type(sliding_window)

@@ -1820,85 +1820,181 @@ xcrun xctrace record --template 'GPU Activity' \
 ---
 
 ### Milestone 17: Moonshine ASR Model Support
-**Goal:** Add Moonshine encoder-decoder ASR model to CTranslate2, leveraging existing MPS backend for fastest-on-Apple-Silicon inference.
-**Time:** 2–3 weeks (Phase 1: offline inference. Phase 2: streaming with encoder KV caching — optional, +2 weeks)
+**Goal:** Add Moonshine Streaming encoder-decoder ASR model to CTranslate2, leveraging existing MPS backend.
+**Time:** 3–4 weeks (Phase 1: offline inference)
 **Depends on:** M10 (full model end-to-end), M14 (float16 parity)
 **Priority:** High — Moonshine Medium (245M params) achieves 6.65% avg WER, beating Whisper Turbo (809M, 7.75% WER) with 3.3x fewer parameters. Purpose-built for real-time streaming on edge devices.
-**Proposal:** See `agents/report/moonshine-support-proposal.md` for full architecture analysis and weight mapping.
+**Proposal:** See `agents/report/moonshine-support-proposal.md` for initial analysis (NOTE: contains errors corrected below).
+**HF source of truth:** `UsefulSensors/moonshine-streaming-medium` config.json + HuggingFace Transformers `modeling_moonshine_streaming.py`
 
 **Why Moonshine:**
-- Designed for streaming (causal encoder with sliding window attention, variable-length input)
-- 5x faster than Whisper on short audio (no 30s padding)
-- Encoder KV caching enables incremental encoding (only process new audio, not full window)
+- Variable-length input (no 30s padding) — 5x faster than Whisper on short audio
+- Smaller model, better accuracy (245M vs 809M, 6.65% vs 7.75% WER)
 - Available as MIT-licensed safetensors on HuggingFace
-- iOS, Android, macOS, Raspberry Pi support in official repo
-- CTranslate2 already has ~90% of required ops (RoPE, sliding window, SwiGLU, KV caching)
+- CTranslate2 already has most required ops (RoPE, SwiGLU, Conv1D, KV caching)
+- Streaming with encoder KV caching possible as future Phase 2 (not in scope here)
 
-**Architecture (Moonshine Streaming Medium):**
-- Encoder: 14 layers, 768-dim, 10 heads, GELU, sliding window attention (per-layer: [16,4] or [16,0]), no position embeddings
-- Audio frontend: Conv1d(1→384, k=127, s=64) + Conv1d(384→768, k=7, s=2) + CMVN (raw waveform, not mel)
-- Adapter: Linear(768→640) + learned position embeddings + LayerNorm
-- Decoder: 14 layers, 640-dim, 10 heads, RoPE (partial_rotary_factor=0.5, theta=10000), SwiGLU, cross-attention
-- Vocab: 32768 BPE tokens
+**Architecture (Moonshine Streaming Medium, from config.json):**
+- Encoder: 14 layers, 768-dim, 10 heads, head_dim=64, GELU activation, **bidirectional** sliding window attention (per-layer `[left, right]` pairs), no position embeddings
+- Audio frontend: Frame CMVN → asinh compression (learnable `log_k`) → Linear(1→768) → SiLU → CausalConv1d(768→1536, k=5, s=2) → CausalConv1d(1536→768, k=5, s=2). Total 4x downsampling. Raw 16kHz waveform input (not mel spectrogram).
+- Adapter: Learned position embeddings (dim=640, max_pos=4096) added to encoder output, THEN Linear(768→640, no bias). No LayerNorm.
+- Decoder: 14 layers, 640-dim, 10 heads, head_dim=64, RoPE (partial_rotary_factor=0.5, theta=10000), SwiGLU (fused fc1→split→gate, SiLU activation), cross-attention to encoder
+- Vocab: 32768 BPE tokens. BOS=1, EOS=2, PAD=0
+- Sliding windows (encoder, per-layer): `[[16,4],[16,4],[16,0]×10,[16,4],[16,4]]`
 
-**17.1 MoonshineSpec — Python model specification**
+**Corrections from original proposal (verified against HF source):**
+1. ~~Conv1d(1→384, k=127, s=64)~~ → Actually CausalConv1d(768→1536, k=5, s=2). The k=127/s=64 was from non-streaming Moonshine.
+2. ~~CMVN after convolutions~~ → CMVN is BEFORE convolutions (per-frame mean-subtraction + RMS normalization).
+3. ~~Adapter has LayerNorm~~ → No LayerNorm in adapter. Position embeddings added before projection.
+4. ~~SwiGLU same as Llama (gate_proj + up_proj)~~ → Moonshine uses fused fc1 projecting to 2×intermediate, then splits. Weight mapping must handle fused→split or convert during model import.
+5. ~~Sliding window is past-only with lookahead count~~ → It's bidirectional: `[left_window, right_window]`. Layers with `[16,4]` attend to 16 past + 4 future frames. This is NOT the same as CT2's current sliding window (past-only cache trim).
+6. ~~CMVN needs running stats~~ → For offline mode, CMVN is per-frame independent (mean + RMS per frame). No running stats needed.
+7. Frontend includes asinh compression layer (learnable parameter) not mentioned in original proposal.
+
+---
+
+**17.1 Per-layer bidirectional sliding window attention** (HIGHEST RISK — do first)
+- **Problem:** CT2's sliding window is (a) per-model not per-layer, (b) past-only (trims KV cache to last N tokens). Moonshine needs per-layer config AND future-attending (right window) support.
+- **Device agnosticism constraint:** Implementation MUST work on CPU, CUDA, and MPS with zero backend-specific code.
+
+- **Current state (verified by code audit):**
+  - `AttentionLayer` reads `sliding_window` from model scope as single int32 (`attention_layer.cc:141`)
+  - KV cache trimming in `attention.cc:625-671` uses `ops::Slide` — already device-agnostic
+  - CUDA FlashAttention supports `window_size_left`/`window_size_right` natively (`flash_attention_gpu.cu:213-214`)
+  - Metal FlashAttention **throws** if `sliding_window > 0` (`flash_attention_metal.mm:153`)
+  - CPU uses `dot_product_attention` path (no FlashAttention), mask-based
+
+- **Part A — Per-layer storage:**
+  - Add `sliding_window` as per-layer attribute to `MultiHeadAttentionSpec` (Python) and `AttentionLayer` (C++)
+  - Currently set once in `TransformerEncoderSpec.__init__()` and read from model scope in `attention_layer.cc:141`
+  - Change: store as attribute on each layer's attention scope, read per-layer during construction
+  - Must not break Mistral/Gemma3 (which use uniform sliding window)
+
+- **Part B — Bidirectional (left+right) window mask (device-agnostic approach):**
+  - Moonshine `[16, 4]` means: for each query position q, attend to positions in `[q-16, q+4)` range
+  - **Implementation: attention mask tensor, NOT KV cache manipulation.**
+    - Generate a `[seq_len, seq_len]` mask tensor in the encoder before calling attention
+    - `mask[i][j] = (j >= i - left_window) && (j < i + right_window)` — pure tensor math
+    - Pass through existing `values_lengths` / attention mask path in `dot_product_attention`
+    - `dot_product_attention` already supports masks on ALL backends (CPU, CUDA, MPS)
+  - **Do NOT use FlashAttention for encoder sliding window** — Metal FlashAttention doesn't support it.
+    The standard `dot_product_attention` path handles masks on all devices identically.
+  - For layers with `right_window == 0`: mask is lower-triangular with bandwidth = left_window (causal)
+  - For layers with `right_window > 0`: mask is banded (non-causal, attends to limited future)
+  - Store as `[left_window, right_window]` pair per layer (int32 × 2)
+  - Mask is created once per `encode()` call (not per layer) and indexed by layer
+
+- **Part C — Encoder-only scope:**
+  - Moonshine's bidirectional sliding window is encoder-only (decoder is standard causal)
+  - Decoder uses no sliding window — standard causal autoregressive attention
+  - No changes needed to decoder attention path
+
+- **Device verification plan:**
+  - Test identical encoder output on CPU, CUDA (if available), and MPS for same input
+  - Verify mask tensor is created on the same device as input (via `StorageView(dtype, device)`)
+  - Confirm no `#ifdef CT2_WITH_*` guards in the sliding window mask code
+
+- **PASS:** Encoder with per-layer `[16,4]`/`[16,0]` windows produces output matching HF reference within 1e-4, on all available backends
+- **Estimated effort:** ~200-300 lines across Python spec + C++ attention layer + mask generation
+
+**17.2 Audio frontend**
+- **New C++ component:** `MoonshineAudioFrontend` in `src/layers/moonshine.cc`
+- Pipeline (in order):
+  1. Frame CMVN: per-frame mean subtraction + RMS normalization (no learned params, just epsilon)
+  2. Asinh compression: `asinh(x * exp(log_k))` where `log_k` is a learned scalar (stored as model weight)
+  3. Linear projection: Dense(1 → hidden_size) — maps raw samples to feature dim
+  4. SiLU activation
+  5. CausalConv1d(hidden_size → hidden_size×2, kernel=5, stride=2) + activation
+  6. CausalConv1d(hidden_size×2 → hidden_size, kernel=5, stride=2)
+- **CausalConv1d:** Left-pad input by `(kernel_size - 1)` before Conv1d. CT2's Conv1d already supports arbitrary padding — just set `padding = kernel_size - 1` and slice output.
+- **Asinh op:** Not currently in CT2. Options: (a) implement as MSL + CPU kernel, (b) decompose as `log(x + sqrt(x² + 1))` using existing ops. Option (b) preferred — fewer new ops.
+- Input: raw 16kHz float32 waveform `[batch, samples]`
+- Output: `[batch, time/4, hidden_size]` (50Hz features at 20ms/frame)
+- **PASS:** Frontend output matches HF reference within 1e-5 on 5s audio clip
+
+**17.3 MoonshineSpec — Python model specification**
 - New file: `python/ctranslate2/specs/moonshine_spec.py`
-- Define `MoonshineEncoderSpec` (transformer layers + Conv1d frontend + per-layer sliding window config)
-- Define `MoonshineAdapterSpec` (linear projection + position embeddings + layer norm)
-- Define `MoonshineDecoderSpec` (reuse/extend `TransformerDecoderSpec` with RoPE + SwiGLU + cross-attention)
-- Define `MoonshineSpec` combining all three
-- **PASS:** Spec instantiates without error; field structure matches HuggingFace config.json
+- `MoonshineEncoderSpec`: transformer layers (14) + frontend weights (CMVN eps, asinh log_k, linear projection, 2× conv weights/biases) + per-layer sliding window config as `[left, right]` pairs
+- `MoonshineAdapterSpec`: position embeddings weight (640 × 4096) + linear projection weight (768 → 640, no bias)
+- `MoonshineDecoderSpec`: extend/reuse `TransformerDecoderSpec` with RoPE + cross-attention + fused SwiGLU
+- `MoonshineSpec`: combines encoder + adapter + decoder
+- **SwiGLU weight handling:** Moonshine's fused `fc1` (hidden → 2×intermediate) must be split into `linear_0` (with activation) + `linear_0_noact` (gate) during conversion, OR CT2 must support fused GLU weights. Splitting during conversion is simpler and matches existing CT2 FFN pattern.
+- **PASS:** Spec instantiates; field structure matches config.json
 
-**17.2 Model converter — HuggingFace → CT2**
+**17.4 Model converter — HuggingFace → CT2**
 - New file: `python/ctranslate2/converters/moonshine.py`
 - Load from `UsefulSensors/moonshine-streaming-{tiny,small,medium}` safetensors
-- Map weight names (see proposal for full mapping table)
-- Handle encoder/decoder dimension mismatch via adapter
+- Key weight mapping (corrected from proposal):
+  ```
+  HuggingFace                                    → CTranslate2
+  ──────────────────────────────────────────────────────────────
+  encoder.preprocessor.cmvn.eps                  → encoder/frontend/cmvn_eps (scalar)
+  encoder.preprocessor.log_k                     → encoder/frontend/log_k (scalar)
+  encoder.preprocessor.linear.weight/bias        → encoder/frontend/linear/weight,bias
+  encoder.preprocessor.conv1.weight/bias         → encoder/frontend/conv1/weight,bias
+  encoder.preprocessor.conv2.weight/bias         → encoder/frontend/conv2/weight,bias
+  encoder.layers.{i}.input_layernorm.*           → encoder/layer_{i}/self_attention/layer_norm/*
+  encoder.layers.{i}.self_attn.{q,k,v,o}_proj.* → encoder/layer_{i}/self_attention/linear_{0,1,2,3}/*
+  encoder.layers.{i}.post_attention_layernorm.*  → encoder/layer_{i}/ffn/layer_norm/*
+  encoder.layers.{i}.mlp.fc1.weight             → encoder/layer_{i}/ffn/linear_0/weight (split for GLU?)
+  encoder.layers.{i}.mlp.fc2.weight             → encoder/layer_{i}/ffn/linear_1/weight
+  encoder.final_layer_norm.*                     → encoder/layer_norm/*
+  decoder.model.pos_emb.weight                   → adapter/position_embeddings/weight
+  decoder.model.proj.weight                      → adapter/projection/weight
+  decoder.model.embed_tokens.weight              → decoder/embeddings/weight
+  decoder.model.layers.{i}.self_attn.*           → decoder/layer_{i}/self_attention/*
+  decoder.model.layers.{i}.encoder_attn.*        → decoder/layer_{i}/attention/*
+  decoder.model.layers.{i}.mlp.fc1.weight        → decoder/layer_{i}/ffn/linear_0/weight + linear_0_noact/weight (SPLIT)
+  decoder.model.layers.{i}.mlp.fc2.weight        → decoder/layer_{i}/ffn/linear_1/weight
+  decoder.lm_head.weight                         → decoder/projection/weight
+  ```
+- **Fused SwiGLU split:** `fc1.weight` shape is `[2*intermediate, hidden]`. Split along dim=0 into two `[intermediate, hidden]` tensors: one for `linear_0` (value path), one for `linear_0_noact` (gate path). Verify split order matches HF's `chunk(2, dim=-1)` — gate is second half.
+- **NOTE:** Exact HF weight key names must be verified by inspecting `model.safetensors` keys. The names above are educated guesses from the modeling code.
 - Support quantization: float32, float16, int8, int8_float16
 - **PASS:** Convert moonshine-streaming-medium, load in CT2, no errors
 
-**17.3 MoonshineModel + MoonshineReplica — C++ model class**
+**17.5 MoonshineModel + MoonshineReplica — C++ model class**
 - New files: `src/models/moonshine.cc`, `include/ctranslate2/models/moonshine.h`
+- New layer files: `src/layers/moonshine.cc`, `include/ctranslate2/layers/moonshine.h`
 - Register `"MoonshineSpec"` in `model_factory.cc`
-- `MoonshineEncoder`: Conv1d frontend (2 layers, stride 64 then 2) → CMVN → transformer layers
-- `MoonshineAdapter`: Linear + position embedding + LayerNorm
-- `MoonshineDecoder`: Reuse TransformerDecoder with RoPE + SwiGLU config (same as Llama decoder + cross-attention)
-- `encode()`: raw audio → encoder output
-- `generate()`: encoder output → token sequence (reuse WhisperReplica's generate infrastructure)
+- `MoonshineEncoder`: audio frontend (17.2) → transformer encoder layers (with per-layer sliding window from 17.1)
+- `MoonshineAdapter`: add position embeddings → linear projection (no bias)
+- `MoonshineDecoder`: reuse `TransformerDecoder` with RoPE + SwiGLU + cross-attention config
+- `MoonshineReplica`:
+  - `encode(audio)`: frontend → encoder → adapter → encoder output
+  - `generate(encoder_output, start_tokens, ...)`: autoregressive decode with beam search
+  - Do NOT reuse `WhisperReplica` — Moonshine has no timestamps, no language tokens, no 30s chunking, different tokenizer, different prompt format
+- `Moonshine` pool class (extends `ReplicaPool<MoonshineReplica>`) for thread-safe API
 - **PASS:** `encode()` on 5s audio produces correct shape; `generate()` produces valid tokens
 
-**17.4 Per-layer sliding window attention**
-- Extend `MultiHeadAttention` to accept per-layer `sliding_window` value (currently per-model)
-- Moonshine encoder: layers 0-1, 12-13 use [16, 4] (with lookahead); layers 2-11 use [16, 0] (causal)
-- Store sliding window config as model attribute array, indexed by layer
-- **PASS:** Encoder produces different output with per-layer windows vs uniform window
+**17.6 Tokenizer integration**
+- Moonshine uses a standard BPE tokenizer (32768 tokens) shipped as `tokenizer.json`
+- CT2 already supports SentencePiece and HF tokenizers — verify which format Moonshine uses
+- Special tokens: BOS=1, EOS=2, PAD=0 (from generation_config.json)
+- No language tokens, no timestamp tokens (unlike Whisper)
+- **PASS:** Tokenizer loads; encode/decode round-trip correct
 
-**17.5 CMVN (Cepstral Mean-Variance Normalization)**
-- Implement running mean/variance normalization for audio features
-- Applied after Conv1d frontend, before transformer layers
-- For offline: compute stats over full input; for streaming: use running stats
-- **PASS:** Normalized features match ONNX Runtime reference within 1e-4
-
-**17.6 End-to-end accuracy validation**
+**17.7 End-to-end accuracy validation**
 - Transcribe LibriSpeech test-clean with CT2 Moonshine Medium
-- Compare WER against HuggingFace reference (target: 2.08% ± 0.1%)
+- Compare WER against HuggingFace reference (target: 2.08% ± 0.5%)
+- Transcribe with float16 — verify WER matches float32
 - Transcribe with INT8 quantization — verify WER within 0.5% of float32
-- Benchmark: tokens/sec on M4 for float32, float16, int8
-- **PASS:** WER matches reference; INT8 within tolerance; MPS ≥2x faster than ONNX Runtime CPU
+- Benchmark: tokens/sec on M4 for float32, float16, int8 (CPU and MPS)
+- **PASS:** WER matches reference; INT8 within tolerance; MPS faster than CPU
 
-**17.7 Python API and CLI**
+**17.8 Python API**
 - Add `ctranslate2.converters.Moonshine` converter class
-- Add transcription example using Moonshine (similar to Whisper example)
-- Expose `encode()` and `generate()` in Python API
-- **PASS:** Python `converter.convert()` + `ctranslate2.models.Whisper(moonshine_path)` works end-to-end
+- Add `ctranslate2.models.Moonshine` model class (NOT reusing `ctranslate2.models.Whisper`)
+- Expose `transcribe(audio)` convenience method
+- Add usage example in docs
+- **PASS:** `converter.convert()` + `ctranslate2.models.Moonshine(path)` → transcription works
 
-**17.8 Encoder KV caching for streaming (Phase 2 — optional)**
-- Extend encoder `MultiHeadAttention` to optionally return and accept KV cache states
-- New method: `encode_chunk(audio_chunk, previous_encoder_state) → (encoder_output, new_state)`
-- Sliding window eviction: only retain last `window_size` frames in cache per layer
-- This enables O(chunk_size) encoding instead of O(total_audio) — key streaming optimization
-- **PASS:** Streaming encode produces same output as full encode on concatenated audio
-- **Benchmark:** Streaming encode of 1s chunk ≤ 20ms on M4 (vs ~280ms for Whisper full re-encode)
+**17.9 Encoder KV caching for streaming (Phase 2 — DEFERRED)**
+- Not in scope for M17. Requires encoder KV cache infrastructure that CT2 doesn't have.
+- Prerequisite: bidirectional sliding window (17.1) working correctly
+- Would enable O(chunk_size) incremental encoding instead of O(total_audio)
+- Estimated effort: 2-3 weeks additional
+- Track as separate milestone if/when needed
 
 ---
 

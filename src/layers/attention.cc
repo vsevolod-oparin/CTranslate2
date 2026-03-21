@@ -177,6 +177,32 @@ namespace ctranslate2 {
       }
     }
 
+    // Build a banded attention mask for bidirectional sliding window.
+    // Returns a [1, seq_q, seq_k] float tensor with 0.0 for valid positions
+    // and -inf for masked positions.  Broadcasts over batch*heads.
+    // Device-agnostic: creates the mask on CPU then moves to target device.
+    static StorageView make_sliding_window_mask(dim_t seq_q, dim_t seq_k,
+                                                dim_t left_window, dim_t right_window,
+                                                DataType dtype, Device device) {
+      const float neg_inf = -1e9f;  // large negative, not actual inf (safer for fp16)
+      StorageView mask({1, seq_q, seq_k}, 0.f, Device::CPU);
+      float* data = mask.data<float>();
+      for (dim_t q = 0; q < seq_q; ++q) {
+        for (dim_t k = 0; k < seq_k; ++k) {
+          const dim_t dist = q - k;  // positive = k is in the past
+          const bool in_left = (dist >= 0 && dist < left_window);
+          const bool in_right = (dist < 0 && (-dist) < right_window);
+          if (!in_left && !in_right)
+            data[q * seq_k + k] = neg_inf;
+        }
+      }
+      if (dtype != DataType::FLOAT32)
+        mask = mask.to(dtype);
+      if (device != Device::CPU)
+        mask = mask.to(device);
+      return mask;
+    }
+
     static void dot_product_attention(const StorageView& queries,
                                       const StorageView& keys,
                                       const StorageView& values,
@@ -196,7 +222,8 @@ namespace ctranslate2 {
                                       bool with_cache = false,
                                       dim_t beam_size = 1,
                                       Alibi* alibi = nullptr,
-                                      StorageView* position_bias = nullptr) {
+                                      StorageView* position_bias = nullptr,
+                                      const StorageView* sliding_window_mask = nullptr) {
       PROFILE("dot_product_attention");
 
       std::unique_ptr<const StorageView> relative_positions;
@@ -265,6 +292,17 @@ namespace ctranslate2 {
 
       if (alibi)
         alibi->apply(output, queries_scale);
+
+      // Apply bidirectional sliding window mask (additive -inf for out-of-window positions).
+      // The mask is [1, seq_q, seq_k] and broadcasts over batch*heads dimension.
+      if (sliding_window_mask) {
+        DEVICE_AND_TYPE_DISPATCH(output.device(), output.dtype(),
+                                 primitives<D>::add_batch_broadcast(
+                                     sliding_window_mask->data<T>(),
+                                     output.data<T>(),
+                                     sliding_window_mask->size(),
+                                     output.size()));
+      }
 
       StorageView attn(values.dtype(), values.device());
       ops::SoftMax()(output, values_lengths, attn);
@@ -639,6 +677,21 @@ namespace ctranslate2 {
         values_proj.shallow_copy(*cached_values);
       }
 
+      // Build sliding window attention mask for encoder self-attention.
+      // Needed when sliding_window > 0 on encoder layers (no KV cache to trim).
+      // For [left, right>0]: banded bidirectional mask.
+      // For [left, right=0]: causal banded mask (left-only).
+      // Decoder sliding window uses KV cache trimming instead (existing path).
+      std::unique_ptr<StorageView> sw_mask;
+      if (_sliding_window > 0 && _self_attention && !_is_decoder && !cached_keys) {
+        const dim_t seq_q = queries_proj.dim(2);
+        const dim_t seq_k = keys_proj.dim(2);
+        sw_mask = std::make_unique<StorageView>(
+            make_sliding_window_mask(seq_q, seq_k,
+                                     _sliding_window, _sliding_window_right,
+                                     dtype, device));
+      }
+
       StorageView& context = fused_proj;  // Reuse storage.
       dot_product_attention(queries_proj,
                             keys_proj,
@@ -659,7 +712,8 @@ namespace ctranslate2 {
                             bool(cached_keys),
                             beam_size,
                             _alibi,
-                            position_bias);
+                            position_bias,
+                            sw_mask.get());
 
       if (prefilling && cached_keys && cached_keys->shape()[2] > _sliding_window) {
         // set only last sliding_window tokens to cached_keys and cached_values after computing attention

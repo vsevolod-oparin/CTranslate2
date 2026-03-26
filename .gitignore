@@ -1,6 +1,7 @@
 *.pyc
 /.vs
 /build
+/build-*/
 /build-ios
 
 **/.DS_Store
@@ -9,10 +10,12 @@ CMake*.json
 .idea
 python/build/
 python/ctranslate2.egg-info/
+python/ctranslate2_mps.egg-info/
 python/ctranslate2/*.so
 python/ctranslate2/*.dylib
 python/dist/
 /dist
+/release-assets/
 .cache
 docs/build/
 docs/python/

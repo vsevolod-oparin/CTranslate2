@@ -7,6 +7,7 @@ cpp/generation_result.cc
 cpp/generator.cc
 cpp/logging.cc
 cpp/module.cc
+cpp/moonshine.cc
 cpp/mpi.cc
 cpp/scoring_result.cc
 cpp/storage_view.cc
@@ -26,6 +27,7 @@ ctranslate2/converters/converter.py
 ctranslate2/converters/eole_ct2.py
 ctranslate2/converters/fairseq.py
 ctranslate2/converters/marian.py
+ctranslate2/converters/moonshine.py
 ctranslate2/converters/openai_gpt2.py
 ctranslate2/converters/opennmt_py.py
 ctranslate2/converters/opennmt_tf.py
@@ -37,6 +39,7 @@ ctranslate2/specs/__init__.py
 ctranslate2/specs/attention_spec.py
 ctranslate2/specs/common_spec.py
 ctranslate2/specs/model_spec.py
+ctranslate2/specs/moonshine_spec.py
 ctranslate2/specs/transformer_spec.py
 ctranslate2/specs/wav2vec2_spec.py
 ctranslate2/specs/wav2vec2bert_spec.py

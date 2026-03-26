@@ -1537,18 +1537,21 @@ kernel void row_copy(
     uint row   = gid % rows_per_mat;
     uint s_off = batch * src_mb + row * src_rb;
     uint d_off = batch * dst_mb + row * dst_rb;
-    // Each thread copies a strided chunk of the row.
-    // Use uint (4-byte) copies for alignment.
-    device const uint* s = (device const uint*)(src + s_off);
-    device       uint* d = (device       uint*)(dst + d_off);
-    uint n_uint = copy_bytes / 4;
-    for (uint i = tid; i < n_uint; i += tgs)
+    // M19 fix: use ushort (2-byte) copies instead of uint (4-byte).
+    // Row strides may not be 4-byte aligned (e.g., 205 float16 columns =
+    // 410 bytes).  Casting char* to uint* at a non-4-byte-aligned offset
+    // is undefined behavior on Metal GPUs, causing silent write failures
+    // that leave stale data (NaN from pool buffers) in the destination.
+    // All MPS matrix data is at least 2-byte aligned (float16 minimum),
+    // so ushort copies are always safe.
+    device const ushort* s = (device const ushort*)(src + s_off);
+    device       ushort* d = (device       ushort*)(dst + d_off);
+    uint n_ushort = copy_bytes / 2;
+    for (uint i = tid; i < n_ushort; i += tgs)
         d[i] = s[i];
-    // Handle remainder bytes (< 4).
-    if (tid == 0) {
-        uint rem_start = n_uint * 4;
-        for (uint i = rem_start; i < copy_bytes; ++i)
-            dst[d_off + i] = src[s_off + i];
+    // Handle remainder byte (if copy_bytes is odd — unlikely for MPS data).
+    if (tid == 0 && (copy_bytes & 1u)) {
+        dst[d_off + copy_bytes - 1] = src[s_off + copy_bytes - 1];
     }
 }
 )";

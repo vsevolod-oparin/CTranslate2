@@ -410,8 +410,6 @@ namespace ctranslate2 {
         }
       }
 
-      // Pool or release a buffer, respecting the optional cap.
-      // Caller must hold _mutex.
       void pool_or_release_locked(size_t bucket, id<MTLBuffer> buf) {
         const size_t cap = get_max_pool_bytes();
         if (cap != 0 && _pool_bytes + bucket > cap) {

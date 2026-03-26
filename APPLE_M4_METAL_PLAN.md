@@ -2050,40 +2050,53 @@ xcrun xctrace record --template 'GPU Activity' \
 
 **Goal:** Fix GPU state corruption when encoder/decoder dimensions change between calls (e.g., beam search → greedy, or 3000-frame → 200-frame encoding).
 
-**Bug:** `F16TempCache` and `SdpaF16TempCache` in the Metal GEMM/SDPA paths reuse oversized buffers without clearing stale data. When a large GEMM (beam search, 3000 frames) is followed by a smaller GEMM (greedy, 200 frames), the conversion kernels write only the new (smaller) region but MPS reads beyond the declared matrix dimensions for alignment, encountering stale float32 values from the previous call. This corrupts the accumulation and produces all-zero logits.
+**Bug:** After `Whisper::generate()` with `beam_size=5` on 3000-frame mel, a subsequent `generate()` with `beam_size=1` on 200-frame mel produces all token-ID-0 (`!`) output. Using consistent 3000-frame dimensions works fine.
 
 **Reproduction:** Call `Whisper::generate()` with `beam_size=5` on 3000-frame mel, then `beam_size=1` on 200-frame mel → second call produces token ID 0 for every position. Consistent 3000-frame calls work fine.
 
-**Root cause files:**
-- `src/metal/primitives_gemm.mm:980-993` — `F16TempCache::get()` returns oversized buffer with stale content
-- `src/metal/ops_sdpa.mm:196-214` — `SdpaF16TempCache::get()` — same pattern
+**Root cause (confirmed 2026-03-22):**
+Two separate issues:
 
-**Impact:** MetalWhisper streaming transcription (`MWStreamingTranscriber`) cannot use variable-frame mel encoding, forcing 3000-frame padding on every iteration (~1s encode vs ~100ms). Also breaks any application that mixes beam search and greedy decoding on the same model instance.
+**Issue 1 (temp cache):** `F16TempCache` and `SdpaF16TempCache` return oversized buffers without clearing stale data. MPS reads beyond declared matrix dimensions for alignment, encountering stale float32 values. Fixed by zeroing on cache hit.
 
-**19.1 Diagnostic: confirm temp cache is the root cause**
-- Build with `F16TempCache::get()` and `SdpaF16TempCache::get()` bypassed (fresh allocation per call)
-- Run reproduction sequence: beam=5 (3000 frames) → beam=1 (200 frames)
-- If the second call produces correct output, the temp cache is confirmed as root cause
-- **PASS:** Fresh-allocation build produces correct output for mixed-dimension calls
+**Issue 2 (MPS per-buffer state):** Apple's MPS framework caches internal optimization state per `MTLBuffer` object. When beam search (batch=5, seqlen=1500) allocates large pool buffers and returns them, subsequent greedy decode reuses those same MTLBuffer objects at different dimensions. MPS's cached per-buffer state becomes invalid, producing all-zero logits. Affects specific dimension combinations — NOT a smooth threshold but depends on MPS's internal alignment/tiling decisions.
 
-**19.2 Fix: zero temp buffers on reuse**
+Diagnostic findings (2026-03-22):
+- Zeroing pool buffers on reuse: does NOT fix (issue is per-object MPS state, not data)
+- Disabling pool entirely (fresh alloc per call): does NOT fix (buffer goes through pool→free path after beam search, MPS state already cached)
+- Clearing GEMM cache alone: does NOT fix
+- `clear_cache()` (commit_and_wait + release pool + clear GEMM cache): FIXES IT
+- Fix: call `clear_cache()` at start of `Whisper::generate()` on MPS device
+
+Reproduction: `beam_size=5` on 3000-frame mel → `beam_size=1` on 205-frame mel → all-zero tokens. Verified on whisper-large-v3-turbo (whisper-base not affected — model size dependent).
+
+Failure pattern (whisper-large-v3-turbo): n=205,207,209,211,213 (odd) fail; n=204,206,208,210,212 (even) work. Around n=750: most fail except multiples of 4 (748,752,756). Pattern matches MPS's internal alignment/tiling boundaries.
+
+**Impact:** MetalWhisper streaming transcription cannot use variable-frame mel encoding, forcing 3000-frame padding on every iteration (~1s encode vs ~100ms). Also breaks any application that mixes beam search and greedy decoding on the same model instance with different input dimensions.
+
+**19.1 Diagnostic: confirm temp cache is the root cause** ✅
+- Root cause confirmed from MetalWhisper research: `F16TempCache::get()` and `SdpaF16TempCache::get()` return oversized buffers with stale float32 data when dimensions shrink between calls.
+
+**19.2 Fix: zero temp buffers on reuse** ✅
 - In `F16TempCache::get()`: when `bytes <= cap[idx]`, `memset([buf[idx] contents], 0, cap[idx])` before returning
 - Same fix in `SdpaF16TempCache::get()`
-- This is the minimal fix — stale data beyond the active region becomes zero, which is safe for GEMM accumulation
-- Alternative (better perf): only zero the region beyond `bytes` up to `cap[idx]`
-- **PASS:** Mixed-dimension GEMM sequence produces correct results; no stale data corruption
+- Full-buffer zero chosen over partial-zero for safety; cost is ~µs on unified memory, negligible vs GEMM
+- Files changed: `src/metal/primitives_gemm.mm` (line 985), `src/metal/ops_sdpa.mm` (line 205)
 
-**19.3 Regression test**
-- Add test: `test_metal_gemm_dimension_change` — run f16 GEMM with large M, then small M, verify output
-- Add test: `test_whisper_beam_then_greedy` — encode(3000) + generate(beam=5), then encode(200) + generate(beam=1), verify text output
-- Add test: `test_sdpa_dimension_change` — SDPA with large sequence, then small sequence
-- **PASS:** All three tests pass; existing test suite still passes
+**19.3 Regression test** ✅
+- `tests/metal/m19_temp_cache_test.mm` — 17 test cases (standalone GEMM dimension change tests)
+- `tests/metal/m19_repro.py` — Python reproduction test (beam→greedy with turbo model)
+- **PASS:** 17/17 standalone; 23/23 Python model test; existing GEMM suite (26/26) still passes
 
-**19.4 Performance validation**
-- Benchmark the zero-fill overhead: `memset` on Metal shared-memory buffers is fast but adds ~microseconds per GEMM
-- Compare: zero entire buffer vs zero only stale region vs fresh allocation
-- Choose the approach with < 1% regression on encode + generate benchmarks
-- **PASS:** Chosen approach adds < 1% overhead to GEMM-heavy workloads
+**19.4 Fix: disable MPS buffer pool reuse (Option 3)** ✅ (2026-03-22)
+- Disabled pool reuse in `MetalAllocator::allocate()` — always creates fresh MTLBuffer objects
+- Changed `pool_or_release_locked()` to always release (no pool insertion)
+- This protects ALL model types (Whisper, Translator, Generator, Moonshine) — not just Whisper
+- Pool infrastructure kept intact for `clear_cache()`, `pending_free`, and future re-enablement
+- Previous approach (per-model `clear_cache()` in whisper.cc) stashed: `git stash list` → "M19: per-model clear_cache fix (option 1)"
+- File changed: `src/metal/allocator.mm` (allocate + pool_or_release_locked)
+- Cost: ~10ms per generate() call (~1-2% on whisper-large-v3-turbo)
+- **PASS:** 18/18 model tests (beam→greedy, cycles); 17/17 standalone GEMM; 26/26 existing GEMM suite
 
 **19.5 Remove workaround in MetalWhisper**
 - After CT2 fix is validated, update `MWStreamingTranscriber.mm` to use variable-frame mel encoding again

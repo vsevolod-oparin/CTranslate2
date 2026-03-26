@@ -203,7 +203,11 @@ struct SdpaF16TempCache {
   NSUInteger    cap[3] = {0, 0, 0};
 
   id<MTLBuffer> get(int idx, NSUInteger bytes) {
-    if (bytes <= cap[idx]) return buf[idx];
+    if (bytes <= cap[idx]) {
+      // M19: Zero stale data — same fix as F16TempCache in primitives_gemm.mm.
+      memset([buf[idx] contents], 0, cap[idx]);
+      return buf[idx];
+    }
     if (buf[idx]) [buf[idx] release];
     buf[idx] = alloc_temp_buffer(bytes);
     cap[idx] = [buf[idx] length];

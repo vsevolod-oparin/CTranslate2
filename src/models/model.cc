@@ -859,6 +859,8 @@ namespace ctranslate2 {
 #else
         supports_flash_attention = dprops.major >= 8;
 #endif
+      } else if (device == Device::MPS) {
+        supports_flash_attention = true;
       }
       if (use_flash_attention && !supports_flash_attention) {
 #ifdef CT2_USE_HIP

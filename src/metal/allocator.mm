@@ -55,6 +55,12 @@ namespace ctranslate2 {
 
     static size_t bucket_size(size_t requested) {
       if (requested <= kBucketMinSize) return requested;
+      // Guard against overflow: for requested > 2^(bits-1), the bit-fill
+      // sets all bits to 1 and v+1 wraps to 0.  Catch it explicitly.
+      constexpr size_t kMaxBucket = size_t(1) << (sizeof(size_t) * 8 - 1);
+      if (requested > kMaxBucket)
+        throw std::runtime_error(
+            "Metal: requested allocation size too large to bucket");
       // Next power of 2 via bit manipulation.
       size_t v = requested - 1;
       v |= v >> 1;  v |= v >> 2;  v |= v >> 4;

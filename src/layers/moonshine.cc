@@ -44,6 +44,8 @@ namespace ctranslate2 {
 
       for (dim_t b = 0; b < batch; ++b) {
         for (dim_t f = 0; f < num_frames; ++f) {
+          if (fs == 0) continue;  // empty frame — avoid 0/0 NaN
+
           float* frame = data + (b * num_frames + f) * fs;
 
           // Compute mean
